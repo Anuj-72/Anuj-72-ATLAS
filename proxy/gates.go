@@ -809,6 +809,23 @@ func liveBackgroundJobNote(ctx *AgentContext) string {
 	return sb.String()
 }
 
+// backgroundStopMessage is the exit gate's instruction when the run's own
+// background jobs are still live: the jobs by id, and the one call that
+// resolves each.
+func backgroundStopMessage(ctx *AgentContext, live []string) string {
+	var sb strings.Builder
+	for _, id := range live {
+		fmt.Fprintf(&sb, "Background job %s (%s) is still running — stop it with "+
+			"stop_background {\"job_id\": %q} before finishing.\n",
+			id, truncateStr(ctx.BackgroundJobs[id], 80), id)
+	}
+	sb.WriteString("The run cannot be confirmed finished while a process of its own may still " +
+		"be writing to the workspace. If you started it only to verify your work, stop it and " +
+		"then finish. If the user asked for it to stay running, say so in your summary and " +
+		"finish; the run will then be reported as unfinished with the job named.")
+	return sb.String()
+}
+
 // ownBackgroundJobHint names the model's own background job when a command
 // just failed because that job is holding the resource.
 //

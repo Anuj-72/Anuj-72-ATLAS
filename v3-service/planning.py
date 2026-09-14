@@ -57,6 +57,9 @@ Rules:
     * list_directory   — list a directory's contents
 - The verify_step MUST run a verification command — curl, pytest, python <script>, go test, npm test, cargo test, make test. ls / cat / grep do NOT verify; they only inspect.
 - Minimum 2 steps, maximum 6. Tighter is better.
+- Cover EVERY explicit ask in the user goal: each feature, any persistence or networking the user
+  asked for, and any deliverable they asked for (how to run it, a README, tests). A plan that leaves
+  a stated ask out is wrong, even if it is tighter.
 - Address the user's STATED problem only. Don't add unrelated work, don't re-architect.
 - For "fix" intents, the plan shape should be: investigate (1 step) → change (1-3 steps) → verify (1 step).
 

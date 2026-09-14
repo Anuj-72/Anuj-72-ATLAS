@@ -467,6 +467,20 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		}
 		break
 	}
+	// A job this run started is still running. Completion is refused while a
+	// process of the run's own may still be writing (finalizeCompletion:
+	// background_work_unresolved), and that refusal replaces the model's
+	// summary with a note about the job, so the user gets no account of the
+	// work. The model is the only party that knows whether the process was a
+	// verification server or something the user asked to keep up, so it is
+	// told, and asked to stop it. Observed 2026-09-14: a working web app was
+	// reported as unfinished because the server that verified it was left
+	// running.
+	if live := settleBackgroundHazard(ctx); len(live) > 0 && s.chargeBounce("background_gate") {
+		log.Printf("[agent] background gate: %d job(s) still running at exit (bounce %d/%d)",
+			len(live), s.gateBounces["background_gate"], maxGateBounces)
+		return "background_gate", backgroundStopMessage(ctx, live)
+	}
 	// Verified only through a stdin redirect: the program was never run the
 	// way its caller will run it. See stdinRedirectSource for the measurement.
 	if s.verifiedByRedirect != "" && !s.verifiedStandalone && s.chargeBounce("contract_gate") {
