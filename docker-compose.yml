@@ -465,6 +465,12 @@ services:
       - ATLAS_ALLOW_CREDENTIAL_READS=${ATLAS_ALLOW_CREDENTIAL_READS:-}
       - ATLAS_PERMISSION_TIMEOUT_SEC=${ATLAS_PERMISSION_TIMEOUT_SEC:-}
       - ATLAS_REASONING_BUDGET=${ATLAS_REASONING_BUDGET:-}
+      # Fenced-content sub-call watchdog (seconds to first CONTENT token).
+      # Default 60 in code; a large agent context + a reasoning preamble on a
+      # slower/contended GPU can exceed that before the file starts, cancelling
+      # a generation that would have produced it. Raise per deployment.
+      - ATLAS_FENCED_FIRST_CONTENT_SEC=${ATLAS_FENCED_FIRST_CONTENT_SEC:-}
+      - ATLAS_FENCED_IDLE_SEC=${ATLAS_FENCED_IDLE_SEC:-}
       # Repetition-control sampling. llama-server defaults every one of
       # these off, so the proxy sets DRY on outgoing requests; these let
       # a .env override reach the container. Empty means the in-code
