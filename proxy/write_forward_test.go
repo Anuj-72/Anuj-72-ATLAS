@@ -214,6 +214,15 @@ func TestExecutionAttemptDischarge(t *testing.T) {
 func warnedRunFixture(t *testing.T, plan func(i int) map[string]interface{}) (
 	*AgentContext, string, map[string]int, map[string]string, []string) {
 	t.Helper()
+	return warnedRunFixtureIn(t, plan, false)
+}
+
+// warnedRunFixtureIn is warnedRunFixture with a choice of executor. Sandbox
+// mode answers the background-job endpoints, which is the only route a
+// server script is allowed to run through.
+func warnedRunFixtureIn(t *testing.T, plan func(i int) map[string]interface{}, sandbox bool) (
+	*AgentContext, string, map[string]int, map[string]string, []string) {
+	t.Helper()
 	dir := t.TempDir()
 	turns := 0
 	census := map[string]int{}
@@ -235,6 +244,17 @@ func warnedRunFixture(t *testing.T, plan func(i int) map[string]interface{}) (
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+			return
+		case strings.HasSuffix(r.URL.Path, "/jobs/start"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"job_id": "job1", "pid": 7})
+			return
+		case strings.HasSuffix(r.URL.Path, "/jobs/job1/output"):
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"job_id": "job1", "running": false, "exit_code": 1,
+				"stdout": []string{}, "stderr": []string{"SyntaxError: '(' was never closed"}})
+			return
+		case strings.HasSuffix(r.URL.Path, "/jobs/job1/stop"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"job_id": "job1", "killed": false})
 			return
 		case strings.HasSuffix(r.URL.Path, "/execute"):
 			var in struct{ Code string }
@@ -274,7 +294,7 @@ func warnedRunFixture(t *testing.T, plan func(i int) map[string]interface{}) (
 	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
 	ctx.PermissionMode = PermissionYolo
 	ctx.TrustMode = trustFullyTrusted
-	ctx.VerifyOnHost = true
+	ctx.VerifyOnHost = !sandbox
 	ctx.MaxTurns = 0
 	ctx.StreamFn = func(et string, data interface{}) {
 		b, _ := json.Marshal(data)
@@ -481,4 +501,73 @@ func TestPendingWarnedRunHasOneWriter(t *testing.T) {
 		t.Error("no key-only reader found; this guard is pinning something that moved")
 	}
 	t.Logf("warned set: %d assignment, %d key-only reader(s)", assigns, keyOnlyReads)
+}
+
+// --- A background run is a run --------------------------------------------
+//
+// The foreground-server gate sends every server script to run_background, and
+// its settle window returns the same traceback run_command would. The mark
+// that only run_command could discharge left such a file permanently "never
+// run": the model started it, read the SyntaxError, and had every fix refused
+// for not having run the file (dev scenario, 2026-09-14).
+func TestBackgroundRunDischargesTheWarnedMark(t *testing.T) {
+	plan := func(i int) map[string]interface{} {
+		switch i {
+		case 0:
+			return writeCall("solve.py", warnedRunBroken)
+		case 1:
+			return map[string]interface{}{"type": "tool_call", "name": "run_background",
+				"args": map[string]string{"command": "python3 solve.py"}}
+		case 2:
+			return writeCall("solve.py", warnedRunValid)
+		}
+		return map[string]interface{}{"type": "done", "summary": "fixed solve.py"}
+	}
+	_, dir, census, terminal, gates := warnedRunFixtureIn(t, plan, true)
+	got, _ := os.ReadFile(filepath.Join(dir, "solve.py"))
+	t.Logf("run_first_gates=%d status=%q reason=%q", len(gates), terminal["status"], terminal["reason"])
+	for _, g := range gates {
+		t.Logf("   GATE %s", g)
+	}
+	if len(gates) != 0 {
+		t.Errorf("the rewrite after a background run was gated %d time(s)", len(gates))
+	}
+	if string(got) != warnedRunValid {
+		t.Errorf("solve.py on disk is not the clean rewrite: %q", got)
+	}
+	if census["done"] != 1 {
+		t.Errorf("%d terminal events", census["done"])
+	}
+}
+
+// --- The gate names a call the tools will accept ---------------------------
+//
+// `run_command python3 app.py` is refused by the foreground-server redirect
+// when app.py serves, so a gate that demands it is a contradiction. The
+// instruction has to be the one the redirect would give.
+func TestRunFirstInstructionNamesTheToolThatCanRunTheFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "app.py"),
+		[]byte("from flask import Flask\napp = Flask(__name__)\napp.run(port=5000)\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "solve.py"), []byte("print(7)\n"), 0o644)
+	ctx := NewAgentContext(dir, Tier2Medium)
+
+	server := runFirstInstruction(ctx, "app.py")
+	if !strings.Contains(server, "run_background") || !strings.Contains(server, "python3 app.py") {
+		t.Errorf("server script must be routed to run_background: %s", server)
+	}
+	if strings.Contains(server, "run_command") {
+		t.Errorf("server script must not be sent to run_command: %s", server)
+	}
+	if r := foregroundServerRejectionWithSource("python3 app.py", workspaceFileReader(ctx)); r == "" {
+		t.Fatalf("fixture app.py is not detected as a server; the test proves nothing")
+	}
+
+	script := runFirstInstruction(ctx, "solve.py")
+	if !strings.Contains(script, "run_command") || !strings.Contains(script, "python3 solve.py") {
+		t.Errorf("plain script must be run with run_command: %s", script)
+	}
+	if got := runFirstInstruction(ctx, "server.js"); !strings.Contains(got, "node server.js") {
+		t.Errorf("a .js file is run with node: %s", got)
+	}
 }

@@ -2031,3 +2031,34 @@ func TestToolBanNoteNamesTheRemainingTools(t *testing.T) {
 		}
 	}
 }
+
+// A module or inline invocation that names a server script is not a server
+// start: `python3 -m py_compile app.py` compiles it and exits. Observed
+// 2026-09-14: the compile check a model reached for after a SyntaxError was
+// refused as a foreground server, and the file was never fixed.
+func TestModuleAndInlineInvocationsAreNotServerStarts(t *testing.T) {
+	read := func(rel string) (string, bool) {
+		if rel == "app.py" {
+			return "from flask import Flask\napp = Flask(__name__)\napp.run()\n", true
+		}
+		return "", false
+	}
+	for _, cmd := range []string{
+		"python3 -m py_compile app.py",
+		"python -m py_compile app.py",
+		"python3 -u -m py_compile app.py",
+		"python3 -m pytest app.py",
+		"python3 -m pyflakes app.py",
+		`python3 -c "import ast; ast.parse(open('app.py').read())"`,
+	} {
+		if got := foregroundServerRejectionWithSource(cmd, read); got != "" {
+			t.Errorf("wrongly redirected %q:\n%s", cmd, got)
+		}
+	}
+	// The control: actually running the script is still redirected.
+	for _, cmd := range []string{"python3 app.py", "python -u app.py"} {
+		if foregroundServerRejectionWithSource(cmd, read) == "" {
+			t.Errorf("not redirected: %q", cmd)
+		}
+	}
+}

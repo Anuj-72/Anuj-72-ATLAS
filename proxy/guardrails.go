@@ -1673,6 +1673,52 @@ func executionAttempt(command, path string) bool {
 	return false
 }
 
+// workspaceFileReader reads a workspace-relative path for the guardrails
+// that inspect a script before deciding how it should be run.
+func workspaceFileReader(ctx *AgentContext) func(string) (string, bool) {
+	return func(rel string) (string, bool) {
+		data, err := os.ReadFile(filepath.Join(ctx.WorkingDir, rel))
+		if err != nil {
+			return "", false
+		}
+		return string(data), true
+	}
+}
+
+// interpreterFor names the interpreter that executes a warned file. The
+// warned mark exists only for syntax-gated languages, and python is the
+// historical default the gate always quoted.
+func interpreterFor(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".mjs", ".cjs":
+		return "node"
+	case ".ts":
+		return "npx tsx"
+	case ".sh", ".bash":
+		return "bash"
+	case ".rb":
+		return "ruby"
+	case ".php":
+		return "php"
+	}
+	return "python3"
+}
+
+// runFirstInstruction is the one instruction every run-first gate quotes:
+// the call that executes the warned file, phrased for the tool that will
+// accept it. A script that serves until killed is refused by the
+// foreground-server redirect when sent through run_command, so demanding
+// `run_command python3 app.py` for such a file is a contradiction the model
+// cannot resolve. Observed 2026-09-14: the gate demanded exactly that, the
+// redirect refused it, and the session ended with the broken file on disk.
+func runFirstInstruction(ctx *AgentContext, path string) string {
+	cmd := interpreterFor(path) + " " + path
+	if foregroundServerRejectionWithSource(cmd, workspaceFileReader(ctx)) != "" {
+		return fmt.Sprintf("start it with run_background {\"command\": %q} and read the traceback it returns (tail_background shows more), then stop_background", cmd)
+	}
+	return fmt.Sprintf("run it with run_command {\"command\": %q} and read the real error", cmd)
+}
+
 // freshRewriteAdvice is the start-over guidance shared by the done-gate
 // rejection and the immediate mid-loop corrective. One source of truth so
 // the model hears the same instruction at the crossing and at the gate.
@@ -2105,6 +2151,12 @@ var serverLoopMarkers = []string{
 var reServerScript = regexp.MustCompile(
 	`(?i)\b(?:python3?|node|ruby|php)\b[^|;&]*?\s([\w./-]+\.(?:py|js|mjs|rb|php))\b`)
 
+// reInterpreterModuleOrInline matches an interpreter invoked with -m (run a
+// module) or -c (run inline code): any .py that follows is an argument to
+// that program, not the script being run.
+var reInterpreterModuleOrInline = regexp.MustCompile(
+	`(?i)\b(?:python3?|node)\b(?:\s+-[a-zA-Z]+)*\s+-(?:m|c|e)\b`)
+
 // runsAServerLoop reports whether the file this command executes blocks
 // forever. readFile returns workspace contents; a miss says no, since
 // refusing on a filename alone is the guess this avoids.
@@ -2114,6 +2166,14 @@ func runsAServerLoop(cmd string, readFile func(string) (string, bool)) bool {
 	}
 	m := reServerScript.FindStringSubmatch(cmd)
 	if m == nil {
+		return false
+	}
+	// `python3 -m py_compile app.py` and `python3 -c "import app"` hand the
+	// file to a module or an inline program; they never execute its server
+	// loop. Observed 2026-09-14: the compile check the model reached for
+	// after a SyntaxError was refused as a server start, and the session
+	// ended without ever fixing the file.
+	if reInterpreterModuleOrInline.MatchString(cmd) {
 		return false
 	}
 	src, ok := readFile(m[1])

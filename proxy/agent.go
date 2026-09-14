@@ -462,7 +462,8 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 			log.Printf("[agent] run-first gate at exit: %s warned and never executed (bounce %d/%d)",
 				p, s.gateBounces["run_first_gate"], maxGateBounces)
 			return "run_first_gate", fmt.Sprintf(
-				"`%s` is on disk with a parse warning and has never been run. Run it, read the result, and fix it before finishing — as written it cannot work.", p)
+				"`%s` is on disk with a parse warning and has never been run. Run it first — %s — and fix it before finishing; as written it cannot work.",
+				p, runFirstInstruction(ctx, p))
 		}
 		break
 	}
@@ -1395,8 +1396,8 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					log.Printf("[agent] run-first gate (%s): %s has a warned, unexecuted version on disk (bounce %d/%d)",
 						parsed.Name, ed.Path, st.gateBounces["run_first_gate"], maxGateBounces)
 					st.bounceToolCall(ctx, parsed.Name, fmt.Sprintf(
-						"The version of %s on disk carries a parse warning and has never been run. Run it first — `python3 %s` — and read the real error before editing further.",
-						ed.Path, ed.Path))
+						"The version of %s on disk carries a parse warning and has never been run. Run it first — %s — before editing further.",
+						ed.Path, runFirstInstruction(ctx, ed.Path)))
 					continue
 				}
 			}
@@ -1426,8 +1427,8 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							log.Printf("[agent] run-first gate: %s has a warned, unexecuted version on disk (bounce %d/%d)",
 								wfInput.Path, st.gateBounces["run_first_gate"], maxGateBounces)
 							st.bounceToolCall(ctx, "write_file", fmt.Sprintf(
-								"The version of %s you wrote is on disk with a parse warning and has never been run. Run it first — `python3 %s` — and read the real error before writing again. Rewriting blind is how the last four attempts went nowhere.",
-								wfInput.Path, wfInput.Path))
+								"The version of %s you wrote is on disk with a parse warning and has never been run. Run it first — %s — before writing again. A rewrite that has not seen the runtime error is a guess.",
+								wfInput.Path, runFirstInstruction(ctx, wfInput.Path)))
 							continue
 						}
 					}
@@ -1683,13 +1684,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				var rc RunCommandInput
 				if json.Unmarshal(parsed.Args, &rc) == nil {
 					if rejection := foregroundServerRejectionWithSource(rc.Command,
-						func(rel string) (string, bool) {
-							data, err := os.ReadFile(filepath.Join(ctx.WorkingDir, rel))
-							if err != nil {
-								return "", false
-							}
-							return string(data), true
-						}); rejection != "" {
+						workspaceFileReader(ctx)); rejection != "" {
 						log.Printf("[agent] redirecting a foreground server start to run_background: %q",
 							truncateStr(rc.Command, 80))
 						st.bounceToolCall(ctx, "run_command", rejection)
@@ -2097,7 +2092,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					st.markWarnedRun(ctx, wf.Path, warned)
 				}
 			}
-			if parsed.Name == "run_command" && result != nil {
+			if (parsed.Name == "run_command" || parsed.Name == "run_background") && result != nil {
 				// Discharge only the marks this command actually attempted to
 				// EXECUTE. Two prior rules both failed an audit: clearing on
 				// any command let `ls` bless a warned file, and clearing on a
@@ -2107,7 +2102,17 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// attempt (interpreter invocation or ./file) changes that fact,
 				// and the attempt itself suffices — pass or fail, the model has
 				// now seen the real runtime behavior.
-				var rc RunCommandInput
+				//
+				// run_background is an execution attempt too. A server script
+				// is redirected there by the foreground gate, and its settle
+				// window returns the same traceback run_command would; a mark
+				// that only run_command could discharge left the file
+				// permanently "never run" (observed 2026-09-14: the model ran
+				// app.py in the background, read the SyntaxError, and had its
+				// fix refused for not having run the file).
+				var rc struct {
+					Command string `json:"command"`
+				}
 				if json.Unmarshal(parsed.Args, &rc) == nil {
 					for p := range st.pendingWarnedRun {
 						if executionAttempt(rc.Command, p) {
@@ -7363,9 +7368,9 @@ func fencedRunFirstRecovery(ctx *AgentContext, st *runState, relPath, content st
 	log.Printf("[agent] run-first recovery for %s — supplying the current source once", relPath)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "You have now sent the same whole-file write for %s twice without "+
-		"anything changing on disk, so re-sending it is not a route to a working file. "+
-		"Here is what %s actually contains right now", relPath, relPath)
+	fmt.Fprintf(&sb, "You have now sent the same whole-file write for %s twice, and both were "+
+		"held back because the version on disk has never been run, so re-sending it is not "+
+		"a route to a working file. Here is what %s actually contains right now", relPath, relPath)
 	if truncated {
 		fmt.Fprintf(&sb, " (first %d lines)", fencedRecoveryMaxLines)
 	}
@@ -7376,11 +7381,10 @@ func fencedRunFirstRecovery(ctx *AgentContext, st *runState, relPath, content st
 		fmt.Fprintf(&sb, "The last thing checked about those exact bytes: %s\n\n", detail)
 	}
 	fmt.Fprintf(&sb, "That version is on disk with a parse warning and has never been run. "+
-		"Do one of these instead of sending that write again: run it with run_command "+
-		"(`python3 %s`) and read the real error, read more of it with read_file, or send a "+
-		"correction that is materially different from what is above — a targeted edit_file or "+
-		"replace_lines against a line you can see here is usually smaller and lands more "+
-		"often than another whole-file rewrite.", relPath)
+		"Do one of these instead of sending that write again: %s, read more of it with "+
+		"read_file, or send a correction that is materially different from what is above — a "+
+		"targeted edit_file or replace_lines against a line you can see here is usually smaller "+
+		"and lands more often than another whole-file rewrite.", runFirstInstruction(ctx, relPath))
 	return sb.String()
 }
 

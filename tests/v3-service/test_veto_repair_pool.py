@@ -255,3 +255,46 @@ def test_energy_fallback_returns_nothing_when_all_candidates_vetoed(monkeypatch)
     assert result["code"] == ""
     # Repair still ran before the empty fallback.
     assert pr_cot.calls
+
+
+HTML_TEMPLATE = (
+    "<!DOCTYPE html>\n<html><head><style>th { color: rgba(0,0,0,0.5); }</style></head>\n"
+    "<body><table><tr><th> Time (mins) </th><th> Distance (km) </th></tr></table>\n"
+    "</body></html>\n"
+)
+
+NO_VETO_PER_STEP = dict(VETO_PER_STEP, gx_score_min=0.9, gx_score_mean=0.9)
+
+
+def test_structural_veto_is_skipped_for_non_python_targets(monkeypatch):
+    """A sandbox-passing HTML template must not be vetoed for 'calls' the
+    Python grammar reads out of its text (2026-09-14: `Time (mins)` and
+    `rgba(...)` sent a valid template into five minutes of repair)."""
+    pr_cot = RecordingPRCoT(repairs=[])
+    service = _make_service(monkeypatch, [HTML_TEMPLATE], pr_cot)
+    monkeypatch.setattr(
+        scoring, "score_candidate_per_step", lambda code: dict(NO_VETO_PER_STEP))
+
+    result = service.run("write the leaderboard page", task_id="html-veto",
+                         file_path="templates/index.html")
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "structural_veto" not in stages, stages
+    assert not pr_cot.calls, "repair ran on a template that had nothing to repair"
+    assert result["passed"] is True
+    assert result["code"] == HTML_TEMPLATE
+
+
+def test_structural_veto_still_applies_to_python_targets(monkeypatch):
+    """The control: the same pipeline still vetoes a Python candidate whose
+    direct call resolves to nothing."""
+    unresolved = "def index():\n    return render_template('index.html')\n"
+    pr_cot = RecordingPRCoT(repairs=[])
+    service = _make_service(monkeypatch, [unresolved], pr_cot)
+    monkeypatch.setattr(
+        scoring, "score_candidate_per_step", lambda code: dict(NO_VETO_PER_STEP))
+
+    result = service.run("write the index view", task_id="py-veto", file_path="app.py")
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "structural_veto" in stages, stages
