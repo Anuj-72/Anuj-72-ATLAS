@@ -2062,3 +2062,32 @@ func TestModuleAndInlineInvocationsAreNotServerStarts(t *testing.T) {
 		}
 	}
 }
+
+// A chained command whose LAST segment starts the server must still be
+// redirected, even when an earlier segment is a -m/-c invocation. The
+// exemption is scoped to the invocation that runs the script, not the whole
+// command line. Observed 2026-09-14: `pip install ... && python3 app.py`
+// escaped the redirect because the pip step's -m shadowed the real start, and
+// app.py ran in the foreground until the sandbox timeout.
+func TestChainedInstallThenServerStartIsRedirected(t *testing.T) {
+	read := func(rel string) (string, bool) {
+		if rel == "app.py" {
+			return "from flask import Flask\napp = Flask(__name__)\napp.run()\n", true
+		}
+		return "", false
+	}
+	for _, cmd := range []string{
+		"python3 -m pip install -r requirements.txt && python3 app.py",
+		"pip install flask; python3 app.py",
+		"python3 -m pip install flask && python app.py",
+	} {
+		if foregroundServerRejectionWithSource(cmd, read) == "" {
+			t.Errorf("chained server start not redirected: %q", cmd)
+		}
+	}
+	// A chained command that only compiles is still exempt.
+	if got := foregroundServerRejectionWithSource(
+		"pip install flask && python3 -m py_compile app.py", read); got != "" {
+		t.Errorf("a chained compile was wrongly redirected:\n%s", got)
+	}
+}

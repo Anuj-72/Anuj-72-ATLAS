@@ -2173,7 +2173,15 @@ func runsAServerLoop(cmd string, readFile func(string) (string, bool)) bool {
 	// loop. Observed 2026-09-14: the compile check the model reached for
 	// after a SyntaxError was refused as a server start, and the session
 	// ended without ever fixing the file.
-	if reInterpreterModuleOrInline.MatchString(cmd) {
+	//
+	// Scoped to the invocation that RUNS the script (m[0]), not the whole
+	// command. reServerScript's [^|;&] class already stops m[0] at the
+	// segment boundary, so a chained `python3 -m pip install ... && python3
+	// app.py` matches only the second segment here — checking the whole
+	// command instead let the pip step's `-m` exempt the real server start,
+	// and app.py then ran in the foreground until the sandbox timeout
+	// (observed 2026-09-14).
+	if reInterpreterModuleOrInline.MatchString(m[0]) {
 		return false
 	}
 	src, ok := readFile(m[1])
