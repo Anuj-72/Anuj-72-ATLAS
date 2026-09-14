@@ -7382,9 +7382,9 @@ func fencedRunFirstRecovery(ctx *AgentContext, st *runState, relPath, content st
 	log.Printf("[agent] run-first recovery for %s — supplying the current source once", relPath)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "You have now sent the same whole-file write for %s twice, and both were "+
-		"held back because the version on disk has never been run, so re-sending it is not "+
-		"a route to a working file. Here is what %s actually contains right now", relPath, relPath)
+	fmt.Fprintf(&sb, "You have now sent the same whole-file write for %s twice without "+
+		"anything changing on disk, so re-sending it is not a route to a working file. "+
+		"Here is what %s actually contains right now", relPath, relPath)
 	if truncated {
 		fmt.Fprintf(&sb, " (first %d lines)", fencedRecoveryMaxLines)
 	}
