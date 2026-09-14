@@ -3644,6 +3644,28 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// Our fenced watchdog cancels the request when no CONTENT token
+		// arrives in time. A model that streamed the file into
+		// reasoning_content instead has the answer sitting in reasoningBuf,
+		// and returning the error here discards it — the reasoning salvage
+		// below never runs because this left early. Try that same salvage
+		// first, but only for a benign watchdog cut: the session context is
+		// still alive (a real user cancel or transport failure is not
+		// salvaged). Observed 2026-09-14: fenced sub-calls for a second file
+		// on a large context were cut at the watchdog with the file already
+		// in reasoning_content, and the run died with only the first file.
+		if grammar == rawEmissionSentinel && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
+			log.Printf("[agent] fenced sub-call stream cut (%v); reasoning_content held %d chars, content %d",
+				err, reasoningBuf.Len(), contentBuf.Len())
+			if reasoningBuf.Len() > 0 {
+				if body := extractFencedContent(reasoningBuf.String()); body != "" &&
+					strings.TrimSpace(body) != rawEmissionSentinel {
+					log.Printf("[agent] recovered the fenced block from reasoning_content after a stream cut (%d chars)",
+						reasoningBuf.Len())
+					return reasoningBuf.String(), totalTokens, nil
+				}
+			}
+		}
 		return contentBuf.String(), totalTokens,
 			fmt.Errorf("read LLM stream: %w", err)
 	}

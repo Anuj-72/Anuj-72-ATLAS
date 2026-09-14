@@ -2507,3 +2507,60 @@ func TestTruncationRecoveryNeverPanicsNearTheBufferEnd(t *testing.T) {
 		}()
 	}
 }
+
+// A fenced sub-call whose model streams the file into reasoning_content never
+// resets the content watchdog, so the watchdog cancels the request. The file
+// is sitting in reasoning_content, and the salvage must run on the cut rather
+// than the error being returned with the buffer discarded. Observed
+// 2026-09-14: a second file's sub-call on a large context was cut this way and
+// the run died having delivered only the first file.
+func TestFencedSubCallSalvagesReasoningOnAWatchdogCut(t *testing.T) {
+	t.Setenv("ATLAS_FENCED_FIRST_CONTENT_SEC", "1")
+	t.Setenv("ATLAS_FENCED_IDLE_SEC", "1")
+	fileBody := "<!DOCTYPE html>\n<html>\n<body><h1>Runs</h1></body>\n</html>\n"
+	reasoning := "Let me write the template.\n```html\n" + fileBody + "```\n"
+	rjson, _ := json.Marshal(reasoning)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			// Only the chat endpoint streams and holds open. The
+			// prompt-progress poller hits /slots on this same server; if that
+			// blocked too, its wait group would never release and the call
+			// could never return.
+			if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			// The whole file arrives as reasoning_content — never as content,
+			// so progress() (content-only) never fires and the 1s
+			// first-content watchdog cancels the request.
+			sseWrite(w, `data: {"choices":[{"delta":{"reasoning_content":`+string(rjson)+`}}]}`)
+			// Hold the stream open until the watchdog cancels, but never
+			// past a bound: httptest's Close waits on live handlers, so an
+			// unbounded wait here hangs teardown rather than the test.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+		}))
+	defer srv.Close()
+
+	ctx := llmTestCtx(srv.URL)
+	content, _, err := callLLMOnceWithGrammar(ctx, ctx.Messages, 0.2, rawEmissionSentinel)
+	if err != nil {
+		t.Fatalf("a watchdog-cut sub-call errored instead of salvaging the file: %v", err)
+	}
+	if !strings.Contains(content, "<!DOCTYPE html>") || !strings.Contains(content, "</html>") {
+		t.Errorf("salvaged content lost the file body: %q", content)
+	}
+
+	// The control: a real session cancel (not our watchdog) is NOT salvaged —
+	// the caller must see the cancellation, not a half-generated file.
+	cctx := llmTestCtx(srv.URL)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cctx.Ctx = cancelCtx
+	cancel() // session already cancelled
+	if _, _, err := callLLMOnceWithGrammar(cctx, cctx.Messages, 0.2, rawEmissionSentinel); err == nil {
+		t.Error("a cancelled session salvaged a file instead of surfacing the cancel")
+	}
+}
