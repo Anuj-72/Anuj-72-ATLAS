@@ -266,12 +266,20 @@ HTML_TEMPLATE = (
 NO_VETO_PER_STEP = dict(VETO_PER_STEP, gx_score_min=0.9, gx_score_mean=0.9)
 
 
+class SyntaxOkSandbox(FakeSandbox):
+    """FakeSandbox plus the /syntax-check the non-Python smoke check needs."""
+
+    def syntax_check(self, code, language):
+        return True, "", ""
+
+
 def test_structural_veto_is_skipped_for_non_python_targets(monkeypatch):
     """A sandbox-passing HTML template must not be vetoed for 'calls' the
     Python grammar reads out of its text (2026-09-14: `Time (mins)` and
     `rgba(...)` sent a valid template into five minutes of repair)."""
     pr_cot = RecordingPRCoT(repairs=[])
     service = _make_service(monkeypatch, [HTML_TEMPLATE], pr_cot)
+    monkeypatch.setattr(adapters, "SandboxAdapter", SyntaxOkSandbox)
     monkeypatch.setattr(
         scoring, "score_candidate_per_step", lambda code: dict(NO_VETO_PER_STEP))
 
