@@ -3505,8 +3505,28 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 	// the max in case llama-server emits a fat usage payload at the end.
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
+	// Diagnostic for the fenced sub-call only: the live failure is that the
+	// server generates a full file while this reader sees no delta at all,
+	// and every direct reproduction of the same request streams in ~0.25s.
+	// Recording what actually came back over the wire is what distinguishes
+	// "nothing was sent" from "something was sent and not parsed".
+	rawLines, firstLine := 0, ""
+	if grammar == rawEmissionSentinel {
+		log.Printf("[agent] fenced sub-call response: status=%s content-type=%q transfer-encoding=%v content-length=%d",
+			resp.Status, resp.Header.Get("Content-Type"),
+			resp.TransferEncoding, resp.ContentLength)
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
+		if grammar == rawEmissionSentinel {
+			rawLines++
+			if firstLine == "" && strings.TrimSpace(line) != "" {
+				firstLine = line
+				log.Printf("[agent] fenced sub-call first wire line after %s: %s",
+					time.Since(sentAt).Round(time.Millisecond), truncateStr(line, 160))
+			}
+		}
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -3655,8 +3675,9 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 		// on a large context were cut at the watchdog with the file already
 		// in reasoning_content, and the run died with only the first file.
 		if grammar == rawEmissionSentinel && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
-			log.Printf("[agent] fenced sub-call stream cut (%v); reasoning_content held %d chars, content %d",
-				err, reasoningBuf.Len(), contentBuf.Len())
+			log.Printf("[agent] fenced sub-call stream cut (%v) after %s; wire lines=%d first=%q; reasoning_content held %d chars, content %d",
+				err, time.Since(sentAt).Round(time.Millisecond), rawLines,
+				truncateStr(firstLine, 120), reasoningBuf.Len(), contentBuf.Len())
 			if reasoningBuf.Len() > 0 {
 				if body := extractFencedContent(reasoningBuf.String()); body != "" &&
 					strings.TrimSpace(body) != rawEmissionSentinel {
