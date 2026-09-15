@@ -3070,3 +3070,44 @@ func TestFencedFetchMakesNoSubCallOnceTheSessionIsDisabled(t *testing.T) {
 		t.Errorf("no sub-call may be made once the channel is disabled, got %d", calls)
 	}
 }
+
+// A conversationally-phrased BUILD request must not be misread as a question
+// and capped at the conversational tier. The lost-and-found acceptance prompt
+// (2026-09-15) described item fields as "(what it is, where it was found)";
+// the ", where" relative clause tripped the question heuristic, so a full
+// web-app build was classified T0 chat, capped at 12 turns, and never
+// finished. A relative clause keeps subject-verb order; only an inverted
+// clause ("what DOES x do") is a question.
+func TestClassifyAgentTierDescriptiveWhClauseIsNotAQuestion(t *testing.T) {
+	build := "our school office gets buried in lost property. i want a simple web " +
+		"page where a staff member can post an item (what it is, where it was found) " +
+		"and later, when someone comes for it, mark it as claimed with the claimants " +
+		"name so it drops off the open list onto a claimed list. it needs to keep " +
+		"working after the office pc restarts. python please, and put how to run it in a readme"
+	if isQuestionMessage(build) {
+		t.Errorf("a descriptive field list (what it is, where it was found) must not read as a question")
+	}
+	if got := classifyAgentTier(build); got == Tier0Conversational {
+		t.Errorf("classifyAgentTier = T0 — a web-app build must not be capped at the conversational tier")
+	}
+	// Inversion is still a question, with or without a '?'. The clause opener
+	// is the wh-word immediately after ", " or ". ".
+	for _, q := range []string{
+		"In orders.py, what does find_duplicates do",
+		"the config loads. where is it read from",
+		"looks fine. how do I run the tests",
+	} {
+		if !isQuestionMessage(q) {
+			t.Errorf("inverted wh-clause must read as a question: %q", q)
+		}
+	}
+	// Relative clauses are descriptive, not questions.
+	for _, d := range []string{
+		"save the row with what it is and where it came from",
+		"log when it happened and who it belonged to",
+	} {
+		if isQuestionMessage(d) {
+			t.Errorf("relative clause must not read as a question: %q", d)
+		}
+	}
+}

@@ -6207,9 +6207,57 @@ func isQuestionMessage(message string) bool {
 		if strings.HasPrefix(lower, w) {
 			return true
 		}
-		// Or opening a clause: "In orders.py, what does X do" carries no
-		// question mark at all but is plainly a question.
-		if strings.Contains(lower, ", "+w) || strings.Contains(lower, ". "+w) {
+	}
+	// A wh-word or fronted auxiliary opening a MID-message clause: "In
+	// orders.py, what does X do" is a question with no "?". For a wh-word
+	// this counts ONLY when the clause is INVERTED -- the verb follows the
+	// wh-word ("what DOES x do", "where IS it"). A relative clause keeps
+	// subject-verb order ("what it is", "where it was found") and is
+	// descriptive, not a question. Requiring inversion stops a field list
+	// like "post an item (what it is, where it was found)" from being read as
+	// a question and misrouted to the 12-turn conversational tier, which caps
+	// the run and skips planning (measured on the lost-and-found scenario:
+	// the whole build was capped at 12 turns and never finished). A fronted
+	// auxiliary opener (", is the sandbox read-only") is already inverted.
+	for _, opener := range []string{", ", ". "} {
+		for _, w := range questionStarters {
+			idx := strings.Index(lower, opener+w)
+			if idx < 0 {
+				continue
+			}
+			if !whClauseWords[w] {
+				return true // an auxiliary/contraction opener is already a question
+			}
+			after := lower[idx+len(opener)+len(w):]
+			if startsWithInterrogativeVerb(after) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// whClauseWords are the interrogative words that ALSO open ordinary relative
+// clauses, so a mid-message occurrence is a question only when inverted.
+var whClauseWords = map[string]bool{
+	"why": true, "what": true, "when": true,
+	"where": true, "who": true, "which": true, "how": true,
+}
+
+// interrogativeVerbs are the auxiliaries/copulas that immediately follow the
+// wh-word in an inverted question ("what DOES", "where IS", "who WAS").
+var interrogativeVerbs = []string{
+	"is ", "are ", "was ", "were ", "does ", "do ", "did ",
+	"can ", "could ", "will ", "would ", "should ", "shall ",
+	"has ", "have ", "had ", "am ", "may ", "might ", "'s ",
+}
+
+// startsWithInterrogativeVerb reports whether the text right after a wh-word
+// begins with an auxiliary/copula -- the mark of question inversion.
+func startsWithInterrogativeVerb(s string) bool {
+	s = strings.TrimLeft(s, " ")
+	for _, v := range interrogativeVerbs {
+		if strings.HasPrefix(s, v) {
 			return true
 		}
 	}
