@@ -3390,9 +3390,13 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 	// HTTP request, which ends the scanner loop and closes the slot
 	// server-side -- the same path a client disconnect already takes, so no
 	// request or goroutine outlives it. Ordinary turns are untouched.
+	// The fenced sub-call is the one path with a progress watchdog and wire
+	// diagnostics; naming the condition keeps the four places that ask in
+	// agreement.
+	fencedSubCall := grammar == rawEmissionSentinel
 	progress := func() {}
 	armStalled := func() {}
-	if grammar == rawEmissionSentinel {
+	if fencedSubCall {
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithCancel(reqCtx)
 		defer cancel()
@@ -3525,7 +3529,7 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 	// Recording what actually came back over the wire is what distinguishes
 	// "nothing was sent" from "something was sent and not parsed".
 	rawLines, firstLine := 0, ""
-	if grammar == rawEmissionSentinel {
+	if fencedSubCall {
 		log.Printf("[agent] fenced sub-call response: status=%s content-type=%q transfer-encoding=%v content-length=%d",
 			resp.Status, resp.Header.Get("Content-Type"),
 			resp.TransferEncoding, resp.ContentLength)
@@ -3533,7 +3537,7 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if grammar == rawEmissionSentinel {
+		if fencedSubCall {
 			rawLines++
 			if firstLine == "" && strings.TrimSpace(line) != "" {
 				firstLine = line
@@ -3690,7 +3694,7 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 		// salvaged). Observed 2026-09-14: fenced sub-calls for a second file
 		// on a large context were cut at the watchdog with the file already
 		// in reasoning_content, and the run died with only the first file.
-		if grammar == rawEmissionSentinel && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
+		if fencedSubCall && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
 			log.Printf("[agent] fenced sub-call stream cut (%v) after %s; wire lines=%d first=%q; reasoning_content held %d chars, content %d",
 				err, time.Since(sentAt).Round(time.Millisecond), rawLines,
 				truncateStr(firstLine, 120), reasoningBuf.Len(), contentBuf.Len())

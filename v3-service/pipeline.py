@@ -1616,12 +1616,6 @@ def _dead_oracle_consensus(problem, task_id, llm, plan_search, probe_code,
     return agreed[0], tokens
 
 
-def _structural_veto_applies(smoke_language: str) -> bool:
-    """The structural veto resolves direct-identifier calls with the Python
-    grammar; it has no meaning for any other target language."""
-    return smoke_language in ("python", "py")
-
-
 class V3PipelineService:
     """Full V3 pipeline for a single coding task, with streaming progress."""
 
@@ -2743,7 +2737,7 @@ class V3PipelineService:
             # `rgba(...)` in a stylesheet as a call to rgba, and a template
             # that had passed its smoke check was vetoed into five minutes of
             # repair for a NameError no runtime could raise (2026-09-14).
-            if passing and not _structural_veto_applies(smoke_language):
+            if passing and smoke_language not in ("python", "py"):
                 print(f"  [structural] veto skipped: {smoke_language} is not Python", flush=True)
             elif passing:
                 # #147: gate on `passing` alone, not `passing and files`. The
