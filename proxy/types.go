@@ -1018,6 +1018,15 @@ type AgentContext struct {
 	// allowance. A successful resolution clears the entry.
 	FencedFailures map[string]int
 
+	// FencedStalls counts fenced sub-calls cut with no content this session,
+	// across ALL paths (unlike FencedFailures, which is per-path). The stall
+	// is a property of the session's llama-server state, not the file: once
+	// one fenced fetch opens a stream that then says nothing, the next file's
+	// fetch stalls the same way. After the first stall the channel is turned
+	// off session-wide (fencedChannelDisabledForSession) and writes go inline,
+	// which the swallowed-content detector now makes safe.
+	FencedStalls int
+
 	// RequestCtx is the RESPONSE lifetime: alive for finalisation after the
 	// work context has been cancelled. Ctx is the WORK lifetime -- LLM calls,
 	// tools, gates, V3 and the sandbox all hang off it -- and it ends one

@@ -3021,3 +3021,52 @@ func TestNonEditToolsAreNotSubjectToTheContentCheck(t *testing.T) {
 		t.Error("a tool with no content/old_str/new_str field must be exempt")
 	}
 }
+
+// --- fenced channel session-wide disable (scenarios C, E, 2026-09-15) -------
+//
+// The fenced sub-call stalls (opens a stream, then silence) as a property of
+// the session's llama state, so once one file's fetch stalls the next file's
+// stalls too. After the first stall the channel is off session-wide and writes
+// go inline (now safe via the swallowed-content detector), instead of paying a
+// ~25s watchdog cut per remaining file.
+
+func TestFencedChannelDisablesAfterOneStall(t *testing.T) {
+	ctx := &AgentContext{}
+	if fencedChannelDisabledForSession(ctx) {
+		t.Fatal("a clean session must not have the channel disabled")
+	}
+	ctx.FencedStalls = fencedSessionStallLimit
+	if !fencedChannelDisabledForSession(ctx) {
+		t.Fatal("reaching the stall limit must disable the channel session-wide")
+	}
+}
+
+func TestFencedFetchMakesNoSubCallOnceTheSessionIsDisabled(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	ctx := llmTestCtx(srv.URL)
+	ctx.FencedStalls = fencedSessionStallLimit // already stalled earlier this run
+
+	_, err := fetchFencedContent(ctx, "the original @fenced call", "second_file.py")
+	if err == nil {
+		t.Fatal("a disabled fenced channel must not resolve content")
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Errorf("the error should explain the channel stalled: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 0 {
+		t.Errorf("no sub-call may be made once the channel is disabled, got %d", calls)
+	}
+}

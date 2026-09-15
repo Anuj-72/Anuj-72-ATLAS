@@ -1587,8 +1587,16 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							fetched, ferr := fetchFencedContent(ctx, rawResponseForFence(parsed), wfInput.Path)
 							if ferr != nil {
 								log.Printf("[agent] fenced-content fetch failed for %s: %v", wfInput.Path, ferr)
-								st.bounceToolCall(ctx, "write_file",
-									"You wrote \"content\": \"@fenced\" but no fenced block followed. Either reply with the complete file in one fenced code block when asked, or re-issue write_file with the full content inline.")
+								fencedBounce := "You wrote \"content\": \"@fenced\" but no fenced block followed. Either reply with the complete file in one fenced code block when asked, or re-issue write_file with the full content inline."
+								if fencedChannelDisabledForSession(ctx) {
+									// The channel is off for the rest of the run;
+									// telling the model to try fenced again would
+									// only stall. Steer it to inline, the safe path.
+									fencedBounce = fmt.Sprintf(
+										"The fenced-content channel stalled earlier in this run and is now off for the rest of the session — a fenced sub-call would only stall again. Re-issue write_file for %s with the COMPLETE file inline in the content field (write any inner double-quote as \\\"), or make a targeted change with edit_file or structural_edit.",
+										wfInput.Path)
+								}
+								st.bounceToolCall(ctx, "write_file", fencedBounce)
 								// A refusal here is a failed call like any
 								// other, and this branch returned before every
 								// mechanism that counts one. The same defect
@@ -5422,6 +5430,21 @@ func fencedBudgetExhausted(ctx *AgentContext, path string) bool {
 	return ctx != nil && ctx.FencedFailures[fencedKey(ctx, path)] >= maxFencedFailuresPerPath
 }
 
+// fencedSessionStallLimit is how many zero-content fenced sub-calls a session
+// tolerates before the channel is turned off for the rest of the run. One: the
+// stall reflects the session's llama-server state, so the first stall predicts
+// the rest, and every later @fenced would pay another ~25s watchdog cut for
+// nothing. Two acceptance runs (2026-09-15) lost their budget to repeated
+// stalls across files. Inline writes are the fallback and are now defended by
+// the swallowed-content detector.
+const fencedSessionStallLimit = 1
+
+// fencedChannelDisabledForSession reports whether the fenced channel has
+// stalled enough this session to be turned off for every remaining write.
+func fencedChannelDisabledForSession(ctx *AgentContext) bool {
+	return ctx != nil && ctx.FencedStalls >= fencedSessionStallLimit
+}
+
 // fencedKey canonicalises the target so equivalent spellings share one
 // allowance. Keying on raw model input let "solve.py" and "./solve.py" hold
 // separate budgets, which is the same restart-the-counter hole one level
@@ -5466,6 +5489,12 @@ func fencedFitsRemainingBudget(ctx *AgentContext) bool {
 }
 
 func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error) {
+	if fencedChannelDisabledForSession(ctx) {
+		// The channel already stalled this session; a sub-call would only
+		// stall again. Fail without making it, so no watchdog time is spent.
+		return "", fmt.Errorf("the fenced channel stalled earlier this session "+
+			"and is off for the rest of the run; send %s inline or edit it instead", path)
+	}
 	if fencedBudgetExhausted(ctx, path) {
 		return "", fmt.Errorf("fenced resolution for %s has already failed %d times "+
 			"this session; send the file inline or edit it instead", path,
@@ -5543,6 +5572,10 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 			if ctx.Ctx != nil && ctx.Ctx.Err() != nil {
 				return "", err
 			}
+			// A watchdog-cut zero-content fetch. Counted session-wide (not just
+			// per-path) because the next file's fetch will stall the same way;
+			// once this reaches the limit the channel is off for the run.
+			ctx.FencedStalls++
 			lastErr = err
 			continue
 		}
