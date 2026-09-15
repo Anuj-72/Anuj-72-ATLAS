@@ -860,3 +860,50 @@ def test_capture_and_diagnostic_allocation_are_independent(monkeypatch, tmp_path
               plan_candidates=[RING2_CANDIDATE.replace("strip", "rstrip")],
               diagnostic_total=3)
     assert list(empty.iterdir()) == []
+
+
+# --- interactive repair budget guard (scenarios C, E, 2026-09-15) -----------
+#
+# For an interactive task the only verification signal is "does it compile".
+# The repair phase is reached only when NO candidate passed, so the sole
+# compiling code is then the model's baseline. Repairing non-compiling
+# candidates back toward that same bar cannot prove an improvement and burned
+# ~50% of the session in two acceptance runs. Skip repair when the baseline
+# compiles; keep it when it does not.
+
+def test_interactive_repair_is_skipped_when_the_baseline_compiles(monkeypatch):
+    BASELINE = "print('a flask app that compiles')\n"
+    service, _calls = _service(monkeypatch, task_type="interactive")
+    # Candidates fail the compile smoke; the baseline passes it.
+    monkeypatch.setattr(scoring, "smoke_compile_check",
+        lambda code, sandbox, language=None, filename="": (code == BASELINE, "ok", ""))
+    repaired = {"n": 0}
+
+    def _repair(*a, **k):
+        repaired["n"] += 1
+        return SimpleNamespace(repairs=[], total_tokens=0)
+    service.pr_cot = SimpleNamespace(repair=_repair)
+
+    result = service.run("build a flask web page for the office",
+                         task_id="t", file_path="app.py", baseline_code=BASELINE)
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "repair_skip_baseline_ok" in stages, stages
+    assert "phase3" not in stages, "the repair phase must be skipped"
+    assert repaired["n"] == 0, "PR-CoT repair must not run"
+    # No verified candidate is claimed; the proxy falls back to the baseline.
+    assert result["passed"] is False
+
+
+def test_interactive_repair_still_runs_when_the_baseline_does_not_compile(monkeypatch):
+    # No compiling fallback exists, so repair is the only hope and must run.
+    service, _calls = _service(monkeypatch, task_type="interactive")
+    monkeypatch.setattr(scoring, "smoke_compile_check",
+        lambda code, sandbox, language=None, filename="": (False, "", "boom"))
+    result = service.run("build a flask web page for the office",
+                         task_id="t", file_path="app.py",
+                         baseline_code="def broken(:\n")  # does not compile
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "repair_skip_baseline_ok" not in stages, stages
+    assert "phase3" in stages, "repair must run when nothing compiles"

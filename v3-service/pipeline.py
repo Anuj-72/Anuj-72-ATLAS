@@ -2954,6 +2954,35 @@ class V3PipelineService:
             check_client()
             if out_of_budget():
                 return finish_with_best("budget spent before the repair phase")
+            # This phase is reached only when NO candidate passed. For an
+            # interactive task the only verification signal is "does it
+            # compile" (no behavioural oracle: a Flask/pygame/curses program
+            # can't be run to completion in the sandbox), so the sole compiling
+            # code at this point is the model's baseline. Repair would spend the
+            # budget trying to fix non-compiling candidates back toward that
+            # same compile bar; a repaired-to-compiling candidate is no better
+            # verified than a compiling baseline, and finish_with_best returns
+            # no passing candidate here anyway, so the proxy falls back to this
+            # exact baseline in the end. Two acceptance scenarios (2026-09-15,
+            # trip-splitter and lost-and-found) spent ~50% of the session in
+            # this loop to deliver the baseline, starving the agent loop of the
+            # time it needs to RUN and behaviourally verify the app. Skip repair
+            # when a compiling baseline exists; keep it when the baseline also
+            # fails to compile, since then there is no working fallback to hand
+            # back. Algorithmic tasks are unaffected -- their repair can PROVE
+            # an improvement against self-tests.
+            if task_type == "interactive" and baseline_code:
+                base_ok, _, _ = scoring.smoke_compile_check(
+                    baseline_code, sandbox, language=smoke_language, filename=file_path)
+                if base_ok:
+                    emit("repair_skip_baseline_ok",
+                         "interactive task and the baseline compiles — repair on "
+                         "compile-only candidates cannot prove an improvement over "
+                         "it; delivering the baseline and returning the budget to "
+                         "the agent loop",
+                         strategy="repair", task_type=task_type)
+                    return finish_with_best(
+                        "interactive task: baseline meets the compile bar, repair skipped")
             emit("phase3", "All candidates failed — entering repair phase...",
                  failing=len([c for c in candidates if not c.get("passed")]))
 
