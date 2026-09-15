@@ -1945,7 +1945,7 @@ class V3PipelineService:
             # Non-Python candidates always use the language-aware syntax path.
             # Python self-tests cannot establish correctness for another language.
             if smoke_language not in ("python", "py"):
-                ok, out, err = scoring.smoke_compile_check(code, sandbox, language=smoke_language)
+                ok, out, err = scoring.smoke_compile_check(code, sandbox, language=smoke_language, filename=file_path)
                 emit("smoke_check", f"compile={'OK' if ok else 'FAIL'} ({smoke_language})")
                 if not ok:
                     return ok, out, err, verification_evidence
@@ -1959,7 +1959,7 @@ class V3PipelineService:
                 # PC-048: pass the detected language so HTML/JSON/etc. files
                 # don't get parsed as Python (which produces spurious
                 # SYNTAX_ERROR cascades into PR-CoT repair + LLM timeouts).
-                ok, out, err = scoring.smoke_compile_check(code, sandbox, language=smoke_language)
+                ok, out, err = scoring.smoke_compile_check(code, sandbox, language=smoke_language, filename=file_path)
                 emit("smoke_check", f"compile={'OK' if ok else 'FAIL'} ({smoke_language})")
                 if not ok:
                     return ok, out, err, verification_evidence
@@ -2132,7 +2132,7 @@ class V3PipelineService:
                 _inc = _evaluate_candidate(
                     file_path, baseline_code,
                     scoring.smoke_compile_check(
-                        baseline_code, sandbox, language=smoke_language)[0],
+                        baseline_code, sandbox, language=smoke_language, filename=file_path)[0],
                     _has_oracle, emit, sandbox, task=_task)
                 capture.note_incumbent(code=baseline_code, record=_inc,
                                        adapter=_inc["adapter_id"])

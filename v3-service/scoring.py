@@ -384,7 +384,7 @@ def classify_task_type(problem: str) -> str:
     return "algorithmic"
 
 
-def smoke_compile_check(code: str, sandbox, language: str = "python") -> Tuple[bool, str, str]:
+def smoke_compile_check(code: str, sandbox, language: str = "python", filename: str = "") -> Tuple[bool, str, str]:
     """Lightweight verification for interactive tasks: code parses + compiles.
 
     Replaces synthetic-I/O self-tests for tasks where (input -> output)
@@ -405,7 +405,10 @@ def smoke_compile_check(code: str, sandbox, language: str = "python") -> Tuple[b
     normalized = {
         "py": "python", "htm": "html", "yml": "yaml",
     }.get(lang, lang)
-    return sandbox.syntax_check(code, normalized)
+    # The filename travels so the sandbox can scope path-dependent checks -- a
+    # Jinja-template parse applies to templates/*.html but not to Vue/Angular
+    # HTML elsewhere, and it cannot tell them apart from the bytes alone.
+    return sandbox.syntax_check(code, normalized, filename)
 
 
 BUILD_EVIDENCE_LIMIT = 4000
