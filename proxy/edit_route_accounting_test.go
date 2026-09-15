@@ -426,10 +426,15 @@ type editCase struct {
 	// ownBytesTerminal is the terminal a run reaches after this tool lands
 	// its OWN bytes and the model runs the file. edit_file, insert_after and
 	// replace_lines observe the syntax of the bytes they land, so the ledger
-	// holds a passing validation and the run completes. structural_edit lands
-	// bytes with validation deliberately not run (its result must not read the
-	// service's ok as a syntax pass), so its mutation debt cannot settle and
-	// the run ends unresolved_mutation_debt: honest, and a separate limit.
+	// holds a passing validation. structural_edit lands bytes with validation
+	// deliberately not run -- its result must not read the service's ok as a
+	// syntax pass, and it still does not. What settles its debt is the run
+	// the script makes: `python3 mod.py` exiting 0 is recorded as an
+	// execution verdict, its own kind, against the bytes that ran. So all four
+	// tools complete on the same evidence. Before that, structural_edit ended
+	// unresolved_mutation_debt after a passing run, and a live acceptance run
+	// spent its last turns on that phantom (2026-09-15); without a real
+	// passing run the debt still stands, see TestACleanExecutionSettlesContentDebt.
 	ownBytesTerminal [2]string
 }
 
@@ -445,7 +450,7 @@ func editCases() []editCase {
 			return stepStructural("mod.py", "function:helper", "def helper():\n    return 3\n")
 		}, "return 3",
 			strings.Replace(seed, "    return 1\n", "    return 9\n", 1), "return 9",
-			[2]string{"incomplete", "unresolved_mutation_debt"}},
+			[2]string{"completed", "deliverables_demonstrated"}},
 		{"insert_after", func(t *testing.T) map[string]interface{} {
 			return stepInsertAfter("mod.py", lineOf(t, seed, "import sys"), "INSERTED = 4")
 		}, "INSERTED = 4",
