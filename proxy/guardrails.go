@@ -87,7 +87,52 @@ func sanitizeFileContent(filePath, content string) (string, bool) {
 		}
 		cleaned, modified = next, true
 	}
+	// A body that arrived escaped for the JSON channel and was delivered
+	// verbatim is not a file, it is one long line of "\n" text.
+	if repaired, ok := repairEscapedBody(cleaned); ok {
+		cleaned, modified = repaired, true
+	}
 	return cleaned, modified
+}
+
+// repairEscapedBody decodes a file body that arrived with literal escape
+// sequences instead of real characters.
+//
+// The signal is the whole shape, not the presence of a \n: the content has
+// NOT ONE real newline anywhere, yet several literal \n sequences. Only a
+// body that was escaped for the JSON channel and then written through
+// verbatim looks like that. A genuine file that contains \n on purpose -- a
+// printf, a regex, a docstring -- still has real newlines of its own,
+// including the trailing one almost every file ends with, so it is never
+// touched here.
+//
+// Observed 2026-09-14: a delivered README.md was a single 876-character line
+// whose entire structure was literal \n, which is unreadable as the
+// installation instructions the user asked for.
+func repairEscapedBody(content string) (string, bool) {
+	if strings.ContainsAny(content, "\n\r") {
+		return content, false
+	}
+	// Two guards against a legitimate one-liner (`printf 'a\nb\n'`): it has
+	// to look like a whole file, and carry more than an incidental escape.
+	if len(content) < 120 || strings.Count(content, `\n`) < 3 {
+		return content, false
+	}
+	// Prefer a real JSON string decode, which also handles \t, \" and \\
+	// consistently. Fall back to the unambiguous sequences when the body is
+	// not a valid JSON string literal (a stray backslash, an unescaped quote).
+	var decoded string
+	if err := json.Unmarshal([]byte(`"`+content+`"`), &decoded); err == nil {
+		if strings.Contains(decoded, "\n") {
+			return decoded, true
+		}
+		return content, false
+	}
+	repaired := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\"`, `"`).Replace(content)
+	if repaired == content || !strings.Contains(repaired, "\n") {
+		return content, false
+	}
+	return repaired, true
 }
 
 // isDocumentAsset reports whether a path is prose rather than code.

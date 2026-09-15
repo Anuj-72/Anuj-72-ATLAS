@@ -2091,3 +2091,55 @@ func TestChainedInstallThenServerStartIsRedirected(t *testing.T) {
 		t.Errorf("a chained compile was wrongly redirected:\n%s", got)
 	}
 }
+
+// A file body escaped for the JSON channel and delivered verbatim is one long
+// line of "\n" text, not a file. Observed 2026-09-14: a delivered README.md
+// was a single 876-character line, unreadable as the install instructions the
+// user asked for. The repair must fire there and nowhere near a genuine file.
+func TestEscapedBodyIsRepairedOnlyWhenTheWholeFileIsEscaped(t *testing.T) {
+	// The real shape, from the delivered artifact.
+	escapedReadme := `# Running Club Website\n\nThis is a simple web application to track runs.\n\n## Setup and Installation\n\n1. **Install dependencies**:\n   ` +
+		"```bash\\npip install -r requirements.txt\\n```" +
+		`\n\n2. **Run the application**:\n   ` +
+		"```bash\\npython3 app.py\\n```" +
+		`\n\nOnce started, the site is at http://127.0.0.1:5000.`
+
+	got, repaired := repairEscapedBody(escapedReadme)
+	if !repaired {
+		t.Fatal("the fully escaped README was not repaired")
+	}
+	if strings.Contains(got, `\n`) {
+		t.Errorf("literal escapes survived the repair:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n"); lines < 10 {
+		t.Errorf("repaired README has %d newlines, want a real multi-line document", lines)
+	}
+	if !strings.Contains(got, "pip install -r requirements.txt") {
+		t.Errorf("repair lost the install command:\n%s", got)
+	}
+
+	// Everything that must NOT be touched.
+	for _, c := range []struct {
+		name, body string
+	}{
+		{"a genuine multi-line file that uses \\n in a string",
+			"import sys\n\ndef main():\n    sys.stdout.write(\"a\\nb\\n\")\n    return 0\n"},
+		{"a short one-liner that legitimately contains escapes",
+			`printf 'a\nb\nc\n'`},
+		{"a normal file with no escapes at all",
+			"def solve():\n    return 7\n"},
+		{"an escaped-looking body that is too short to be a file",
+			`a\nb\nc`},
+	} {
+		if out, changed := repairEscapedBody(c.body); changed || out != c.body {
+			t.Errorf("%s was rewritten:\n  in:  %q\n  out: %q", c.name, c.body, out)
+		}
+	}
+
+	// And it runs as part of the ordinary write sanitizer.
+	cleaned, modified := sanitizeFileContent("README.md", escapedReadme)
+	if !modified || strings.Contains(cleaned, `\n`) {
+		t.Errorf("sanitizeFileContent did not repair the escaped body (modified=%v):\n%s",
+			modified, cleaned)
+	}
+}
