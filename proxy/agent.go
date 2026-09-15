@@ -5520,6 +5520,13 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 		if attempt > 0 && !fencedFitsRemainingBudget(ctx) {
 			break // a retry that cannot finish and still be validated
 		}
+		// A stall on attempt 0 already raised FencedStalls to the disable
+		// limit; a retry would only pay another watchdog cut for a channel
+		// the session has given up on. Stop here and let the caller steer the
+		// model inline, reclaiming that ~25s on the file that first stalls.
+		if attempt > 0 && fencedChannelDisabledForSession(ctx) {
+			break
+		}
 		attemptStart := time.Now()
 		reply, tokens, err := callLLMOnceWithGrammar(ctx, msgs, 0.2, rawEmissionSentinel)
 		elapsed := time.Since(attemptStart)
@@ -6245,11 +6252,18 @@ var whClauseWords = map[string]bool{
 }
 
 // interrogativeVerbs are the auxiliaries/copulas that immediately follow the
-// wh-word in an inverted question ("what DOES", "where IS", "who WAS").
+// wh-word in an inverted question ("what DOES x do", "where IS it"). The
+// PAST-tense auxiliaries (was/were/did/had) are deliberately absent: a field
+// list like "(what was lost, where were they found)" reads as inverted with
+// them and would be misrouted to the capped conversational tier, and the
+// classifier's asymmetry makes that the expensive error (a task capped and
+// unplanned fails) while the cost of missing a rare past-tense mid-clause
+// question with no "?" is one wasted planner call. Present-tense and modal
+// questions -- the common forms -- are unaffected.
 var interrogativeVerbs = []string{
-	"is ", "are ", "was ", "were ", "does ", "do ", "did ",
-	"can ", "could ", "will ", "would ", "should ", "shall ",
-	"has ", "have ", "had ", "am ", "may ", "might ", "'s ",
+	"is ", "are ", "does ", "do ", "can ", "could ", "will ",
+	"would ", "should ", "shall ", "has ", "have ", "am ",
+	"may ", "might ", "'s ",
 }
 
 // startsWithInterrogativeVerb reports whether the text right after a wh-word

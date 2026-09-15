@@ -3111,3 +3111,26 @@ func TestClassifyAgentTierDescriptiveWhClauseIsNotAQuestion(t *testing.T) {
 		}
 	}
 }
+
+// Audit follow-up: a field list with PAST-tense wh-clauses must not read as a
+// question either. Past auxiliaries were dropped from the inverted-question
+// set, so "(what was lost, where were they found)" stays a build request.
+func TestPastTenseFieldClauseIsNotAQuestion(t *testing.T) {
+	for _, d := range []string{
+		"log an incident: what was lost, where were they found, who did report it",
+		"store what was returned and where it had been",
+	} {
+		if isQuestionMessage(d) {
+			t.Errorf("a past-tense field list must not read as a question: %q", d)
+		}
+	}
+	// Present-tense and modal questions are still detected mid-message.
+	for _, q := range []string{
+		"In orders.py, what does find_duplicates do",
+		"the config loads. how do I run it",
+	} {
+		if !isQuestionMessage(q) {
+			t.Errorf("present/modal inverted question must still be detected: %q", q)
+		}
+	}
+}

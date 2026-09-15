@@ -368,3 +368,27 @@ def test_jinja_extension_named_file_is_checked(tmp_path):
         "html", "{% for x in y %) {% endfor %}", tmp_path,
         filename="emails/welcome.jinja2")
     assert any("TemplateSyntaxError" in e for e in errors), errors
+
+
+# --- subdirectory source files (audit finding, 2026-09-15) ------------------
+#
+# Once the proxy started sending the real file path, a gated source file in a
+# subdirectory (src/app.py, static/app.js) hit a language branch that writes
+# the check file to disk WITHOUT creating the parent dir -> FileNotFoundError,
+# reported as an unparseable file, refusing a legitimate write.
+
+def test_python_syntax_check_handles_a_subdirectory_path(tmp_path):
+    sandbox = _load_sandbox_module()
+    # Valid Python in a subdirectory must check clean, not FileNotFoundError.
+    assert sandbox._syntax_check_impl(
+        "python", "x = 1\n", tmp_path, filename="src/pkg/app.py") == []
+    # And a real error is still reported (not masked by a write failure).
+    errs = sandbox._syntax_check_impl(
+        "python", "def f(\n", tmp_path, filename="src/pkg/app.py")
+    assert errs and any("line" in e.lower() or "syntax" in e.lower() for e in errs), errs
+
+
+def test_javascript_syntax_check_handles_a_subdirectory_path(tmp_path):
+    sandbox = _load_sandbox_module()
+    assert sandbox._syntax_check_impl(
+        "javascript", "const x = 1;\n", tmp_path, filename="static/js/app.js") == []

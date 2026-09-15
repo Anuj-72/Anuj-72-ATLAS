@@ -538,7 +538,15 @@ def _contained_path(base: Path, *parts: str) -> Path:
     if not resolved.startswith(str(base) + os.sep):
         raise HTTPException(status_code=400,
                             detail=f"unsafe file path: {'/'.join(parts)!r}")
-    return Path(resolved)
+    path = Path(resolved)
+    # Every caller writes a check/source file under a fresh temp workspace, and
+    # the filename may carry a subdirectory ("src/app.py", "static/app.js").
+    # Create the parent so the write does not raise FileNotFoundError -- which
+    # would make the syntax check report a valid file as unparseable, and (once
+    # the proxy started sending real file paths) refuse a legitimate write of
+    # any gated source file that lives in a subdirectory.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _write_overlay_files(root: Path, files: Dict[str, str]):
@@ -1335,10 +1343,10 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
         package = _extract_java_package(code) 
 
         if package:
-            # com.exampe => com/example
+            # com.exampe => com/example (the package dir is created by
+            # _contained_path, which makes the parent for every check file)
             fpath = _contained_path(workspace, *package.split('.'),
                                     f"{class_name}.java")
-            fpath.parent.mkdir(parents=True, exist_ok=True)
         else:
             fpath = _contained_path(workspace, f"{class_name}.java")
 
@@ -1357,7 +1365,6 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
 
     elif lang == "kotlin":
         fpath = _contained_path(workspace, filename or "Source.kt")
-        fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(code)
         classes_dir = workspace / "synccheck_out"
         classes_dir.mkdir(exist_ok=True)
