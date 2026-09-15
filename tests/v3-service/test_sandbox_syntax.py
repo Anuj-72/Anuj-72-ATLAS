@@ -392,3 +392,17 @@ def test_javascript_syntax_check_handles_a_subdirectory_path(tmp_path):
     sandbox = _load_sandbox_module()
     assert sandbox._syntax_check_impl(
         "javascript", "const x = 1;\n", tmp_path, filename="static/js/app.js") == []
+
+
+# --- the Jinja checker's tool dependency must be baked (audit, 2026-09-15) ---
+#
+# _jinja_template_errors does `import jinja2`; jinja2 is NOT a user app lib the
+# sandbox installs per project, so it must be a baked CHECKER tool. Without it
+# the check fails open and every broken template ships. This ties the code's
+# import to the image's requirements so the gate cannot silently go inert.
+
+def test_jinja2_is_a_baked_sandbox_verify_dependency():
+    req = (SANDBOX_DIR / "requirements-verify.txt").read_text().lower()
+    assert "jinja2" in req, (
+        "jinja2 must be in sandbox/requirements-verify.txt — the Jinja template "
+        "syntax check imports it, and without it the check fails open")
