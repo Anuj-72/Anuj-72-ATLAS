@@ -55,7 +55,7 @@ Rules:
     * run_command      — build, test, run, curl. Verifies behavior.
     * delete_file      — remove a file
     * list_directory   — list a directory's contents
-- The verify_step MUST run a verification command — curl, pytest, python <script>, go test, npm test, cargo test, make test. ls / cat / grep do NOT verify; they only inspect.
+- The verify_step MUST exercise a behaviour the user asked for, against the running program: a request that adds or reads data (curl -X POST ... then a GET that shows it), pytest, python <script> that checks its output, go test, npm test, cargo test. Starting the server, or fetching the front page and reading a status code, is setup and does NOT verify anything. ls / cat / grep do NOT verify; they only inspect.
 - Minimum 2 steps, maximum 6. Tighter is better.
 - Cover EVERY explicit ask in the user goal: each feature, any persistence or networking the user
   asked for, and any deliverable they asked for (how to run it, a README, tests). A plan that leaves
@@ -225,8 +225,19 @@ _SERVER_START_RE = re.compile(
 # planner states it plainly in `why` — "Start the server to verify the game
 # loads". Observed live after the first fix landed, which is why this reads
 # the rationale as well as the command.
+#
+# Word order is not intent. "Start the server to verify" and "Verify the
+# server starts" say the same thing, and three winning plans in a row said it
+# the second way -- "Verify the application starts without errors", "Verify
+# the server starts successfully" -- and were scored as real verification while
+# their losing siblings, phrased "Start the server...", were flagged
+# (acceptance runs, 2026-09-15). Both orders match; "application" and
+# "service" join the nouns. Still nothing matches on a filename.
+_START_NOUNS = r"(server|app|application|service|site|page|game)"
+_START_VERBS = r"(start|starts|started|launch|launches|host|hosts|spin\s*up|spins\s*up|serve|serves|is\s+running|comes?\s+up)"
 _START_INTENT_RE = re.compile(
-    r"\b(start|launch|host|spin\s*up|serve)\b[^.]{0,40}\b(server|app|site|page|game)\b", re.I)
+    r"\b" + _START_VERBS + r"\b[^.]{0,40}\b" + _START_NOUNS + r"\b"
+    r"|\b" + _START_NOUNS + r"\b[^.]{0,40}\b" + _START_VERBS + r"\b", re.I)
 
 
 def _is_server_start(step: dict) -> bool:
