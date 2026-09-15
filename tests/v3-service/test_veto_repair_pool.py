@@ -269,7 +269,7 @@ NO_VETO_PER_STEP = dict(VETO_PER_STEP, gx_score_min=0.9, gx_score_mean=0.9)
 class SyntaxOkSandbox(FakeSandbox):
     """FakeSandbox plus the /syntax-check the non-Python smoke check needs."""
 
-    def syntax_check(self, code, language):
+    def syntax_check(self, code, language, filename=""):
         return True, "", ""
 
 

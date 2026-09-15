@@ -109,7 +109,7 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
     monkeypatch.setattr(scoring, "classify_task_type", lambda p: task_type)
     monkeypatch.setattr(scoring, "score_candidate", lambda code: (1.0, 0.1, False))
     monkeypatch.setattr(scoring, "smoke_compile_check",
-                        lambda code, sandbox, language=None: (smoke_ok, "ok", ""))
+                        lambda code, sandbox, language=None, filename="": (smoke_ok, "ok", ""))
     monkeypatch.setattr(scoring, "score_candidate_per_step",
                         lambda code: {"gx_score_min": 0.9, "gx_score_mean": 0.9,
                                       "cx_norm_max": 0.1, "first_off_rails_idx": -1,
