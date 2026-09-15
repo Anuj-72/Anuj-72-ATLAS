@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -2603,5 +2604,115 @@ func TestFencedSubCallCutsAStreamThatOpensAndGoesSilent(t *testing.T) {
 	if elapsed > 20*time.Second {
 		t.Errorf("stalled stream was not cut early: took %s, want the ~2s stalled deadline "+
 			"rather than the 60s first-content budget", elapsed.Round(time.Millisecond))
+	}
+}
+
+// A model that degenerates into repetition is the failure this system exists
+// to absorb. Ending the run the first time it happens hands back a half-built
+// project: measured 2026-09-14, a run with three of five files written was
+// terminated on the first loop with the fourth never attempted. The run must
+// answer the loop and keep working, bounded.
+func TestContentLoopIsCorrectedBeforeItEndsTheRun(t *testing.T) {
+	dir := t.TempDir()
+	const good = "def solve():\n    return 7\n\n\nprint(solve())\n"
+	var mu sync.Mutex
+	turns := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/syntax-check"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+			return
+		case strings.HasPrefix(r.URL.Path, "/v3/"), strings.HasPrefix(r.URL.Path, "/internal/"):
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		case strings.HasSuffix(r.URL.Path, "/execute"):
+			var in struct{ Code string }
+			json.NewDecoder(r.Body).Decode(&in)
+			// The workspace-alignment probe: the proxy writes a marker and
+			// asks the sandbox to read it back. Without this the run aborts
+			// as workspace_misaligned before reaching the loop under test.
+			if strings.Contains(in.Code, ".atlas-mount-probe") {
+				b, _ := os.ReadFile(filepath.Join(dir, ".atlas-mount-probe"))
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true, "stdout": string(b), "exit_code": 0})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true, "stdout": "", "exit_code": 0})
+			return
+		case !strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+			http.NotFound(w, r)
+			return
+		}
+		io.ReadAll(r.Body)
+		mu.Lock()
+		i := turns
+		turns++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if i == 0 {
+			// Turn 0: degenerate into repetition mid tool-call. The loop
+			// detector needs enough repeated tail to fire.
+			var b strings.Builder
+			b.WriteString(`{"type":"tool_call","name":"write_file","args":{"path":"solve.py","content":"`)
+			for j := 0; j < 400; j++ {
+				b.WriteString("the same line over and over and over. ")
+			}
+			d, _ := json.Marshal(map[string]interface{}{
+				"choices": []map[string]interface{}{{"delta": map[string]string{"content": b.String()}}}})
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+			return
+		}
+		// After the corrective: do the work properly, then finish.
+		var call map[string]interface{}
+		if i == 1 {
+			call = writeCall("solve.py", good)
+		} else {
+			call = map[string]interface{}{"type": "done", "summary": "wrote solve.py"}
+		}
+		c, _ := json.Marshal(call)
+		d, _ := json.Marshal(map[string]interface{}{
+			"choices": []map[string]interface{}{{"delta": map[string]string{"content": string(c)}}}})
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+	}))
+	defer srv.Close()
+
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+	ctx.PermissionMode = PermissionYolo
+	ctx.TrustMode = trustFullyTrusted
+	ctx.VerifyOnHost = true
+	ctx.MaxTurns = 0
+	recoveries := 0
+	terminal := map[string]string{}
+	ctx.StreamFn = func(et string, data interface{}) {
+		b, _ := json.Marshal(data)
+		mu.Lock()
+		defer mu.Unlock()
+		if et == "agent_loop_recovery" {
+			recoveries++
+		}
+		if et == "done" {
+			var m map[string]string
+			json.Unmarshal(b, &m)
+			for k, v := range m {
+				terminal[k] = v
+			}
+		}
+	}
+	runAgentLoop(ctx, "Write solve.py so it prints 7.")
+
+	got, _ := os.ReadFile(filepath.Join(dir, "solve.py"))
+	t.Logf("recoveries=%d status=%q reason=%q disk=%q",
+		recoveries, terminal["status"], terminal["reason"], string(got))
+
+	if recoveries == 0 {
+		t.Fatal("the repetition cut ended the run instead of correcting the model")
+	}
+	if string(got) != good {
+		t.Errorf("the run never produced the file after recovering: %q", got)
+	}
+	if !NormalizeTerminalStatus(terminal["status"]).Completed() {
+		t.Errorf("a run that recovered and did the work reported %q", terminal["status"])
 	}
 }

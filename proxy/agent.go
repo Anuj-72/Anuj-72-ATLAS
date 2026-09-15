@@ -134,6 +134,12 @@ const maxTotalFailures = 12
 // The other gates keep their own budgets — see runState.gateBounces.
 const maxGateBounces = 3
 
+// maxContentLoopRecoveries bounds how often a run answers a repetition
+// cut with a corrective. A degenerating model is the failure ATLAS exists
+// to absorb, so the first cut must not end a run that still owes work --
+// but an unbounded retry is its own hang.
+const maxContentLoopRecoveries = 2
+
 // runState is the per-run evidence the completion-honesty gates decide
 // on, plus their bounce budgets. One struct so the gates see the
 // same facts on the done and text exits instead of two hand-copied
@@ -214,6 +220,10 @@ type runState struct {
 	// rewriting an already-valid file took that gate at turn 1. Go through
 	// markWarnedRun and the value is never anything but true.
 	pendingWarnedRun map[string]bool
+	// contentLoopRecoveries counts the times this run has answered a
+	// repetition cut with a corrective instead of ending. Bounded, so a
+	// model that will not stop repeating still terminates.
+	contentLoopRecoveries int
 	// Phase 4B: how many times a raw @fenced write for a canonical path has
 	// met the run-first demand, and whether that path's one recovery has been
 	// spent. Both are session-local, bounded by the number of paths the run
@@ -1049,6 +1059,28 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// was written rather than nothing — the alternative is a user who
 			// asked a question and received silence.
 			if ctx.LastStreamCut == "content_loop" {
+				// A repetition loop is a model failure, and absorbing model
+				// failure is what this system is for. Ending the run the first
+				// time it happens hands back a half-built project: measured
+				// 2026-09-14, a run with three of five files written was
+				// terminated here with the fourth never attempted, while the
+				// corrective that names this exact failure sat unused in
+				// classifyParseFailure below. Answer the loop and keep going,
+				// bounded, before considering the partial reply an outcome.
+				if st.contentLoopRecoveries < maxContentLoopRecoveries {
+					st.contentLoopRecoveries++
+					_, corrective := classifyParseFailure(response, ctx.LastStreamCut)
+					log.Printf("[agent] content loop at turn %d — correcting and continuing (%d/%d)",
+						turn, st.contentLoopRecoveries, maxContentLoopRecoveries)
+					ctx.Stream("agent_loop_recovery", map[string]interface{}{
+						"turn": turn, "attempt": st.contentLoopRecoveries,
+						"reason": "the model began repeating itself; the stream was cut and it was told why",
+					})
+					ctx.Messages = append(ctx.Messages, AgentMessage{
+						Role: "user", Content: corrective,
+					})
+					continue
+				}
 				if salvaged, ok := recoverTruncatedText(response); ok {
 					log.Printf("[agent] salvaged %d chars of a cut text answer at turn %d", len(salvaged), turn)
 					ctx.Stream("text", map[string]string{"content": salvaged})
