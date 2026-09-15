@@ -1962,7 +1962,11 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		}
 		msg := "  \u2514\u2500 V3 unavailable, writing directly"
 		if errors.Is(err, context.DeadlineExceeded) {
-			msg = fmt.Sprintf("  \u2514\u2500 V3 exceeded %s cap, writing your version", v3CallTimeout())
+			// Not the configured ceiling: the session's remaining time can
+			// shorten this call's cap, and naming the wrong number tells the
+			// operator to raise a setting that was not the limit they hit.
+			// The exact cap and its source are in the error and the log.
+			msg = "  \u2514\u2500 V3 ran out of its time budget, writing your version"
 		}
 		return writeWithoutCandidate(ctx, path, baselineContent, msg)
 	}

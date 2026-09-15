@@ -77,6 +77,11 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 	// model's content is already syntax-gated, so the fallback is safe.
 	// ATLAS_V3_TIMEOUT (seconds) overrides; 0 restores the uncapped behavior
 	// for bench/offline use.
+	// The cap actually applied to this call, which is what a timeout must
+	// report: quoting the configured ceiling when the session's remaining
+	// time shortened it tells the operator to raise a setting that was not
+	// the limit they hit.
+	var effectiveCap time.Duration
 	if d := v3CallTimeout(); d > 0 {
 		// The cap is a per-call ceiling, not a claim on the whole run. A
 		// pipeline that spends its full 300s on the FIRST of five files
@@ -97,6 +102,7 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 				d = half
 			}
 		}
+		effectiveCap = d
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithTimeout(reqCtx, d)
 		defer cancel()
@@ -187,10 +193,17 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 		case resultErr != nil:
 			return nil, resultErr
 		case reqCtx.Err() != nil:
-			limit := v3CallTimeout()
+			limit := effectiveCap
+			source := "ATLAS_V3_TIMEOUT"
+			if configured := v3CallTimeout(); limit > 0 && limit < configured {
+				source = "half the session's remaining time; ATLAS_V3_TIMEOUT is " +
+					configured.String()
+			} else if limit == 0 {
+				limit = configured
+			}
 			return nil, fmt.Errorf("V3 was still working when this proxy hung up at the "+
-				"%s cap (ATLAS_V3_TIMEOUT); its work is discarded and the write falls back "+
-				"to the model's own output: %w", limit, reqCtx.Err())
+				"%s cap (%s); its work is discarded and the write falls back "+
+				"to the model's own output: %w", limit, source, reqCtx.Err())
 		case scanner.Err() != nil:
 			return nil, fmt.Errorf("V3 stream ended early: %w", scanner.Err())
 		default:
