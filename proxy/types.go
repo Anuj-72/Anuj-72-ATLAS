@@ -208,11 +208,20 @@ const (
 	// carry the DECISIVE one: the failure that caused the refusal, or the
 	// applicable result for an applied write.
 	ValidationKindStructural ValidationKind = "structural"
+
+	// ValidationKindExecution: the run executed these exact bytes and the
+	// process came up clean -- exited 0, or is still serving after its settle
+	// window. That is stronger evidence than a parse, and it is what settles
+	// a content debt the parse-based routes never got to settle (a
+	// structural_edit that landed through V3, then ran fine, was reported
+	// "never written in a checkable state" at completion, 2026-09-15).
+	// Recorded without a checkpoint: an execution is not a write.
+	ValidationKindExecution ValidationKind = "execution"
 )
 
 func (k ValidationKind) Classified() bool {
 	switch k {
-	case ValidationKindNone, ValidationKindSyntax, ValidationKindStructural:
+	case ValidationKindNone, ValidationKindSyntax, ValidationKindStructural, ValidationKindExecution:
 		return true
 	}
 	return false

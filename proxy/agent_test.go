@@ -2716,3 +2716,219 @@ func TestContentLoopIsCorrectedBeforeItEndsTheRun(t *testing.T) {
 		t.Errorf("a run that recovered and did the work reported %q", terminal["status"])
 	}
 }
+
+// The lint named the exact defect at write time -- "calls "/add_book", but
+// no Flask route matches it" -- called it advisory, and the run finished with
+// a form that 404s (acceptance run, 2026-09-15). The exit gate must ask for it
+// before the run can finish, and a run that fixes it finishes.
+func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
+	dir := t.TempDir()
+	appPy := "from flask import Flask, render_template\n" +
+		"app = Flask(__name__)\n" +
+		"@app.route('/', methods=['GET', 'POST'])\ndef index():\n" +
+		"    return render_template('index.html')\n"
+	badPage := "<form method=\"POST\" action=\"/add_book\"><input name=\"title\"></form>\n"
+	var mu sync.Mutex
+	turns := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/syntax-check"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+			return
+		case strings.HasPrefix(r.URL.Path, "/v3/"), strings.HasPrefix(r.URL.Path, "/internal/"):
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		case strings.HasSuffix(r.URL.Path, "/execute"):
+			var in struct{ Code string }
+			json.NewDecoder(r.Body).Decode(&in)
+			if strings.Contains(in.Code, ".atlas-mount-probe") {
+				b, _ := os.ReadFile(filepath.Join(dir, ".atlas-mount-probe"))
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": string(b), "exit_code": 0})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": "", "exit_code": 0})
+			return
+		case !strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+			http.NotFound(w, r)
+			return
+		}
+		io.ReadAll(r.Body)
+		mu.Lock()
+		i := turns
+		turns++
+		mu.Unlock()
+		var call map[string]interface{}
+		switch i {
+		case 0:
+			call = writeCall("app.py", appPy)
+		case 1:
+			call = writeCall("templates/index.html", badPage)
+		case 2:
+			call = map[string]interface{}{"type": "done", "summary": "built the book site"}
+		case 3:
+			// Bounced: the model reads and fixes the action.
+			call = map[string]interface{}{"type": "tool_call", "name": "read_file",
+				"args": map[string]string{"path": "templates/index.html"}}
+		case 4:
+			call = map[string]interface{}{"type": "tool_call", "name": "edit_file",
+				"args": map[string]string{"path": "templates/index.html",
+					"old_str": `action="/add_book"`, "new_str": `action="/"`}}
+		default:
+			call = map[string]interface{}{"type": "done", "summary": "fixed the form action"}
+		}
+		c, _ := json.Marshal(call)
+		d, _ := json.Marshal(map[string]interface{}{
+			"choices": []map[string]interface{}{{"delta": map[string]string{"content": string(c)}}}})
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+	}))
+	defer srv.Close()
+
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+	ctx.PermissionMode = PermissionYolo
+	ctx.TrustMode = trustFullyTrusted
+	ctx.VerifyOnHost = true
+	ctx.MaxTurns = 0
+	var gates []string
+	terminal := map[string]string{}
+	ctx.StreamFn = func(et string, data interface{}) {
+		b, _ := json.Marshal(data)
+		mu.Lock()
+		defer mu.Unlock()
+		if et == "gate" {
+			var g struct{ Gate, Reason string }
+			if json.Unmarshal(b, &g) == nil && g.Gate == "route_contract_gate" {
+				gates = append(gates, g.Reason)
+			}
+		}
+		if et == "done" {
+			var m map[string]string
+			json.Unmarshal(b, &m)
+			for k, v := range m {
+				terminal[k] = v
+			}
+		}
+	}
+	runAgentLoop(ctx, "Create app.py and templates/index.html for a book list.")
+
+	page, _ := os.ReadFile(filepath.Join(dir, "templates/index.html"))
+	t.Logf("route gates=%d status=%q reason=%q page=%q", len(gates), terminal["status"], terminal["reason"], page)
+	if len(gates) != 1 {
+		t.Fatalf("expected exactly one route_contract_gate bounce, got %d", len(gates))
+	}
+	if !strings.Contains(gates[0], "/add_book") {
+		t.Errorf("the gate must name the unmatched target: %s", gates[0])
+	}
+	if !strings.Contains(string(page), `action="/"`) {
+		t.Errorf("the fix never landed: %q", page)
+	}
+	if !NormalizeTerminalStatus(terminal["status"]).Completed() {
+		t.Errorf("a run that fixed the route reported %q (%s)", terminal["status"], terminal["reason"])
+	}
+}
+
+// The gate is about this run's own contract. A project that already had a
+// stale form action, asked a question about, must get its answer -- the other
+// exit gates are scoped the same way (files this run warned, jobs this run
+// started), and an unscoped route gate would bounce that answer three times.
+func TestRouteContractGateLeavesAQuestionAboutAnOldProjectAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "templates"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app.py"), []byte("from flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef index():\n    return 'x'\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "templates/index.html"), []byte("<form action=\"/add_book\"></form>\n"), 0o644)
+	ctx := NewAgentContext(dir, Tier0Conversational)
+	if len(routeContractFindings(dir)) == 0 {
+		t.Fatal("fixture has no mismatch; the test proves nothing")
+	}
+	// Nothing written this session: the gate must stay out of the way.
+	if sessionWroteWebFiles(ctx) {
+		t.Fatal("an empty session claims to have written web files")
+	}
+	st := &runState{}
+	if gate, _ := st.exitGates(ctx, "what does app.py do?", "It serves one route."); gate == "route_contract_gate" {
+		t.Error("a question about a pre-existing project was bounced by the route gate")
+	}
+	// Once the run has written a page, the same mismatch is its own.
+	ctx.SessionWrites = map[string]bool{"templates/index.html": true}
+	if gate, _ := st.exitGates(ctx, "fix the form", "done"); gate != "route_contract_gate" {
+		t.Errorf("after writing the page the gate must fire, got %q", gate)
+	}
+}
+
+// A file the run executed cleanly is demonstrated, whatever parse verdict the
+// route that wrote it left behind. Observed 2026-09-15: a structural_edit
+// landed through V3 with no verdict, the server then started fine, and the
+// run was told at completion the file was never written in a checkable state.
+func TestACleanExecutionSettlesContentDebt(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "app.py"), []byte("print('served')\n"), 0o644)
+	ctx := NewAgentContext(dir, Tier2Medium)
+	key := ledgerKey(ctx, "app.py")
+	// A prior syntax checkpoint that restoration may still need...
+	observeDeliverable(ctx, key, []byte("print('old')\n"), ValidationKindSyntax, ValidationPassed, "")
+	// ...and then the state a content debt actually lives in: new bytes on
+	// disk that no route ever gave a verdict (a structural_edit that landed
+	// through V3). The ledger knows the bytes changed and knows nothing else.
+	ctx.LedgerMu.Lock()
+	d0 := ctx.Ledger[key]
+	d0.CurrentHash, d0.CurrentSize = hashBytes([]byte("print('served')\n")), len("print('served')\n")
+	d0.ValidationKind, d0.ValidationStatus, d0.ValidatedHash = ValidationKindUnknown, ValidationUnknown, ""
+	ctx.LedgerMu.Unlock()
+	newState := func() *runState {
+		return &runState{mutationDebt: map[string]*mutationDebtEntry{
+			key: {Rel: "app.py", Kind: debtContent}}}
+	}
+
+	// Naming the file is not running it.
+	st := newState()
+	settleDebtByExecution(ctx, st, "cat app.py", true)
+	if len(st.mutationDebt) != 1 {
+		t.Error("`cat app.py` settled a content debt")
+	}
+	// A failed execution settles nothing.
+	st = newState()
+	settleDebtByExecution(ctx, st, "python3 app.py", false)
+	if len(st.mutationDebt) != 1 {
+		t.Error("a failed run settled a content debt")
+	}
+	// A clean execution settles it, against the bytes that ran, as its own kind.
+	st = newState()
+	settleDebtByExecution(ctx, st, "python3 app.py", true)
+	if len(st.mutationDebt) != 0 {
+		t.Fatalf("a clean run left the debt: %v", st.mutationDebt)
+	}
+	d := ctx.Ledger[key]
+	if k, s := d.CurrentValidation(); k != ValidationKindExecution || s != ValidationPassed {
+		t.Errorf("verdict = %s/%s, want execution/passed", k, s)
+	}
+	if d.CurrentHash != hashBytes([]byte("print('served')\n")) {
+		t.Error("the verdict does not describe the bytes that ran")
+	}
+	// The syntax checkpoint was not disturbed: an execution is not a write.
+	if d.CheckpointKind != ValidationKindSyntax || string(d.CheckpointBytes) != "print('old')\n" {
+		t.Errorf("execution overwrote the syntax checkpoint: kind=%s bytes=%q", d.CheckpointKind, d.CheckpointBytes)
+	}
+
+	// The executor's own answer decides success.
+	zero, one := 0, 1
+	mk := func(v interface{}) *ToolResult { b, _ := json.Marshal(v); return &ToolResult{Success: true, Data: b} }
+	if !executionSucceeded("run_command", mk(RunCommandOutput{ExitCode: 0})) {
+		t.Error("exit 0 is a success")
+	}
+	if executionSucceeded("run_command", mk(RunCommandOutput{ExitCode: 1})) {
+		t.Error("exit 1 is not a success")
+	}
+	if executionSucceeded("run_command", mk(RunCommandOutput{ExitCode: 0, TimedOut: true})) {
+		t.Error("a killed command is not a success")
+	}
+	if !executionSucceeded("run_background", mk(RunBackgroundOutput{Running: true})) {
+		t.Error("a server still serving after its settle window is a success")
+	}
+	if executionSucceeded("run_background", mk(RunBackgroundOutput{Running: false, ExitCode: &one})) {
+		t.Error("a background job that died with exit 1 is not a success")
+	}
+	if !executionSucceeded("run_background", mk(RunBackgroundOutput{Running: false, ExitCode: &zero})) {
+		t.Error("a background script that exited 0 is a success")
+	}
+}

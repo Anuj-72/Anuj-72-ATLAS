@@ -477,6 +477,24 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		}
 		break
 	}
+	// A page this run wrote submits to a route the server never defines. The
+	// lint found it and said so at write time; marked advisory, it was
+	// ignored, and the delivered form 404ed (acceptance run, 2026-09-15).
+	// Bounded like every other exit gate: a route registered in a way the
+	// check cannot see (a blueprint prefix, a catch-all) is a real false
+	// positive, so the model can say so and finish once the bounces are spent.
+	// Scoped, like the other exit gates, to what THIS run did: it fires only
+	// when the run authored a web file. A question answered about a project
+	// that already had a stale form action is not this run's contract to
+	// keep, and bouncing that answer three times would be a false positive
+	// the user cannot act on.
+	if sessionWroteWebFiles(ctx) {
+		if broken := routeContractFindings(ctx.WorkingDir); len(broken) > 0 && s.chargeBounce("route_contract_gate") {
+			log.Printf("[agent] route contract gate: %d unmatched submit target(s) at exit (bounce %d/%d)",
+				len(broken), s.gateBounces["route_contract_gate"], maxGateBounces)
+			return "route_contract_gate", routeContractMessage(broken)
+		}
+	}
 	// A job this run started is still running. Completion is refused while a
 	// process of the run's own may still be writing (finalizeCompletion:
 	// background_work_unresolved), and that refusal replaces the model's
@@ -2165,6 +2183,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							delete(st.pendingWarnedRun, p)
 						}
 					}
+					// A clean execution is the strongest demonstration a file
+					// can get, and it settles the content debt the parse-based
+					// routes never reached.
+					settleDebtByExecution(ctx, st, rc.Command, executionSucceeded(parsed.Name, result))
 				}
 			}
 			if result.Success && len(ctx.LiteralBlocks) > 0 &&
@@ -8511,6 +8533,78 @@ func debtResolved(ctx *AgentContext, key string, e *mutationDebtEntry) bool {
 		return deliverablesDemonstrablyValid(ctx, []string{e.Dest})
 	}
 	return false
+}
+
+// sessionWroteWebFiles reports whether this run wrote a file the route
+// contract is about: a page or script that submits, or the handler file that
+// serves. It is the scope of the route-contract exit gate.
+func sessionWroteWebFiles(ctx *AgentContext) bool {
+	for rel := range ctx.SessionWrites {
+		switch strings.ToLower(filepath.Ext(rel)) {
+		case ".py", ".html", ".htm", ".js":
+			return true
+		}
+	}
+	return false
+}
+
+// executionSucceeded reads the executor's own structural answer for a
+// run_command or run_background result: exit 0 and not killed, or a
+// background job still serving after its settle window (a crash at startup
+// exits non-zero before the window ends).
+func executionSucceeded(tool string, result *ToolResult) bool {
+	if result == nil || !result.Success || len(result.Data) == 0 {
+		return false
+	}
+	switch tool {
+	case "run_command":
+		var out RunCommandOutput
+		return json.Unmarshal(result.Data, &out) == nil && out.ExitCode == 0 && !out.TimedOut
+	case "run_background":
+		var out RunBackgroundOutput
+		if json.Unmarshal(result.Data, &out) != nil {
+			return false
+		}
+		return out.Running || (out.ExitCode != nil && *out.ExitCode == 0)
+	}
+	return false
+}
+
+// settleDebtByExecution retires content debt for every owed path this command
+// executed, when the execution came up clean. The verdict is recorded against
+// the exact bytes that ran, as its own kind, and without touching the
+// checkpoint: an execution demonstrates the file, it does not author it, and
+// a syntax checkpoint that restoration may still need is left as it was.
+//
+// Observed 2026-09-15: a structural_edit landed through V3 with no parse
+// verdict of its own, the model then started the server and it ran, and the
+// run was still told at completion that the file was never written in a state
+// it could check. The model spent its last turns on that phantom instead of
+// the defect the lint had already named.
+func settleDebtByExecution(ctx *AgentContext, st *runState, command string, succeeded bool) {
+	if !succeeded || st == nil || len(st.mutationDebt) == 0 {
+		return
+	}
+	for key, e := range st.mutationDebt {
+		if e.Kind != debtContent || !executionAttempt(command, e.Rel) {
+			continue
+		}
+		data, err := os.ReadFile(key)
+		if err != nil {
+			continue
+		}
+		h := hashBytes(data)
+		ctx.LedgerMu.Lock()
+		d := ledgerEntry(ctx, key)
+		d.CurrentHash, d.CurrentSize = h, len(data)
+		d.Tombstoned, d.TombstoneReason = false, ""
+		d.ValidationKind, d.ValidationStatus = ValidationKindExecution, ValidationPassed
+		d.ValidationDetail = "executed clean: " + truncateStr(command, 80)
+		d.ValidatedHash = h
+		ctx.LedgerMu.Unlock()
+		log.Printf("[agent] %s executed clean — content debt settled by execution", e.Rel)
+	}
+	settleMutationDebt(ctx, st)
 }
 
 // unresolvedDebtPaths lists what is still owed, in a stable order, bounded for

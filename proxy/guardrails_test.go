@@ -2143,3 +2143,47 @@ func TestEscapedBodyIsRepairedOnlyWhenTheWholeFileIsEscaped(t *testing.T) {
 			modified, cleaned)
 	}
 }
+
+// The model wants "\n" then "function" and emits "\function"; the decoder
+// correctly reads the form-feed escape and the file lands with 0x0C where the
+// line break was and "unction" where the word was. Observed 2026-09-15 on
+// every rewrite of one file, commenting out four function declarations. A
+// control character followed by a letter mid-line is that mistake and nothing
+// else; a page-break form feed and a CRLF pair are left alone.
+func TestEatenEscapeLettersAreRestored(t *testing.T) {
+	// The delivered bytes, verbatim.
+	in := " // Serve the frontend\x0cunction serveStatic() {\n  app.get('/', (req, res) => {\n"
+	got, n := repairEatenEscapes(in)
+	if n != 1 {
+		t.Fatalf("repaired %d escapes, want 1", n)
+	}
+	if want := " // Serve the frontend\nfunction serveStatic() {\n  app.get('/', (req, res) => {\n"; got != want {
+		t.Errorf("form feed not restored to a line break plus f:\n got %q\nwant %q", got, want)
+	}
+
+	for _, c := range []struct {
+		name, in, want string
+		n              int
+	}{
+		{"backspace before bar", "x = 1\x08ar = 2\n", "x = 1\nbar = 2\n", 1},
+		{"carriage return ate the r of return, LF file", "  }\return x;\n", "  }\nreturn x;\n", 1},
+		{"five in one file", "a\x0cb\x0cc\x0cd\x0ce\x0cf\n", "a\nfb\nfc\nfd\nfe\nff\n", 5},
+		// Must NOT touch:
+		{"page-break form feed on its own line", "def a():\n    pass\n\x0c\ndef b():\n    pass\n", "def a():\n    pass\n\x0c\ndef b():\n    pass\n", 0},
+		{"CRLF line endings", "line one\r\nline two\r\n", "line one\r\nline two\r\n", 0},
+		{"CR-only file (its own convention)", "line one\rline two\r", "line one\rline two\r", 0},
+		{"form feed before a space", "text \x0c more\n", "text \x0c more\n", 0},
+		{"ordinary source", "def f():\n\treturn 1\n", "def f():\n\treturn 1\n", 0},
+	} {
+		got, n := repairEatenEscapes(c.in)
+		if n != c.n || got != c.want {
+			t.Errorf("%s: n=%d got %q\n   want n=%d %q", c.name, n, got, c.n, c.want)
+		}
+	}
+
+	// And it runs inside the ordinary write sanitizer.
+	cleaned, modified := sanitizeFileContent("server.js", in)
+	if !modified || strings.Contains(cleaned, "\x0c") {
+		t.Errorf("sanitizeFileContent left the form feed in place (modified=%v): %q", modified, cleaned)
+	}
+}

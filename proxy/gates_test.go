@@ -1900,3 +1900,51 @@ func TestV3LanguageSwapIsRefused(t *testing.T) {
 		t.Fatalf("empty candidate must not trip this gate: %s", why)
 	}
 }
+
+// A form action or fetch() target with no declared route is a page that
+// cannot work, and it must be answerable on its own so the exit gate can ask
+// for it -- not buried among advisories about orphaned files. The single-list
+// callers keep seeing everything.
+func TestRouteContractFindingsNameTheUnmatchedTarget(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"app.py": "from flask import Flask, render_template\n" +
+			"app = Flask(__name__)\n" +
+			"@app.route('/', methods=['GET', 'POST'])\ndef index():\n" +
+			"    return render_template('index.html')\n" +
+			"@app.route('/update/<int:book_id>', methods=['POST'])\ndef update(book_id):\n" +
+			"    return ''\n",
+		"templates/index.html": "<form method=\"POST\" action=\"/add_book\"><input name=\"title\"></form>",
+	})
+	contract := routeContractFindings(root)
+	if len(contract) != 1 || !strings.Contains(contract[0], `"/add_book"`) ||
+		!strings.Contains(contract[0], "/update/<int:book_id>") {
+		t.Fatalf("the unmatched submit target must be named with the routes that exist: %v", contract)
+	}
+	// The combined list still carries it, so existing callers see no change.
+	if !findingsContaining(assetLintFindings(root), `"/add_book"`) {
+		t.Error("assetLintFindings dropped the route-contract finding")
+	}
+	// The mutation-time note calls it a defect, not advice.
+	ctx := NewAgentContext(root, Tier2Medium)
+	note := assetLintNote(ctx)
+	if !strings.Contains(note, "cannot submit") || !strings.Contains(note, "/add_book") {
+		t.Errorf("the note must name the defect as one: %q", note)
+	}
+
+	// A matching target is not a finding.
+	writeTree(t, root, map[string]string{
+		"templates/index.html": "<form method=\"POST\" action=\"/\"><input name=\"title\"></form>",
+	})
+	if c := routeContractFindings(root); len(c) != 0 {
+		t.Errorf("a target the routes serve was flagged: %v", c)
+	}
+	// With no declared routes the check cannot judge, and says nothing.
+	writeTree(t, root, map[string]string{
+		"app.py":               "print('no routes here')\n",
+		"templates/index.html": "<form action=\"/anything\"></form>",
+	})
+	if c := routeContractFindings(root); len(c) != 0 {
+		t.Errorf("flagged a target with no routes to judge against: %v", c)
+	}
+}

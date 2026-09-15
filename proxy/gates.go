@@ -1808,12 +1808,16 @@ var (
 // advisory findings about the template/static/reference graph. Returns
 // nil for big projects (bounded walk) and on any filesystem trouble —
 // this is a best-effort advisory pass, never a blocker.
-func assetLintFindings(workingDir string) []string {
-	type entry struct {
-		rel     string
-		content string
-	}
-	var files []entry
+// lintFile is one workspace source file the asset lint reasons about.
+type lintFile struct {
+	rel     string
+	content string
+}
+
+// assetLintFiles loads the files the lint reasons about. false means the
+// project is too large to judge, and every lint answer is then "nothing".
+func assetLintFiles(workingDir string) ([]lintFile, bool) {
+	var files []lintFile
 	count := 0
 	filepath.Walk(workingDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1844,14 +1848,45 @@ func assetLintFindings(workingDir string) []string {
 			if rerr2 != nil {
 				return nil
 			}
-			files = append(files, entry{rel: filepath.ToSlash(rel), content: string(data)})
+			files = append(files, lintFile{rel: filepath.ToSlash(rel), content: string(data)})
 		}
 		return nil
 	})
 	if count > assetLintMaxFiles {
+		return nil, false
+	}
+	return files, true
+}
+
+// assetLintFindings is every finding, advisory and contract alike, in one
+// list. The mutation-time note and the exit gate ask the two halves
+// separately; this keeps the single-list callers unchanged.
+func assetLintFindings(workingDir string) []string {
+	files, ok := assetLintFiles(workingDir)
+	if !ok {
 		return nil
 	}
+	advisory, contract := assetLintFindingsFor(workingDir, files)
+	return append(advisory, contract...)
+}
 
+// routeContractFindings is only the findings that describe a page which
+// cannot work: a form action or fetch() target that no declared route serves.
+// These are not advice. A user clicking that form gets a 404 whatever else the
+// project does right, so the exit gate asks for this list by itself.
+func routeContractFindings(workingDir string) []string {
+	files, ok := assetLintFiles(workingDir)
+	if !ok {
+		return nil
+	}
+	_, contract := assetLintFindingsFor(workingDir, files)
+	return contract
+}
+
+// assetLintFindingsFor separates what is advice (an orphaned template, a
+// dangling href) from what is a broken contract between two files the model
+// wrote (a submit target with no handler).
+func assetLintFindingsFor(workingDir string, files []lintFile) (advisory, contract []string) {
 	var findings []string
 	allOther := func(self string) string {
 		var b strings.Builder
@@ -2009,7 +2044,7 @@ func assetLintFindings(workingDir string) []string {
 					}
 					seen[target] = true
 					if !routeMatches(target) {
-						findings = append(findings, fmt.Sprintf(
+						contract = append(contract, fmt.Sprintf(
 							"%s calls %q, but no Flask route matches it (routes: %s).",
 							f.rel, target, strings.Join(routeRaw, ", ")))
 					}
@@ -2075,7 +2110,23 @@ func assetLintFindings(workingDir string) []string {
 	}
 
 	sort.Strings(findings)
-	return findings
+	return findings, contract
+}
+
+// routeContractMessage is the exit gate's instruction when a page submits to
+// a route the server never defines. It carries the lint's own finding, which
+// already names the target and lists the routes that do exist.
+func routeContractMessage(findings []string) string {
+	var sb strings.Builder
+	sb.WriteString("Before finishing: a page you wrote submits to a route the server does not define, " +
+		"so that part of the site cannot work.\n\n")
+	for _, f := range findings {
+		sb.WriteString("  " + f + "\n")
+	}
+	sb.WriteString("\nEither add a handler for that path, or change the form action / fetch URL to a " +
+		"route that exists, then verify it with a request against the running server. If the " +
+		"route is registered in a way this check cannot see, say so in your summary and finish.")
+	return sb.String()
 }
 
 // assetLintNote runs the lint and formats findings the model has not
@@ -2083,25 +2134,49 @@ func assetLintFindings(workingDir string) []string {
 // in ctx.AssetLintSeen so a persistent orphan is mentioned once, not
 // after every subsequent write.
 func assetLintNote(ctx *AgentContext) string {
-	findings := assetLintFindings(ctx.WorkingDir)
-	if len(findings) == 0 {
+	files, ok := assetLintFiles(ctx.WorkingDir)
+	if !ok {
+		return ""
+	}
+	advisory, contract := assetLintFindingsFor(ctx.WorkingDir, files)
+	if len(advisory)+len(contract) == 0 {
 		return ""
 	}
 	if ctx.AssetLintSeen == nil {
 		ctx.AssetLintSeen = make(map[string]bool)
 	}
-	var fresh []string
-	for _, f := range findings {
-		if !ctx.AssetLintSeen[f] {
-			ctx.AssetLintSeen[f] = true
-			fresh = append(fresh, f)
+	fresh := func(in []string) []string {
+		var out []string
+		for _, f := range in {
+			if !ctx.AssetLintSeen[f] {
+				ctx.AssetLintSeen[f] = true
+				out = append(out, f)
+			}
 		}
+		return out
 	}
-	if len(fresh) == 0 {
+	advisory, contract = fresh(advisory), fresh(contract)
+	if len(advisory)+len(contract) == 0 {
 		return ""
 	}
-	return "Project structure check: " + strings.Join(fresh, " ") +
-		" This is advisory — fix it if these files are meant to work together."
+	var sb strings.Builder
+	if len(advisory) > 0 {
+		sb.WriteString("Project structure check: " + strings.Join(advisory, " ") +
+			" This is advisory — fix it if these files are meant to work together.")
+	}
+	// A submit target with no handler was delivered under the same
+	// "advisory" wording as an orphaned file, and a model reading it as
+	// advice shipped a form that 404s (acceptance run, 2026-09-15). It is
+	// a defect, and the run will be asked about it before it can finish.
+	if len(contract) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString(" ")
+		}
+		sb.WriteString("Route check: " + strings.Join(contract, " ") +
+			" This is a defect, not advice: that page cannot submit. Add the route or " +
+			"fix the target before finishing.")
+	}
+	return sb.String()
 }
 
 // v3RewroteBeyondTheEdit reports whether a V3 candidate changed text the

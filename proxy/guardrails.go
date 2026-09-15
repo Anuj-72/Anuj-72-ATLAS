@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,7 +93,66 @@ func sanitizeFileContent(filePath, content string) (string, bool) {
 	if repaired, ok := repairEscapedBody(cleaned); ok {
 		cleaned, modified = repaired, true
 	}
+	// A JSON escape that swallowed the first letter of the next line.
+	if repaired, n := repairEatenEscapes(cleaned); n > 0 {
+		log.Printf("[write_file] %s: restored %d line break(s) a JSON escape had eaten (\\f, \\b or \\r for \\n + letter)",
+			filePath, n)
+		cleaned, modified = repaired, true
+	}
 	return cleaned, modified
+}
+
+// repairEatenEscapes restores a newline that a JSON escape consumed together
+// with the first letter of the following line.
+//
+// The model wants "\n" then "function". What it emits, reliably enough to
+// reproduce on every rewrite of one file, is a lone backslash followed by the
+// word: "\function". The decoder is right to read that as the form-feed
+// escape, and the file lands with 0x0C where the line break was and "unction"
+// where the word was. The same slip before "bar" or "return" yields a
+// backspace or a carriage return.
+//
+// A control character immediately followed by a letter, in the middle of a
+// line of a source file, has no legitimate reading; a form feed on a line of
+// its own is a page break and is left alone, as is every CR that belongs to a
+// CRLF pair. Observed 2026-09-15: five such form feeds commented out four
+// function declarations, and the model was told about the dangling brace
+// twenty lines below the cause on each of three rewrites.
+func repairEatenEscapes(content string) (string, int) {
+	if !strings.ContainsAny(content, "\x0c\x08\r") {
+		return content, 0
+	}
+	hasLF := strings.Contains(content, "\n")
+	isWord := func(b byte) bool {
+		return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	var out strings.Builder
+	out.Grow(len(content) + 8)
+	n := 0
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		var letter byte
+		switch c {
+		case '\x0c':
+			letter = 'f'
+		case '\x08':
+			letter = 'b'
+		case '\r':
+			// Only in a file that otherwise uses LF: a CR-only file is its
+			// own convention, and a CR followed by LF is a CRLF pair.
+			if hasLF && i+1 < len(content) && content[i+1] != '\n' {
+				letter = 'r'
+			}
+		}
+		if letter != 0 && i+1 < len(content) && isWord(content[i+1]) {
+			out.WriteByte('\n')
+			out.WriteByte(letter)
+			n++
+			continue
+		}
+		out.WriteByte(c)
+	}
+	return out.String(), n
 }
 
 // repairEscapedBody decodes a file body that arrived with literal escape
