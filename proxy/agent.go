@@ -3391,11 +3391,13 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 	// server-side -- the same path a client disconnect already takes, so no
 	// request or goroutine outlives it. Ordinary turns are untouched.
 	progress := func() {}
+	armStalled := func() {}
 	if grammar == rawEmissionSentinel {
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithCancel(reqCtx)
 		defer cancel()
 		idle := fencedIdleTimeout()
+		stalled := fencedStalledTimeout()
 		var mu sync.Mutex
 		timer := time.AfterFunc(fencedFirstContentTimeout(), cancel)
 		defer timer.Stop()
@@ -3403,6 +3405,18 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 			mu.Lock()
 			defer mu.Unlock()
 			timer.Reset(idle)
+		}
+		// Once the server has sent ANY frame, generation has started, and
+		// on a healthy stream the first content frame follows in the same
+		// millisecond -- measured at 0.00s across every direct reproduction
+		// at small and large context. So a stream that has opened and then
+		// says nothing is dead, and waiting the full first-content budget
+		// for it only burns the session. Shorten the deadline instead of
+		// spending 60s twice per file on a stream that will never speak.
+		armStalled = func() {
+			mu.Lock()
+			defer mu.Unlock()
+			timer.Reset(stalled)
 		}
 	}
 	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", endpoint, bytes.NewReader(body))
@@ -3523,6 +3537,8 @@ func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperat
 			rawLines++
 			if firstLine == "" && strings.TrimSpace(line) != "" {
 				firstLine = line
+				// The stream is open and generating; content is due now.
+				armStalled()
 				log.Printf("[agent] fenced sub-call first wire line after %s: %s",
 					time.Since(sentAt).Round(time.Millisecond), truncateStr(line, 160))
 			}
@@ -5255,6 +5271,11 @@ func fenceTagForPath(path string) string {
 const (
 	defaultFencedFirstContentSec = 60
 	defaultFencedIdleSec         = 30
+	// Generous next to the 0.00s gap measured between the opening frame and
+	// the first content frame on every healthy stream, and far cheaper than
+	// spending the whole first-content budget on a stream that has gone
+	// silent after opening.
+	defaultFencedStalledSec = 25
 )
 
 func fencedFirstContentTimeout() time.Duration {
@@ -5263,6 +5284,15 @@ func fencedFirstContentTimeout() time.Duration {
 
 func fencedIdleTimeout() time.Duration {
 	return envDurationSec("ATLAS_FENCED_IDLE_SEC", defaultFencedIdleSec)
+}
+
+// fencedStalledTimeout bounds the wait for the FIRST content frame once the
+// server has already opened the stream. Separate from the first-content
+// budget, which also has to cover prompt evaluation: past the opening frame
+// the model is demonstrably generating, and a healthy stream delivers content
+// in the same millisecond.
+func fencedStalledTimeout() time.Duration {
+	return envDurationSec("ATLAS_FENCED_STALL_SEC", defaultFencedStalledSec)
 }
 
 // maxFencedOverrideSec caps the override. A bound of hours is indistinguishable

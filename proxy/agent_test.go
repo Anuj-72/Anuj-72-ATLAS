@@ -2564,3 +2564,44 @@ func TestFencedSubCallSalvagesReasoningOnAWatchdogCut(t *testing.T) {
 		t.Error("a cancelled session salvaged a file instead of surfacing the cancel")
 	}
 }
+
+// A fenced sub-call whose stream opens and then says nothing is dead: on every
+// healthy stream the first content frame follows the opening frame in the same
+// millisecond. Waiting the whole first-content budget for it burned ~2 minutes
+// of a ~9.5 minute session on each file (observed 2026-09-14, dev7/dev8 each
+// delivered one file and ran out of time). The stalled deadline must cut it
+// early, well before the first-content budget.
+func TestFencedSubCallCutsAStreamThatOpensAndGoesSilent(t *testing.T) {
+	t.Setenv("ATLAS_FENCED_FIRST_CONTENT_SEC", "60") // the full budget
+	t.Setenv("ATLAS_FENCED_STALL_SEC", "2")          // the stalled deadline
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			// Exactly what the live failure sends: the opening role frame,
+			// then silence while the server generates out of sight.
+			sseWrite(w, `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":null}}]}`)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(30 * time.Second):
+			}
+		}))
+	defer srv.Close()
+
+	ctx := llmTestCtx(srv.URL)
+	start := time.Now()
+	_, _, err := callLLMOnceWithGrammar(ctx, ctx.Messages, 0.2, rawEmissionSentinel)
+	elapsed := time.Since(start)
+	t.Logf("stalled sub-call returned after %s (err=%v)", elapsed.Round(time.Millisecond), err)
+
+	if err == nil {
+		t.Error("a stream that never sent content returned success")
+	}
+	if elapsed > 20*time.Second {
+		t.Errorf("stalled stream was not cut early: took %s, want the ~2s stalled deadline "+
+			"rather than the 60s first-content budget", elapsed.Round(time.Millisecond))
+	}
+}
