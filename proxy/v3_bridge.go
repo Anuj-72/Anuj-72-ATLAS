@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -77,6 +78,25 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 	// ATLAS_V3_TIMEOUT (seconds) overrides; 0 restores the uncapped behavior
 	// for bench/offline use.
 	if d := v3CallTimeout(); d > 0 {
+		// The cap is a per-call ceiling, not a claim on the whole run. A
+		// pipeline that spends its full 300s on the FIRST of five files
+		// leaves the session unable to write the rest: measured 2026-09-14,
+		// V3 burned 295s of a 570s work budget repairing file one and the
+		// run ended with one file and no verification, while the same prompt
+		// with a cheap first file delivered five files in 248s.
+		//
+		// Take at most half of what is left, so whatever V3 spends on this
+		// file, the run keeps as much again for the work still to do. When
+		// the pipeline is cut short the caller falls back to the model's own
+		// content, which is already syntax-gated, so a smaller window
+		// degrades instead of failing.
+		if deadline, ok := reqCtx.Deadline(); ok {
+			if half := time.Until(deadline) / 2; half > 0 && half < d {
+				log.Printf("[v3] capping this call at %s — half of the %s left in the session (configured %s)",
+					half.Round(time.Second), time.Until(deadline).Round(time.Second), d)
+				d = half
+			}
+		}
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithTimeout(reqCtx, d)
 		defer cancel()

@@ -961,3 +961,73 @@ func codeOf(result *V3GenerateResponse) string {
 	}
 	return result.Code
 }
+
+// V3's cap is a per-call ceiling, not a claim on the whole session. Measured
+// 2026-09-14: the pipeline spent 295s of a 570s work budget repairing the
+// FIRST of five files, and the run ended with one file and no verification,
+// while the same prompt with a cheap first file delivered five files in 248s.
+// One file may take at most half of what is left, so the run always keeps as
+// much again for the work still to do.
+func TestCallV3GenerateStreamingLeavesHalfTheSessionForTheRestOfTheRun(t *testing.T) {
+	t.Setenv("ATLAS_V3_TIMEOUT", "300") // the configured ceiling, far above what remains
+	release := make(chan struct{})
+	srv := fakeGenerateServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseLines(w, `data: {"stage":"plan_search","detail":"stalling"}`, ``)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	defer srv.Close()
+	defer close(release)
+
+	// A session with 6s of work left: V3 may have 3s, not 300s.
+	sessionCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := callV3GenerateStreaming(sessionCtx, srv.URL, V3GenerateRequest{}, nil)
+	elapsed := time.Since(start)
+	t.Logf("V3 returned after %v (err=%v)", elapsed.Round(time.Millisecond), err)
+
+	if err == nil {
+		t.Fatal("a stalled V3 run returned success")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("V3 consumed %v of a 6s session; it must stop near the 3s half-share",
+			elapsed.Round(time.Millisecond))
+	}
+	// The session itself must survive: the point is that time is left over.
+	if sessionCtx.Err() != nil {
+		t.Errorf("V3 used up the whole session context: %v", sessionCtx.Err())
+	}
+}
+
+// The ceiling still applies when the session has plenty of room: half of a
+// large remainder must not exceed the configured cap.
+func TestCallV3GenerateStreamingKeepsItsCeilingWhenTheSessionIsLong(t *testing.T) {
+	t.Setenv("ATLAS_V3_TIMEOUT", "1")
+	release := make(chan struct{})
+	srv := fakeGenerateServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseLines(w, `data: {"stage":"plan_search","detail":"stalling"}`, ``)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	defer srv.Close()
+	defer close(release)
+
+	sessionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	start := time.Now()
+	_, err := callV3GenerateStreaming(sessionCtx, srv.URL, V3GenerateRequest{}, nil)
+	if err == nil {
+		t.Fatal("stalled V3 run did not time out")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("the 1s configured cap did not bound a long session: %v", elapsed)
+	}
+}
