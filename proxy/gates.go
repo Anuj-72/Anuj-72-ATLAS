@@ -2123,9 +2123,17 @@ func routeContractMessage(findings []string) string {
 	for _, f := range findings {
 		sb.WriteString("  " + f + "\n")
 	}
-	sb.WriteString("\nEither add a handler for that path, or change the form action / fetch URL to a " +
-		"route that exists, then verify it with a request against the running server. If the " +
-		"route is registered in a way this check cannot see, say so in your summary and finish.")
+	// How, not just what. Answering this with a whole-file write_file of a
+	// file the session created is allowed, and it is the expensive path: the
+	// fenced channel, then the full candidate pipeline again on a file that
+	// already passed it and ran. Measured 2026-09-15: one added route that way
+	// cost 183 s of a 570 s budget and introduced a 500 the run had 7 s left to
+	// find. Adding a handler is an insert; changing an action is an edit.
+	sb.WriteString("\nEither add a handler for that path -- with insert_after or structural_edit on the " +
+		"existing file, not a whole-file write_file -- or change the form action / fetch URL to a " +
+		"route that exists with edit_file. Then verify it with a request against the running " +
+		"server. If the route is registered in a way this check cannot see, say so in your " +
+		"summary and finish.")
 	return sb.String()
 }
 

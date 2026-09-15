@@ -2820,6 +2820,11 @@ func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
 	if !strings.Contains(gates[0], "/add_book") {
 		t.Errorf("the gate must name the unmatched target: %s", gates[0])
 	}
+	// The full message the model receives steers to the cheap repair.
+	msg := routeContractMessage(routeContractFindings(dir))
+	if !strings.Contains(msg, "insert_after") || !strings.Contains(msg, "not a whole-file write_file") {
+		t.Errorf("the gate must say how to repair without re-entering the pipeline: %s", msg)
+	}
 	if !strings.Contains(string(page), `action="/"`) {
 		t.Errorf("the fix never landed: %q", page)
 	}
