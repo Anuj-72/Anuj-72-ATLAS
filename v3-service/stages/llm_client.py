@@ -303,7 +303,8 @@ def _restore_exact_requested_signatures(code: str, problem: str) -> str:
     if not contracts:
         return code
     try:
-        tree = ast.parse(code)
+        # Parsed for validity only: unparseable input is returned untouched.
+        ast.parse(code)
     except SyntaxError:
         return code
     current = code

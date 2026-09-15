@@ -258,9 +258,6 @@ class BudgetForcing:
             steepness=self.config.energy_steepness,
         )
 
-    def get_tier_config(self, tier: str) -> Dict:
-        """Return the full config dict for a tier."""
-        return BUDGET_TIERS.get(tier, BUDGET_TIERS["standard"])
 
     def format_chatml(self, user_content: str, tier: str) -> str:
         """Format a ChatML prompt with the appropriate system prompt for the tier.

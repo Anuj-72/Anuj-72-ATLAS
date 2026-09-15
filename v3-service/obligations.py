@@ -293,30 +293,5 @@ def names_target(kind: str) -> bool:
     return kind in _KIND_NAMES_TARGET
 
 
-def authorization_floor(obs: Sequence[Dict[str, Any]]) -> str:
-    """The strongest floor the PREREQUISITES demand, or "" when there is none.
-
-    "" is a real answer and not a permissive one: a declared document with no
-    declared verification owes nothing measurable here, which means there is
-    nothing to satisfy rather than nothing to do.
-    """
-    validate(obs)
-    order = contract.STRENGTH_ORDER
-    floor = ""
-    for o in authorization_prerequisites(obs):
-        if not o.get("required"):
-            continue
-        if o["kind"] in _UNSATISFIABLE_KINDS:
-            return order[-1]
-        if not floor or order.index(o["required_strength"]) > order.index(floor):
-            floor = o["required_strength"]
-    return floor
 
 
-def kinds_of(obs: Sequence[Dict[str, Any]]) -> List[str]:
-    """The distinct kinds present, in declaration order."""
-    out = []
-    for o in obs:
-        if o.get("kind") not in out:
-            out.append(o.get("kind"))
-    return out

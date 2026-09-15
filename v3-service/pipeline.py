@@ -593,10 +593,6 @@ class _PoolCapture:
             "ineligible_count": ineligible,
         }
 
-    def next_index(self) -> int:
-        return self._next_index
-
-    # -- writing ------------------------------------------------------------
 
     def write(self, record: Dict[str, Any]) -> bool:
         """Append one complete record, or nothing at all."""
