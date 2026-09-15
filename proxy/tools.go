@@ -200,6 +200,20 @@ func executeToolCallInner(name string, args json.RawMessage, ctx *AgentContext) 
 			MutationStatus: MutationNone,
 			ValidationKind: ValidationKindNone, ValidationStatus: ValidationNotApplicable}
 	}
+	// The user forbade changing anything. Enforced HERE, at the one dispatch
+	// every tool passes through, and keyed on the tool's DECLARED effect --
+	// not on a tool-name list (which has gone stale repeatedly) and not on the
+	// system prompt, which a model can simply not follow. That makes the
+	// guarantee hold for arbitrary shell and background jobs
+	// (ToolEffectCommandUnobserved: `sed -i`, `rm`, a `>` redirect) exactly as
+	// it does for write_file. Measured on the 38eaa0a benchmark: 6 sessions
+	// edited a fixture after the user wrote "do not change any code".
+	if reason := readOnlyRequestRefusal(tool, ctx); reason != "" {
+		log.Printf("[tools] %s refused: the request forbids changing the workspace", name)
+		return &ToolResult{Success: false, Error: reason,
+			MutationStatus: MutationNone,
+			ValidationKind: ValidationKindNone, ValidationStatus: ValidationNotApplicable}
+	}
 
 	result, err := tool.Execute(args, ctx)
 	if err != nil {

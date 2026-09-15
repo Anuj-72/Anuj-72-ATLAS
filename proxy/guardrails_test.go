@@ -2187,3 +2187,83 @@ func TestEatenEscapeLettersAreRestored(t *testing.T) {
 		t.Errorf("sanitizeFileContent left the form feed in place (modified=%v): %q", modified, cleaned)
 	}
 }
+
+// --- an explicit read-only request must not mutate, by ANY path -------------
+//
+// Measured on the 38eaa0a benchmark: 6 sessions edited a fixture after the user
+// wrote "do not change any code" / "do not fix it yet". The tier was classified
+// CORRECTLY as conversational in every case — nothing enforced it. Enforcement
+// is now at executeToolCallInner, keyed on the tool's declared effect, so it
+// holds for arbitrary shell as well as the edit tools.
+
+func readOnlyCtx(t *testing.T, ask string) *AgentContext {
+	t.Helper()
+	ctx := NewAgentContext(t.TempDir(), Tier0Conversational)
+	ctx.HumanTask = ask
+	return ctx
+}
+
+func TestAnExplicitReadOnlyRequestRefusesEveryMutatingTool(t *testing.T) {
+	// Both benchmark prompts, plus the "do not fix" phrasing.
+	for _, ask := range []string{
+		"In orders.py, what does find_duplicates do, and what is its time complexity? Just explain — do not change any code.",
+		"Explain what is going on here and whether it is actually a bug. Do not change the code.",
+		"Find what is causing it and tell me — do not fix it yet.",
+	} {
+		ctx := readOnlyCtx(t, ask)
+		if !mutationForbidden(ctx) {
+			t.Fatalf("mutationForbidden = false for an explicit prohibition: %q", ask)
+		}
+		// DIRECT mutation and INDIRECT (arbitrary shell) are both refused.
+		for _, name := range []string{
+			"write_file", "edit_file", "structural_edit", "insert_after",
+			"replace_lines", "delete_file", "move_file",
+			"run_command", "run_background",
+		} {
+			tool := getTool(name)
+			if tool == nil {
+				t.Fatalf("tool %s not registered", name)
+			}
+			if got := readOnlyRequestRefusal(tool, ctx); got == "" {
+				t.Errorf("%s was ALLOWED under %q — effect %q must be refused",
+					name, ask, tool.Effect)
+			}
+		}
+		// Reading is always allowed: the model still has to read to answer.
+		for _, name := range []string{"read_file", "outline_file", "search_files",
+			"list_directory", "find_file"} {
+			if got := readOnlyRequestRefusal(getTool(name), ctx); got != "" {
+				t.Errorf("%s was refused under %q — reading must stay available: %s", name, ask, got)
+			}
+		}
+	}
+}
+
+func TestTheReadOnlyRefusalPointsAtTheAnswerPath(t *testing.T) {
+	ctx := readOnlyCtx(t, "Just explain what this does — do not change any code.")
+	msg := readOnlyRequestRefusal(getTool("write_file"), ctx)
+	for _, want := range []string{"not run", "NOT to change", "read_file", `"type":"text"`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal must name the answer path (missing %q):\n%s", want, msg)
+		}
+	}
+}
+
+// The guard must not touch ordinary work, or it would refuse the product.
+func TestOrdinaryWorkIsUnaffectedByTheReadOnlyGuard(t *testing.T) {
+	for _, ask := range []string{
+		"add a median() function to stats.py",
+		"the snake is still moving way too fast, please slow it down",
+		"what does find_duplicates do?", // a question, but NO prohibition
+		"fix the off-by-one in chunks()",
+		"explain the retry logic and then add a test for it",
+	} {
+		ctx := readOnlyCtx(t, ask)
+		if mutationForbidden(ctx) {
+			t.Errorf("mutationForbidden = true for ordinary work: %q", ask)
+		}
+		if got := readOnlyRequestRefusal(getTool("write_file"), ctx); got != "" {
+			t.Errorf("write_file refused for %q — the guard must only fire on an explicit prohibition", ask)
+		}
+	}
+}

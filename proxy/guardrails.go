@@ -1255,6 +1255,12 @@ func isExplainOnlyMessage(lower string) bool {
 		"do not edit", "don't edit", "dont edit",
 		"do not modify", "don't modify", "dont modify",
 		"do not write", "don't write",
+		// "fix" completes the set: the list already carries change/edit/
+		// modify/write, and a user who says "tell me what is wrong -- do not
+		// fix it yet" has forbidden mutation exactly as plainly. Measured: a
+		// benchmark question carrying this phrasing was classified as work and
+		// edited the fixture it was told to leave alone, twice.
+		"do not fix", "don't fix", "dont fix",
 		"without changing", "without editing", "without modifying",
 		"no code changes", "just explain", "only explain", "explain only",
 	} {
@@ -2677,4 +2683,55 @@ func toolBanNote(tool, path string) string {
 	return fmt.Sprintf(
 		"%s is no longer available for %s in this session: it was sent and rejected unchanged, so it is not a path to a working edit here. Use %s.",
 		tool, path, alt)
+}
+
+// --- explicit read-only requests --------------------------------------------
+
+// mutationForbidden reports whether the USER forbade changing the workspace on
+// this request.
+//
+// The signal is an explicit prohibition in the user's own words ("just explain
+// — do not change any code"), not a question shape and not the task contract's
+// `question` mode. Those two mean a state change is not REQUIRED, which is a
+// different claim from "a state change is not PERMITTED"; treating them as a
+// prohibition would refuse legitimate work on any request phrased as a
+// question. Requiring the prohibition keeps the guarantee narrow enough to be
+// safe and specific enough to be worth enforcing.
+// Reads ctx.HumanTask -- the human's actual instruction, captured before the
+// loop appends correctives, manifests or re-injected content, so a system note
+// can never be mistaken for the user forbidding a change.
+func mutationForbidden(ctx *AgentContext) bool {
+	if ctx == nil {
+		return false
+	}
+	return isExplainOnlyMessage(strings.ToLower(ctx.HumanTask))
+}
+
+// readOnlyRequestRefusal returns the refusal text when a mutation-capable tool
+// is called under an explicit read-only request, or "" to allow the call.
+//
+// Keyed on the tool's declared effect, so it holds for direct mutators and for
+// arbitrary shell alike. A read-only tool is always allowed: the model still
+// needs to read the code to answer, and answering IS the deliverable here --
+// a run that writes nothing has no file obligation to demonstrate and can
+// complete on its answer.
+func readOnlyRequestRefusal(tool *ToolDef, ctx *AgentContext) string {
+	if tool == nil || !mutationForbidden(ctx) {
+		return ""
+	}
+	if tool.Effect == ToolEffectReadOnly {
+		return ""
+	}
+	what := "change the workspace"
+	if tool.Effect == ToolEffectCommandUnobserved {
+		what = "run a command that could change the workspace"
+	}
+	return fmt.Sprintf(
+		"`%s` was not run: this request explicitly asked you NOT to change anything, "+
+			"and %s would %s.\n\n"+
+			"Answer the question instead. Read what you need (read_file, outline_file, "+
+			"search_files, list_directory, find_file) and reply with "+
+			"{\"type\":\"text\",\"content\":\"<your answer>\"} — an answer is the "+
+			"deliverable for this request, so no file needs to change for it to be complete.",
+		tool.Name, tool.Name, what)
 }
