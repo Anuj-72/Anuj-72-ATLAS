@@ -1216,6 +1216,45 @@ def _extract_java_classname(code: str) -> str:
     return "Main"
 
 
+def _looks_like_jinja_template(filename: Optional[str]) -> bool:
+    """True only for files that are Jinja templates by convention: under a
+    templates/ directory, or a .jinja/.jinja2 name. Vue/Angular/Handlebars HTML
+    shares `{{ }}` but is NOT Jinja and lives elsewhere, so it is never handed
+    to a Jinja parser."""
+    if not filename:
+        return False
+    f = filename.replace("\\", "/").lower()
+    return ("templates/" in f) or f.endswith((".jinja", ".jinja2"))
+
+
+def _jinja_template_errors(code: str, filename: Optional[str]) -> List[str]:
+    """Jinja syntax errors for a file that is actually a Jinja template, else
+    []. Requires a statement tag `{%` to be present -- `{{ }}` interpolation
+    alone is too widely shared to attribute to Jinja. Unknown-tag/filter/test
+    errors are dropped: those signal a third-party extension this parser has
+    not loaded, not a typo. Never raises."""
+    if not _looks_like_jinja_template(filename):
+        return []
+    if "{%" not in code:
+        return []
+    try:
+        import jinja2
+    except Exception:
+        return []  # fail open: no Jinja available here
+    try:
+        jinja2.Environment().parse(code)
+        return []
+    except jinja2.TemplateSyntaxError as e:
+        msg = (getattr(e, "message", "") or "").lower()
+        if any(s in msg for s in ("unknown tag", "no filter named",
+                                  "no test named", "not registered")):
+            return []
+        loc = f" (line {e.lineno})" if getattr(e, "lineno", None) else ""
+        return [f"TemplateSyntaxError: {e.message}{loc}"]
+    except Exception:
+        return []  # not a confident syntax verdict -- stay silent
+
+
 def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional[str] = None) -> List[str]:
     """Language-specific syntax checking. Returns list of error strings."""
     # Reject path-traversal filenames (absolute, .., backslash escapes)
@@ -1445,6 +1484,12 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
             parser.close()
         except Exception as e:
             errors.append(str(e))
+        # A Jinja template can parse cleanly as HTML and still 500 on EVERY
+        # render: `{% for x in xs %)` closes the tag with `)` instead of `}`.
+        # html.parser sees only text and passes it; Flask compiles the template
+        # on first render, so the server starts, the file imports and the page
+        # returns 500 with a TemplateSyntaxError nothing upstream caught.
+        errors.extend(_jinja_template_errors(code, filename))
 
     elif lang == "xml":
         from defusedxml import ElementTree as ET

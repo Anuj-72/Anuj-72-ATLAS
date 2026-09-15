@@ -564,7 +564,10 @@ func sandboxSyntaxOutcome(ctx *AgentContext, path, content string) checkOutcome 
 	if ctx == nil || ctx.SandboxURL == "" {
 		return checkOutcome{Status: ValidationNotRun, Detail: "no sandbox configured", ProducerUnavailable: true}
 	}
-	body, err := json.Marshal(map[string]string{"code": content, "language": lang})
+	// The path travels too: the sandbox scopes its Jinja-template check to
+	// files that are actually templates (a templates/ directory, a .jinja
+	// name), which it cannot tell from the bytes alone.
+	body, err := json.Marshal(map[string]string{"code": content, "language": lang, "filename": path})
 	if err != nil {
 		return checkOutcome{Status: ValidationNotRun, Detail: "request could not be built"}
 	}

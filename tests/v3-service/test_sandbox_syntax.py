@@ -298,3 +298,73 @@ def test_shell_snapshot_fails_when_byte_limit_is_exceeded(tmp_path):
         sandbox.SHELL_SNAPSHOT_MAX_BYTES = previous_limit
 
     assert exc.value.status_code == 413
+
+
+# --- Jinja template syntax (scenario C, 2026-09-15) -------------------------
+#
+# A Flask template `templates/index.html` shipped `{% for p in people %)` —
+# `%)` instead of `%}`. html.parser passes it (all text to it), the server
+# starts and the file imports, and GET / returns 500 with a jinja
+# TemplateSyntaxError. The html branch now runs a Jinja parse, scoped to files
+# that are actually templates so non-Jinja frameworks are never judged.
+
+# The delivered line 58, verbatim (minus the leading whitespace).
+C_BROKEN_ROW = (
+    "<td> {% for p in people %){% if p.id == expense.paid_by_id %}"
+    "{{ p.name }}{% endif %}{% endfor %}{% endfor %} </td>"
+)
+C_FIXED_ROW = C_BROKEN_ROW.replace("%)", "%}", 1)
+
+
+def test_jinja_typo_in_a_template_html_is_reported(tmp_path):
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "<table>" + C_BROKEN_ROW + "</table>", tmp_path,
+        filename="templates/index.html")
+    assert errors, "a `%)` tag typo in a template must be reported"
+    assert any("TemplateSyntaxError" in e for e in errors), errors
+
+
+def test_jinja_correct_template_passes(tmp_path):
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "<table>" + C_FIXED_ROW + "</table>", tmp_path,
+        filename="templates/index.html")
+    assert errors == [], errors
+
+
+def test_the_same_broken_bytes_outside_templates_are_not_judged(tmp_path):
+    # Identical bytes under src/ (a Vue/Angular/component tree, not Jinja) must
+    # NOT be handed to a Jinja parser.
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "<table>" + C_BROKEN_ROW + "</table>", tmp_path,
+        filename="src/components/list.html")
+    assert errors == [], errors
+
+
+def test_vue_interpolation_under_templates_is_not_judged(tmp_path):
+    # `{{ a || b }}` is valid Vue and invalid Jinja, but with no `{%` statement
+    # tag it is not attributed to Jinja.
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "<p>{{ user?.name || 'x' }}</p>", tmp_path,
+        filename="templates/widget.html")
+    assert errors == [], errors
+
+
+def test_unknown_jinja_extension_tag_is_not_a_false_positive(tmp_path):
+    # A third-party extension tag this parser hasn't loaded is not a typo.
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "{% cache 60 %}<p>hi</p>{% endcache %}", tmp_path,
+        filename="templates/page.html")
+    assert errors == [], errors
+
+
+def test_jinja_extension_named_file_is_checked(tmp_path):
+    sandbox = _load_sandbox_module()
+    errors = sandbox._syntax_check_impl(
+        "html", "{% for x in y %) {% endfor %}", tmp_path,
+        filename="emails/welcome.jinja2")
+    assert any("TemplateSyntaxError" in e for e in errors), errors
