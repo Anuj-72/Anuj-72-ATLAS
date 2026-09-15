@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1946,5 +1947,111 @@ func TestRouteContractFindingsNameTheUnmatchedTarget(t *testing.T) {
 	})
 	if c := routeContractFindings(root); len(c) != 0 {
 		t.Errorf("flagged a target with no routes to judge against: %v", c)
+	}
+}
+
+// --- the sandbox only accepts a workspace-relative filename -----------------
+//
+// Production's _safe_overlay_path refuses an absolute path, a "..", or a
+// backslash name with HTTP 400, and this layer maps any non-200 to
+// ValidationNotRun -- which is never ValidationPassed. The completion check
+// passes a RESOLVED absolute path, so sending the caller's spelling unchanged
+// made every deliverable's verdict NotRun and deliverablesDemonstrablyValid
+// could never be satisfied: 35 consecutive sessions reported correct artifacts
+// as unverified. The stubs below REJECT absolute paths exactly as the sandbox
+// does; the pre-existing doubles accepted any filename, which is why this
+// shipped green.
+
+// sandboxLikeSyntaxStub mimics the real /syntax-check contract: it refuses a
+// filename the sandbox would refuse, and records what it was sent.
+func sandboxLikeSyntaxStub(t *testing.T, seen *[]string) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/syntax-check") {
+			http.NotFound(w, r)
+			return
+		}
+		var in struct {
+			Code     string `json:"code"`
+			Language string `json:"language"`
+			Filename string `json:"filename"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		mu.Lock()
+		*seen = append(*seen, in.Filename)
+		mu.Unlock()
+		// _safe_overlay_path: absolute, "..", or backslash -> 400.
+		if filepath.IsAbs(in.Filename) || strings.Contains(in.Filename, "..") ||
+			strings.Contains(in.Filename, `\`) {
+			http.Error(w, "unsafe overlay file path", http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": true, "errors": []string{}})
+	}))
+}
+
+func TestWorkspaceRelativeNameMatchesWhatTheSandboxAccepts(t *testing.T) {
+	ctx := NewAgentContext("/workspace/_reliability", Tier2Medium)
+	for _, c := range []struct {
+		in       string
+		want     string
+		wantOK   bool
+	}{
+		{"solve.py", "solve.py", true},                                        // already relative
+		{"templates/index.html", "templates/index.html", true},                // scoping preserved
+		{"/workspace/_reliability/solve.py", "solve.py", true},                // the completion path's spelling
+		{"/workspace/_reliability/templates/index.html", "templates/index.html", true},
+		{"/etc/passwd", "", false},                                            // outside the workspace
+		{"../escape.py", "", false},                                           // escapes
+	} {
+		got, ok := workspaceRelativeName(ctx, c.in)
+		if ok != c.wantOK || got != c.want {
+			t.Errorf("workspaceRelativeName(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+// The production-path replay: a run whose deliverable is valid must be able to
+// claim completion, even though the completion check addresses it absolutely.
+func TestAValidDeliverableCanBeDemonstratedThroughAnAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "solve.py"), []byte("x = 1\nprint(x)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	srv := sandboxLikeSyntaxStub(t, &seen)
+	defer srv.Close()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.SandboxURL = srv.URL
+
+	ok, why := terminalCompletionAllowed(ctx, []string{"solve.py"})
+	if !ok || why != "deliverables_demonstrated" {
+		t.Fatalf("terminalCompletionAllowed = (%v,%q), want (true,\"deliverables_demonstrated\") — "+
+			"a correct artifact must be claimable; sandbox saw filenames %q", ok, why, seen)
+	}
+	// And it must still be SCOPED: the filename has to arrive, relativised,
+	// or the path-dependent checks (the Jinja parse) silently stop applying.
+	if len(seen) == 0 || seen[0] != "solve.py" {
+		t.Errorf("sandbox received filenames %q, want the relative \"solve.py\" — "+
+			"dropping the filename would fix the 400 but disable path-scoped checks", seen)
+	}
+}
+
+// A path with no safe relative form must not be sent: the check still runs
+// (whole-file syntax is what completion needs) rather than failing as NotRun.
+func TestAnUnrelativisablePathOmitsTheFilenameInsteadOfBeingRefused(t *testing.T) {
+	var seen []string
+	srv := sandboxLikeSyntaxStub(t, &seen)
+	defer srv.Close()
+	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
+	ctx.SandboxURL = srv.URL
+
+	out := sandboxSyntaxOutcome(ctx, "/etc/passwd.py", "x = 1\n")
+	if out.Status != ValidationPassed {
+		t.Errorf("status = %q, want passed — an unscopable path must still get a whole-file check", out.Status)
+	}
+	if len(seen) != 1 || seen[0] != "" {
+		t.Errorf("sandbox received filenames %q, want one empty (omitted) filename", seen)
 	}
 }

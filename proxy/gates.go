@@ -555,6 +555,50 @@ func checkSandboxSyntax(ctx *AgentContext, path, content string) (string, bool) 
 // service availability question, so a missing sandbox cannot mask genuinely
 // non-applicable content. That changes the structured evidence only -- the
 // wrapper's allow/refuse decision is identical either way.
+// sandboxSyntaxRequest builds the /syntax-check body, carrying the filename
+// only in the workspace-relative form the sandbox accepts.
+//
+// The sandbox refuses an absolute path, a "..", or a backslash-escaped name
+// (_safe_overlay_path) with HTTP 400. A refused request is indistinguishable
+// from a service fault at this layer -- both land as ValidationNotRun -- so a
+// path the sandbox cannot take must not be sent at all. Omitting it costs only
+// the path-SCOPED checks (the Jinja-template parse); the whole-file syntax
+// check still runs and can still return ValidationPassed, which is what the
+// completion decision needs.
+func sandboxSyntaxRequest(ctx *AgentContext, path, lang, content string) map[string]string {
+	body := map[string]string{"code": content, "language": lang}
+	if rel, ok := workspaceRelativeName(ctx, path); ok {
+		body["filename"] = rel
+	}
+	return body
+}
+
+// workspaceRelativeName converts a caller's path into the relative name the
+// sandbox will accept, or reports that none exists. Callers pass either the
+// model's own relative path or a resolved absolute one, and both have to work.
+func workspaceRelativeName(ctx *AgentContext, path string) (string, bool) {
+	rel := path
+	if filepath.IsAbs(rel) {
+		if ctx == nil || ctx.WorkingDir == "" {
+			return "", false
+		}
+		r, err := filepath.Rel(ctx.WorkingDir, rel)
+		if err != nil {
+			return "", false
+		}
+		rel = r
+	}
+	rel = filepath.Clean(rel)
+	// Anything that still escapes the workspace, or is not a plain relative
+	// name, is exactly what the sandbox rejects.
+	if rel == "" || rel == "." || filepath.IsAbs(rel) ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
+		strings.Contains(rel, "\\") {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
 func sandboxSyntaxOutcome(ctx *AgentContext, path, content string) checkOutcome {
 	meta, gated := syntaxGateLanguages[strings.ToLower(filepath.Ext(path))]
 	if !gated {
@@ -567,7 +611,21 @@ func sandboxSyntaxOutcome(ctx *AgentContext, path, content string) checkOutcome 
 	// The path travels too: the sandbox scopes its Jinja-template check to
 	// files that are actually templates (a templates/ directory, a .jinja
 	// name), which it cannot tell from the bytes alone.
-	body, err := json.Marshal(map[string]string{"code": content, "language": lang, "filename": path})
+	//
+	// It must be WORKSPACE-RELATIVE. The sandbox writes the check file under a
+	// temp workspace and refuses an absolute path or one containing ".."
+	// (_safe_overlay_path) with HTTP 400, which this function maps to
+	// ValidationNotRun. Callers differ: the write gates pass the model's
+	// relative path, but the completion check passes a RESOLVED absolute one,
+	// so sending the caller's spelling unchanged made every deliverable's
+	// syntax verdict NotRun -- never ValidationPassed -- and
+	// deliverablesDemonstrablyValid could never be satisfied. Measured: zero
+	// successful terminals across 35 sessions, while correct artifacts were
+	// reported unverified. Relativise here, at the one boundary that talks to
+	// the sandbox, so every caller is fixed at once; when no safe relative
+	// form exists, omit the filename and keep the check itself (the
+	// pre-existing behaviour, which only forgoes path-scoped checks).
+	body, err := json.Marshal(sandboxSyntaxRequest(ctx, path, lang, content))
 	if err != nil {
 		return checkOutcome{Status: ValidationNotRun, Detail: "request could not be built"}
 	}
