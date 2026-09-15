@@ -2055,3 +2055,56 @@ func TestAnUnrelativisablePathOmitsTheFilenameInsteadOfBeingRefused(t *testing.T
 		t.Errorf("sandbox received filenames %q, want one empty (omitted) filename", seen)
 	}
 }
+
+// --- editing a file this session just wrote ---------------------------------
+//
+// aoc_slope (38eaa0a): the session wrote solve.py, the syntax gate quoted the
+// offending line, and the model's correct one-line edit_file repair was refused
+// "file not read yet". With no accepted way to change one line it re-sent the
+// whole file, tripped the identical-call detector, and the run died without
+// repairing the line. Ownership alone must NOT open the gate; identity must.
+
+func TestAFileThisSessionWroteCanBeEditedWithoutARereadWhileUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	target := filepath.Join(dir, "solve.py")
+	const body = "def solve():\n    return 1\n"
+	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The session's own record of that write (what writeFileRecorded leaves).
+	observeDeliverable(ctx, ledgerKey(ctx, target), []byte(body), ValidationKindSyntax, ValidationPassed, "")
+
+	if !editViewIsCurrent(ctx, target) {
+		t.Fatal("a file this session wrote, unchanged on disk, must be editable without a re-read")
+	}
+
+	// STALENESS IS PRESERVED: change the bytes underneath (as a shell command
+	// this run issued could) and the view is no longer current.
+	if err := os.WriteFile(target, []byte("def solve():\n    return 2  # changed elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if editViewIsCurrent(ctx, target) {
+		t.Error("the view must go stale once the bytes on disk differ from what the session wrote")
+	}
+	// A real read makes it current again.
+	ctx.RecordFileRead(target, "def solve():\n    return 2  # changed elsewhere\n")
+	if !editViewIsCurrent(ctx, target) {
+		t.Error("a fresh read must make the view current")
+	}
+}
+
+func TestAFileTheSessionNeverTouchedStillRequiresARead(t *testing.T) {
+	dir := t.TempDir()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	target := filepath.Join(dir, "preexisting.py")
+	if err := os.WriteFile(target, []byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if editViewIsCurrent(ctx, target) {
+		t.Error("a pre-existing file the session never read or wrote must still require read_file")
+	}
+	if editViewIsCurrent(ctx, filepath.Join(dir, "absent.py")) {
+		t.Error("an absent file is not a current view")
+	}
+}

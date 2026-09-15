@@ -3346,3 +3346,44 @@ func backgroundStartDispatched(ctx *AgentContext, args json.RawMessage) bool {
 	// Host verification runs nothing in the sandbox.
 	return !ctx.VerifyOnHost
 }
+
+// editViewIsCurrent reports whether the model's view of `path` is current
+// enough to edit it without a fresh read_file.
+//
+// A read makes the view current. So does a write THIS SESSION made -- but only
+// while the bytes on disk are still the bytes we wrote. Session ownership on
+// its own is deliberately NOT sufficient: a shell command this run issued, or
+// anything else touching the workspace, can change the file underneath, and
+// then the model's belief is stale exactly as if it had never read it. The test
+// is identity, not ownership, and it is the same one the restoration path
+// already applies (Generation > 0 && CurrentHash == diskHash), so the two
+// cannot disagree about what "we still know this file" means.
+//
+// Measured on the 38eaa0a benchmark (aoc_slope): the session wrote solve.py,
+// the syntax gate warned that it did not parse and quoted the offending line,
+// and the model's correct one-line edit_file repair was refused with "file not
+// read yet". Having no accepted way to change one line, it re-sent the whole
+// file, tripped the identical-call detector, and the run ended without ever
+// repairing the line it had been told about. A read would have been a pure
+// round trip: the content it would return is the content this session just
+// wrote.
+func editViewIsCurrent(ctx *AgentContext, path string) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.WasFileRead(path) {
+		return true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Unreadable or absent: nothing is known about it.
+		return false
+	}
+	disk := hashBytes(data)
+	key := ledgerKey(ctx, path)
+	ctx.LedgerMu.Lock()
+	d := ctx.Ledger[key]
+	current := d != nil && !d.Tombstoned && d.Generation > 0 && d.CurrentHash == disk
+	ctx.LedgerMu.Unlock()
+	return current
+}

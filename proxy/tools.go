@@ -2574,7 +2574,7 @@ func editFileTool() *ToolDef {
 			path := resolveAgentPath(ctx, input.Path)
 
 			// Require file was read first (staleness protection)
-			if !ctx.WasFileRead(path) {
+			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first before editing: %s", input.Path))
 			}
 
@@ -3024,7 +3024,7 @@ func structuralEditTool() *ToolDef {
 			}
 
 			path := resolveAgentPath(ctx, input.Path)
-			if !ctx.WasFileRead(path) {
+			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first before structural_edit: %s", input.Path))
 			}
 
@@ -3793,7 +3793,7 @@ func insertAfterTool() *ToolDef {
 				return noMutation("insert_after: content is empty — nothing would be inserted"), nil
 			}
 			path := resolveAgentPath(ctx, in.Path)
-			if !ctx.WasFileRead(path) {
+			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first so the line numbers are current: %s", in.Path))
 			}
 			data, err := os.ReadFile(path)
@@ -4020,7 +4020,7 @@ func replaceLinesTool() *ToolDef {
 					"\"content\":<the new lines>}."), nil
 			}
 			path := resolveAgentPath(ctx, in.Path)
-			if !ctx.WasFileRead(path) {
+			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first so the line numbers are current: %s", in.Path))
 			}
 			data, err := os.ReadFile(path)
