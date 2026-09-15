@@ -601,6 +601,27 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 			Body: fmt.Sprintf("content loop detected — stream cut after %d chars", p.Chars),
 		})
 
+	// The other half of content_loop_cut: the cut was ANSWERED rather than
+	// ending the run — the model was told why and given another attempt.
+	// Without a case here the user watched a stream stop and a new turn begin
+	// with nothing said in between, and the run reported an event the TUI
+	// could not render (measured on 2 of 28 benchmark sessions).
+	case "agent_loop_recovery":
+		var p struct {
+			Turn    int    `json:"turn"`
+			Attempt int    `json:"attempt"`
+			Reason  string `json:"reason"`
+		}
+		_ = json.Unmarshal(ev.Data, &p)
+		body := p.Reason
+		if body == "" {
+			body = "the model began repeating itself; the stream was cut and it was told why"
+		}
+		m.chat = append(m.chat, chatMessage{
+			Role: roleSystem, Meta: "recovered",
+			Body: fmt.Sprintf("%s — retrying (attempt %d)", body, p.Attempt),
+		})
+
 	// Stream cut: the model burned its reasoning budget without ever
 	// emitting content, so the proxy stopped the call and re-prompts.
 	case "reasoning_budget_cut":
