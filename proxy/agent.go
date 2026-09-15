@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1160,6 +1161,31 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				return nil
 			}
 			continue
+		}
+
+		// A tool_call can parse cleanly and still be mis-segmented: an
+		// unescaped quote inside a file body closes the JSON string early and
+		// the file's remainder is discarded into unknown keys, so a truncated
+		// write reports success (scenario D, 2026-09-15). Catch it here, before
+		// execution, and hand the model the real cause under the same retry cap
+		// parse failures use — never write the truncated content.
+		if parsed.Type == "tool_call" {
+			if feedback, bad := swallowedContentFeedback(parsed.Name, parsed.Args); bad {
+				log.Printf("[agent] turn=%d %s: content string terminated early (unescaped quote) — refusing the truncated write", turn, parsed.Name)
+				ctx.Stream("error", map[string]string{
+					"error":    "tool call content was truncated by an unescaped quote",
+					"category": "swallowed_content",
+				})
+				ctx.Messages = append(ctx.Messages, AgentMessage{Role: "user", Content: feedback})
+				consecutiveErrors++
+				if consecutiveErrors >= 3 {
+					log.Printf("[agent] breaking swallowed-content loop at turn %d (%d consecutive)", turn, consecutiveErrors)
+					emitTerminal(ctx, st, TerminalStopped, "unusable_model_output",
+						"Stopped: the model's file writes kept ending early on an unescaped double-quote inside the content, three times in a row. Ask again and, for a large HTML/JS file, request that it be built with structural_edit or split across smaller writes."+liveBackgroundJobNote(ctx))
+					return nil
+				}
+				continue
+			}
 		}
 
 		// Log the args truncated — enables diagnosing failures like
@@ -5705,6 +5731,96 @@ func liftMissingArgs(resp *ModelResponse, raw string) {
 	if buf, err := json.Marshal(lifted); err == nil {
 		resp.Args = buf
 	}
+}
+
+// knownArgKeys is the set of JSON argument names a tool legitimately accepts,
+// read off its InputSchema struct's json tags. Derived by reflection rather
+// than hand-listed so it can never drift from the tool's real signature. nil
+// when the tool is unknown or its schema is not a struct (fail open — the
+// caller then makes no claim about the shape).
+func knownArgKeys(toolName string) map[string]bool {
+	td := getTool(toolName)
+	if td == nil || td.InputSchema == nil {
+		return nil
+	}
+	t := reflect.TypeOf(td.InputSchema)
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+	keys := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if name := strings.Split(tag, ",")[0]; name != "" {
+			keys[name] = true
+		}
+	}
+	return keys
+}
+
+// swallowedContentFeedback catches a tool_call that parsed cleanly into the
+// WRONG shape because a file body terminated its JSON string early.
+//
+// The mechanism, observed live on scenario D (2026-09-15): the model wrote a
+// <script> containing `setData("text/plain"")` — a doubled quote. Inside the
+// write_file JSON envelope that bare `"` closed the `content` string, and
+// json.Unmarshal read the entire rest of the file (the remaining ~1900 bytes,
+// through </html>) as a sibling KEY with value "DONE". Decoding into the typed
+// WriteFileInput silently discards that key, so a 3061-byte template landed as
+// 3069 TRUNCATED bytes — no </script>, no </html>, no fetch() — reported as a
+// clean, complete write. The model saw success and never repaired it; V3 then
+// took the truncated bytes as its baseline and shipped them.
+//
+// extractModelResponse cannot catch this: the envelope is valid JSON, so the
+// direct parse succeeds and recoverTruncatedToolCall (which only runs on a
+// parse ERROR) never fires. The syntax gates cannot either: html.parser is
+// lenient about an unclosed <script>, and embedded_script_check suppresses
+// findings when <script>/</script> counts disagree — which a truncated file
+// guarantees. Both fail open on exactly this shape.
+//
+// Detection is the presence of an args key outside the tool's real signature
+// that carries the fingerprint of leaked file content: it is long, or holds
+// code/markup punctuation a genuine argument name never would. Scoped to tools
+// with a long free-text field, since those are the only ones this can strike.
+// Verified against the frozen acceptance corpus: fires on the two D writes and
+// the one B write that were truncated this way, and on nothing else.
+func swallowedContentFeedback(toolName string, args json.RawMessage) (string, bool) {
+	known := knownArgKeys(toolName)
+	if known == nil {
+		return "", false
+	}
+	// Only tools whose args include a long free-text body can be cut this way.
+	if !known["content"] && !known["old_str"] && !known["new_str"] {
+		return "", false
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return "", false
+	}
+	for k := range m {
+		if known[k] {
+			continue
+		}
+		// A real argument name is short and identifier-shaped. Swallowed file
+		// remainder is long or carries structural characters.
+		if len(k) > 40 || strings.ContainsAny(k, "\n\r\t;{}()<>") {
+			field := "content"
+			if !known["content"] {
+				field = "old_str/new_str"
+			}
+			feedback := fmt.Sprintf(
+				"Your %s call was NOT performed — nothing was written to disk. The JSON is mis-formed: your %s string ended EARLY because the file body contains an unescaped double-quote (\"). Everything after that quote — the rest of your file — was dropped, so the file would have landed truncated (no closing tags, no trailing code).\n\n"+
+					"Inside a JSON string, every \" that belongs in the file must be written as \\\". Re-send the call with the inner quotes escaped. For a large HTML/JS file this is error-prone by hand: prefer structural_edit (a selector plus the block, no long JSON string to escape), or write the file in smaller pieces. Do NOT resend the same bytes unchanged.",
+				toolName, field)
+			return feedback, true
+		}
+	}
+	return "", false
 }
 
 // recoverTruncatedToolCall is the generalized counterpart to

@@ -2937,3 +2937,87 @@ func TestACleanExecutionSettlesContentDebt(t *testing.T) {
 		t.Error("a background script that exited 0 is a success")
 	}
 }
+
+// --- swallowed-content detection (scenario D, 2026-09-15) ------------------
+//
+// A write_file whose content string carries an unescaped `"` closes the JSON
+// string early; the file's remainder is absorbed into a junk key that the
+// typed struct discards, so a truncated file lands reported as a clean write.
+// The envelope parses, so extractModelResponse cannot catch it — the loop's
+// post-parse detector must.
+
+func TestKnownArgKeysReadsTheToolSchema(t *testing.T) {
+	k := knownArgKeys("write_file")
+	if !k["path"] || !k["content"] || len(k) != 2 {
+		t.Fatalf("write_file keys = %v, want {path, content}", k)
+	}
+	if e := knownArgKeys("edit_file"); !e["old_str"] || !e["new_str"] || !e["path"] {
+		t.Errorf("edit_file keys = %v, want path/old_str/new_str", e)
+	}
+	if knownArgKeys("no_such_tool") != nil {
+		t.Error("an unknown tool must yield nil, not a claim about its shape")
+	}
+}
+
+func TestAnUnescapedQuoteTruncatesTheWriteAndIsCaught(t *testing.T) {
+	// The D shape, minimized: content is `<script>x("y"` and the bare quote
+	// after it ends the string; the rest of the "file" becomes a long key
+	// with value "DONE".
+	raw := `{"type":"tool_call","name":"write_file","args":{"path":"a.html","content":"<script>x(\"y\"",");\nthe rest of the file body running well past forty characters\n</script>":"DONE"}}`
+
+	parsed, err := extractModelResponse(raw)
+	if err != nil {
+		t.Fatalf("the envelope is valid JSON and must parse: %v", err)
+	}
+	var in WriteFileInput
+	if e := json.Unmarshal(parsed.Args, &in); e != nil {
+		t.Fatalf("args decode: %v", e)
+	}
+	// The bug: the typed decode silently truncated the file.
+	if strings.Contains(in.Content, "</script>") {
+		t.Fatalf("expected the truncated shape (no </script>), got %q", in.Content)
+	}
+	// The fix: the loop's detector refuses it and explains why.
+	fb, bad := swallowedContentFeedback(parsed.Name, parsed.Args)
+	if !bad {
+		t.Fatal("a content string cut by an unescaped quote must be caught")
+	}
+	if !strings.Contains(fb, "unescaped") || !strings.Contains(fb, "NOT performed") {
+		t.Errorf("feedback must name the cause and say the write did not happen:\n%s", fb)
+	}
+}
+
+func TestACleanWriteIsNotFlaggedAsSwallowed(t *testing.T) {
+	args, _ := json.Marshal(WriteFileInput{
+		Path:    "templates/index.html",
+		Content: "<!DOCTYPE html>\n<html>\n<script>const x = \"ok\";</script>\n</html>\n",
+	})
+	if _, bad := swallowedContentFeedback("write_file", args); bad {
+		t.Error("a well-formed write must not be flagged")
+	}
+	// An edit_file with real, correctly-escaped multi-line bodies is clean too.
+	eargs, _ := json.Marshal(EditFileInput{
+		Path: "app.py", OldStr: "def f():\n    return 1\n", NewStr: "def f():\n    return 2\n",
+	})
+	if _, bad := swallowedContentFeedback("edit_file", eargs); bad {
+		t.Error("a well-formed edit must not be flagged")
+	}
+}
+
+func TestAShortUnexpectedKeyIsNotMistakenForSwallowedContent(t *testing.T) {
+	// A model that adds a small stray field (a short identifier-shaped key) is
+	// not the truncation shape — that is liftMissingArgs / harmless territory,
+	// and flagging it would refuse a real write.
+	raw := `{"path":"a.html","content":"<html></html>","note":"fyi"}`
+	if _, bad := swallowedContentFeedback("write_file", json.RawMessage(raw)); bad {
+		t.Error("a short extra key must not trip the detector")
+	}
+}
+
+func TestNonEditToolsAreNotSubjectToTheContentCheck(t *testing.T) {
+	// read_file has no long free-text field; an odd key there is not this bug.
+	raw := `{"path":"a.py","this key is long enough to look like leaked content":"x"}`
+	if _, bad := swallowedContentFeedback("read_file", json.RawMessage(raw)); bad {
+		t.Error("a tool with no content/old_str/new_str field must be exempt")
+	}
+}
