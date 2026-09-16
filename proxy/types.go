@@ -519,6 +519,10 @@ type StructuralEditOutput struct {
 	Language string `json:"language,omitempty"`
 	BytesOld int    `json:"bytes_old,omitempty"`
 	BytesNew int    `json:"bytes_new,omitempty"`
+	// Set when the spliced file no longer parses. The edit still landed --
+	// this tool does not refuse after the rename -- but the model is told,
+	// the same way write_file tells it.
+	Warning string `json:"warning,omitempty"`
 }
 
 // -- delete_file --

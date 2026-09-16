@@ -3322,17 +3322,43 @@ func structuralEditTool() *ToolDef {
 				BytesOld: astResp.OldSize,
 				BytesNew: len(finalContent),
 			}
+			// The splice landed. Validation used to stay not_run, on sound
+			// reasoning: the tree-sitter transform only proves v3-service
+			// could re-parse ITS output, this tool ran no check of its own on
+			// the bytes it writes -- which may be a V3 replacement rather
+			// than the splice -- and reading the service's ok boolean as a
+			// syntax pass is exactly the inference overlayValidation exists
+			// to prevent.
+			//
+			// The conclusion was right and the premise was fixable: run the
+			// check. not_run is not a neutral answer at the exit. A path can
+			// only retire its mutation debt on a verdict about its CURRENT
+			// bytes, so every file edited this way carried debt that nothing
+			// could ever discharge. Measured on offbyone: the run reproduced
+			// the bug, fixed chunks() with structural_edit, re-ran its
+			// reproduction and printed the corrected output -- and still
+			// ended `unresolved_mutation_debt`, told that chunk.py "was never
+			// written in a state this run could check". It had been.
+			//
+			// The bytes still land either way; this tool has never refused
+			// after the rename and does not start now. What changes is that
+			// the verdict is real, so a clean splice settles and a broken one
+			// is recorded as broken instead of as unknown.
+			spliceCheck := fallbackSyntaxOutcomeFor(ctx, input.Path, finalContent).aggregate()
+			if spliceCheck.Status == ValidationFailed {
+				log.Printf("[structural_edit] %s landed but does not parse (%s)",
+					logPath(input.Path), safeDiagnosticSummary(spliceCheck.Detail))
+				out.Warning = fmt.Sprintf(
+					"the edit landed, but %s does not parse now (%s). Run it and "+
+						"read the real traceback, then fix that line.",
+					input.Path, truncateStr(spliceCheck.Detail, 160))
+			}
 			outBytes, _ := json.Marshal(out)
-			// The splice landed. Validation stays not_run deliberately: the
-			// tree-sitter transform proves v3-service could re-parse ITS
-			// output, and this tool runs no check of its own on the bytes it
-			// writes -- which may be a V3 replacement rather than the splice.
-			// Reading the service's ok boolean as a syntax pass is exactly
-			// the inference overlayValidation exists to prevent.
 			result := &ToolResult{Success: true, Data: outBytes,
 				MutationStatus:   MutationApplied,
 				ValidationKind:   ValidationKindSyntax,
 				ValidationStatus: ValidationNotRun}
+			overlayValidation(result, spliceCheck)
 			if v3Out.Used {
 				result.V3Used = true
 				result.CandidatesTested = v3Out.CandidatesTested
