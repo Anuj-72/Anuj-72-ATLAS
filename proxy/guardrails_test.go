@@ -2469,3 +2469,41 @@ func TestACommandThatNeverRanIsNotAFailedVerification(t *testing.T) {
 		t.Error("nil result must not be treated as a non-run")
 	}
 }
+
+// A ban must never recommend the tool it just banned.
+//
+// Measured on acceptance task L (f9c89df): the model's structural_edit content
+// was garbled, ATLAS correctly refused to write invalid Python, the model
+// re-sent it unchanged, and structural_edit was banned for pricing.py. The ban
+// note then said: "structural_edit is no longer available for pricing.py ...
+// Use `structural_edit`". Alternatives were chosen by file extension alone and
+// never excluded the banned tool. The session ended repeated_refusal with
+// nothing written.
+func TestAToolBanNeverRecommendsTheBannedTool(t *testing.T) {
+	for _, c := range []struct{ tool, path string }{
+		{"structural_edit", "pricing.py"},
+		{"structural_edit", "index.html"},
+		{"replace_lines", "pricing.py"},
+		{"replace_lines", "data.json"},
+		{"write_file", "pricing.py"},
+		{"edit_file", "notes.txt"},
+	} {
+		note := toolBanNote(c.tool, c.path)
+		if strings.Contains(note, "Use ") {
+			advice := note[strings.Index(note, "Use "):]
+			if strings.Contains(advice, "`"+c.tool+"`") {
+				t.Errorf("ban on %s for %s recommends %s: %q", c.tool, c.path, c.tool, advice)
+			}
+		}
+		// Something actionable must remain.
+		if !strings.Contains(note, "`") {
+			t.Errorf("ban on %s for %s left no alternative: %q", c.tool, c.path, note)
+		}
+	}
+	// A .py ban on structural_edit must still leave a targeted option, not
+	// only "rewrite the whole file".
+	note := toolBanNote("structural_edit", "pricing.py")
+	if !strings.Contains(note, "replace_lines") {
+		t.Errorf("no targeted alternative left for a .py: %q", note)
+	}
+}

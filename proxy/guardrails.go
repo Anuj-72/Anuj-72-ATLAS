@@ -2849,13 +2849,34 @@ func repairLiteralDrift(content string, literals []string) (string, []string, bo
 // form was measured to be ignored: an explicit "re-sending will not help,
 // use structural_edit" was followed by the identical call on the next turn.
 func toolBanNote(tool, path string) string {
-	alt := "`replace_lines` (assert only the first and last line of the range) or `write_file` with the complete new contents"
+	// Never name the tool that was just banned. The alternatives used to be
+	// chosen by file extension alone, so banning structural_edit on a .py
+	// file produced "structural_edit is no longer available for pricing.py
+	// ... Use `structural_edit`" -- the one instruction the model cannot
+	// follow. Measured on acceptance task L: the session was handed exactly
+	// that and ended repeated_refusal with nothing written to disk.
+	structuralFits := false
 	if ext := strings.ToLower(filepath.Ext(path)); ext == ".py" || ext == ".html" || ext == ".htm" {
-		alt = "`structural_edit` (a selector such as `function:update` plus the new body — no old_str to reproduce) or `write_file` with the complete new contents"
+		structuralFits = true
+	}
+	candidates := []struct{ name, how string }{
+		{"structural_edit", "`structural_edit` (a selector such as `function:update` plus the new body — no old_str to reproduce)"},
+		{"replace_lines", "`replace_lines` (assert only the first and last line of the range)"},
+		{"write_file", "`write_file` with the complete new contents"},
+	}
+	var alts []string
+	for _, c := range candidates {
+		if c.name == tool {
+			continue
+		}
+		if c.name == "structural_edit" && !structuralFits {
+			continue
+		}
+		alts = append(alts, c.how)
 	}
 	return fmt.Sprintf(
 		"%s is no longer available for %s in this session: it was sent and rejected unchanged, so it is not a path to a working edit here. Use %s.",
-		tool, path, alt)
+		tool, path, strings.Join(alts, " or "))
 }
 
 // --- explicit read-only requests --------------------------------------------
