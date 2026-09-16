@@ -675,6 +675,133 @@ func announcesImminentToolUse(text string) bool {
 	return false
 }
 
+// replyClosing returns the part of a reply that decides whether it is an
+// answer: its last paragraph, capped to the final ~320 characters, with any
+// sentence that offers optional follow-up to the USER removed.
+//
+// The closing, not the whole reply, because "I'll start by describing the
+// flow" followed by the description is an answer, while the same words as
+// the last thing said are a promise. Offers are removed because "If you'd
+// like, I can fix it" and "let me know if you want me to look at scoring.py"
+// hand the next step to the user; they do not leave the agent's own work
+// undone.
+func replyClosing(text string) string {
+	t := strings.TrimSpace(text)
+	if i := strings.LastIndex(t, "\n\n"); i >= 0 && len(strings.TrimSpace(t[i:])) > 0 {
+		t = strings.TrimSpace(t[i:])
+	}
+	if len(t) > 320 {
+		t = t[len(t)-320:]
+	}
+	var kept []string
+	for _, sentence := range replySentenceRe.FindAllString(t, -1) {
+		if replyOfferRe.MatchString(sentence) {
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	return strings.ToLower(strings.Join(kept, " "))
+}
+
+var (
+	replySentenceRe = regexp.MustCompile(`[^.!?\n]+(?:[.!?]+|$)`)
+	replyOfferRe    = regexp.MustCompile(`(?i)\blet me know\b|\bif you(?:'d| would)? (?:like|want|prefer)\b|\bwould you like\b|\bwant me to\b|\bshall i\b|\bhappy to\b|\bi can also\b`)
+)
+
+// replyDefersWork reports a reply whose closing hands off to work the agent
+// has not done: an announced next action ("I will now check the
+// generate_plan function"), a result it says is still pending ("Please wait
+// while I verify the exact line"), or promised content never given.
+//
+// A `text` reply ends the session, so a reply that closes this way is not an
+// answer -- the work it names will never happen. Measured: every
+// bugfind_tiebreak session across four benchmark runs (8 of 8) ended on such
+// a closing and was reported completed. announcesImminentToolUse already
+// caught the first shape, but only before any tool had run, which is exactly
+// when a model that has read one file and means to read another is not.
+func replyDefersWork(text string) bool {
+	closing := replyClosing(text)
+	if closing == "" {
+		return false
+	}
+	for _, wait := range []string{"please wait", "one moment", "hold on", "stand by", "bear with me"} {
+		if strings.Contains(closing, wait) {
+			return true
+		}
+	}
+	for _, pending := range []string{"once i verify", "once i confirm", "once i check",
+		"after i verify", "after i confirm", "after i check", "to confirm the exact",
+		"to verify the exact"} {
+		if strings.Contains(closing, pending) {
+			return true
+		}
+	}
+	subjects := []string{"i will ", "i'll ", "let me ", "i need to ", "i'm going to ",
+		"i am going to ", "next, i ", "now i ", "i am now ", "i'm now ", "which i will "}
+	verbs := []string{"read", "look at", "look into", "open", "inspect", "examine", "outline",
+		"check", "search", "investigate", "dig into", "trace", "review the", "take a look",
+		"verify", "confirm", "run ", "test", "locate", "find ", "determine", "analyze",
+		"analyse", "compare", "debug", "reproduce"}
+	for _, sub := range subjects {
+		for from := 0; ; {
+			at := strings.Index(closing[from:], sub)
+			if at < 0 {
+				break
+			}
+			at += from
+			window := closing[at+len(sub):]
+			if len(window) > 60 {
+				window = window[:60]
+			}
+			for _, v := range verbs {
+				if strings.HasPrefix(strings.TrimPrefix(strings.TrimPrefix(window, "now "), "first "), v) ||
+					strings.HasPrefix(window, "now "+v) || strings.HasPrefix(window, "next "+v) {
+					return true
+				}
+			}
+			from = at + len(sub)
+		}
+	}
+	return promisesMoreContent(text)
+}
+
+// replyDeclaresInability reports a reply whose closing says, in the first
+// person, that the agent could not accomplish what was asked -- "I could not
+// determine the cause from these files". That is an honest outcome, and it is
+// not a completed answer: the session ends incomplete instead of reporting
+// success. Deliberately narrow: an environment limitation stated alongside an
+// answer ("I couldn't run the tests, but the fix is ...") names no outcome
+// verb and does not match, and third-person descriptions of code ("the
+// function is unable to handle an empty list") have no first-person subject.
+func replyDeclaresInability(text string) bool {
+	closing := replyClosing(text)
+	if closing == "" {
+		return false
+	}
+	subjects := []string{"i could not ", "i couldn't ", "i was unable to ", "i am unable to ",
+		"i'm unable to ", "i cannot ", "i can't ", "i was not able to ", "i wasn't able to ",
+		"i am not able to ", "i'm not able to "}
+	outcomes := []string{"determine", "find", "identify", "locate", "complete", "finish",
+		"answer", "figure out", "work out", "pin down", "resolve", "tell"}
+	for _, sub := range subjects {
+		at := strings.Index(closing, sub)
+		if at < 0 {
+			continue
+		}
+		window := closing[at+len(sub):]
+		if len(window) > 40 {
+			window = window[:40]
+		}
+		for _, o := range outcomes {
+			if strings.HasPrefix(window, o) || strings.HasPrefix(window, "fully "+o) ||
+				strings.HasPrefix(window, "reliably "+o) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // inlineProgramFlagRe matches an interpreter invoked with a program passed
 // inline on the command line rather than as a file.
 var inlineProgramFlagRe = regexp.MustCompile(`\b(python3?|node|perl|ruby)\s+-(c|e)\b`)

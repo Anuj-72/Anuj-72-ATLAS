@@ -153,6 +153,13 @@ type runState struct {
 	// tell "announced a tool call and stopped" from ordinary narration after
 	// work has already happened.
 	toolsRun int
+	// What the latest exit claim's closing said about itself, recorded by
+	// exitGates for finalizeCompletion. replyOutstanding: it deferred work
+	// the agent never did and could not be sent back to do it (bounces spent
+	// or too little budget left). replyDeclaredIncomplete: it said, in the
+	// first person, that the agent could not accomplish the request.
+	replyOutstanding        bool
+	replyDeclaredIncomplete bool
 	// Name of a tool_call that has been streamed but not yet answered by a
 	// tool_result. The call is announced before permission and execution,
 	// so any exit in between has to answer it or the consumer is left with
@@ -440,15 +447,49 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// A reply that signs off promising the actual answer leaves the user with
 	// half of one, whether or not tools ran. Checked before the zero-tools
 	// case below, since this one applies after the work is done.
-	if promisesMoreContent(claimText) && s.chargeBounce("intent_gate") {
-		log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
-			s.gateBounces["intent_gate"], maxGateBounces)
-		return "intent_gate", "You ended by saying you would provide the answer, but the reply stops there and the turn ends with it — the user sees only the promise. Give the actual content now, in full, in a single `text` reply."
+	//
+	// Whichever of these matches, the reply is not an answer. It goes back for
+	// one more attempt only while a bounce is left AND the session has time to
+	// act on it; otherwise the flags below make finalizeCompletion report the
+	// session incomplete. Before this, a spent bounce fell straight through
+	// to "completed", so the cap turned an unfinished reply into a success.
+	s.replyOutstanding, s.replyDeclaredIncomplete = false, false
+	if promisesMoreContent(claimText) {
+		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
+			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
+				s.gateBounces["intent_gate"], maxGateBounces)
+			return "intent_gate", "You ended by saying you would provide the answer, but the reply stops there and the turn ends with it — the user sees only the promise. Give the actual content now, in full, in a single `text` reply."
+		}
+		s.replyOutstanding = true
 	}
-	if s.toolsRun == 0 && announcesImminentToolUse(claimText) && s.chargeBounce("intent_gate") {
-		log.Printf("[agent] intent gate: bouncing a text exit that announced a tool call without making one (bounce %d/%d)",
-			s.gateBounces["intent_gate"], maxGateBounces)
-		return "intent_gate", "You described the tool call you were about to make instead of making it, and a `text` reply ends the turn. Emit the tool_call itself now — read the file, then answer in a single `text` reply once you have its contents."
+	if s.toolsRun == 0 && announcesImminentToolUse(claimText) {
+		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
+			log.Printf("[agent] intent gate: bouncing a text exit that announced a tool call without making one (bounce %d/%d)",
+				s.gateBounces["intent_gate"], maxGateBounces)
+			return "intent_gate", "You described the tool call you were about to make instead of making it, and a `text` reply ends the turn. Emit the tool_call itself now — read the file, then answer in a single `text` reply once you have its contents."
+		}
+		s.replyOutstanding = true
+	}
+	// The same failure after work has started. The zero-tools condition above
+	// was there so narration could not interrupt work in progress -- but a
+	// `text` exit has already stopped the work, and a reply that CLOSES by
+	// deferring ("I will now check the generate_plan function", "Please wait
+	// while I verify the exact line") hands the user nothing. Every
+	// bugfind_tiebreak session across four benchmark runs ended this way and
+	// was reported completed. Judged on the closing only, with offers to the
+	// user removed, so a real answer that mentions reading, or ends "If you'd
+	// like, I can fix it", still completes.
+	if replyDeclaresInability(claimText) {
+		// Honest, and final: sending it back would demand work the agent has
+		// just said it cannot do.
+		s.replyDeclaredIncomplete = true
+	} else if s.toolsRun > 0 && replyDefersWork(claimText) {
+		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
+			log.Printf("[agent] intent gate: bouncing a reply that closed by deferring work it never did (bounce %d/%d)",
+				s.gateBounces["intent_gate"], maxGateBounces)
+			return "intent_gate", "Your reply ends by saying what you will do next, but a `text` reply ends the session — that work would never happen, and the user would be left without the answer. If you need to look at something, make that tool call now. If you already have what you need, give your complete final answer as a `text` reply that stands on its own. If you cannot answer, say so plainly."
+		}
+		s.replyOutstanding = true
 	}
 	// A claim about a file the run never opened. This is the conversational
 	// half of an invariant the write path already enforces — edit_file,
@@ -580,6 +621,25 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 // left. A gate whose budget is gone returns false so exitGates falls through
 // to the next gate rather than returning early: an exhausted gate must stop
 // repeating itself, not mute the gates behind it.
+// replyContinuationFloor is the least session time worth sending an
+// unfinished reply back for: one turn to act on what it deferred and one to
+// answer. Measured median model think-time before a call is ~26 s.
+const replyContinuationFloor = 60 * time.Second
+
+// continuationFits reports whether the session can still afford to send an
+// unfinished reply back. With less than replyContinuationFloor left, the
+// honest outcome is to end incomplete now rather than to start work that the
+// deadline will cut off and report as a timeout instead.
+func (s *runState) continuationFits(ctx *AgentContext) bool {
+	if ctx == nil || ctx.Ctx == nil {
+		return true
+	}
+	if deadline, ok := ctx.Ctx.Deadline(); ok && time.Until(deadline) < replyContinuationFloor {
+		return false
+	}
+	return true
+}
+
 func (s *runState) chargeBounce(gate string) bool {
 	if s.gateBounces[gate] >= maxGateBounces {
 		return false
@@ -8511,6 +8571,17 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	if tc := ctx.TaskContract; completedReason == "text_reply" && tc != nil &&
 		tc.TaskMode == TaskModeWork && st.madeProductiveChange {
 		return TerminalIncomplete, "work_not_declared_complete"
+	}
+	// The claim itself says it is not an answer. exitGates recorded it: a
+	// closing that deferred work the session could not be sent back to do,
+	// or a first-person statement that the request could not be accomplished.
+	// Product status only -- whether an answer is acceptable to a user is
+	// judged elsewhere.
+	if st.replyOutstanding {
+		return TerminalIncomplete, "reply_left_work_outstanding"
+	}
+	if st.replyDeclaredIncomplete {
+		return TerminalIncomplete, "reply_declared_incomplete"
 	}
 	// Something may still be writing. A hash taken now describes an instant,
 	// not a result, and nothing here can tell a quiet process from a finished
