@@ -1298,6 +1298,16 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
     events: list[dict] = []
     stream_ok = False
     t0 = time.time()
+
+    def take(ev: dict) -> None:
+        # Arrival time, seconds since the request went out. Saved events had no
+        # timing at all, so a question as basic as "where did the 570s go --
+        # generation, tool execution, or waiting?" could not be answered from
+        # the recorded evidence, and latency claims made without it had to be
+        # withdrawn. Inert to every detector, which read `type` and `data`.
+        ev["_t"] = round(time.time() - t0, 3)
+        events.append(ev)
+
     history: list[dict] = [{"role": "user", "content": task.prompt}]
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -1307,7 +1317,7 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
                 # 20 minutes against a 900s cap, trying to satisfy a self-test
                 # it had written with the wrong expectation.
                 if time.time() - t0 > timeout:
-                    events.append({"type": "error", "data": {
+                    take({"type": "error", "data": {
                         "error": f"harness cap: session exceeded {timeout}s"}})
                     break
                 if raw_sink is not None:
@@ -1320,11 +1330,11 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
                     stream_ok = True
                     break
                 try:
-                    events.append(json.loads(payload))
+                    take(json.loads(payload))
                 except json.JSONDecodeError:
-                    events.append({"type": "__unparseable__", "raw": payload[:200]})
+                    take({"type": "__unparseable__", "raw": payload[:200]})
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        events.append({"type": "error", "data": {"error": f"stream failed: {e}"}})
+        take({"type": "error", "data": {"error": f"stream failed: {e}"}})
 
     # Follow-ups: same session, prior exchange replayed as history. The
     # assistant turn is reconstructed from what it actually emitted.
@@ -1353,11 +1363,11 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
                     if payload == "[DONE]":
                         break
                     try:
-                        events.append(json.loads(payload))
+                        take(json.loads(payload))
                     except json.JSONDecodeError:
-                        events.append({"type": "__unparseable__", "raw": payload[:200]})
+                        take({"type": "__unparseable__", "raw": payload[:200]})
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            events.append({"type": "error", "data": {"error": f"followup failed: {e}"}})
+            take({"type": "error", "data": {"error": f"followup failed: {e}"}})
     wall = time.time() - t0
 
     s = Session(task=task.name, rep=rep, events=events, workspace=workspace,
