@@ -150,9 +150,10 @@ def _check_add_function(ws: Path) -> tuple[bool, str]:
         return False, f"no median() defined (found {sorted(names)})"
     # Behaviour, not just presence.
     proc = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0,%r); import stats;"
-         "print(stats.median([3,1,2]), stats.median([4,1,3,2]))" % str(ws)],
+        _runtime_argv() + [
+            "-c",
+            "import sys; sys.path.insert(0,%r); import stats;"
+            "print(stats.median([3,1,2]), stats.median([4,1,3,2]))" % _ws_path(ws)],
         capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
         return False, f"median() raised: {proc.stderr.strip()[:160]}"
@@ -163,9 +164,10 @@ def _check_add_function(ws: Path) -> tuple[bool, str]:
 
 def _check_offbyone(ws: Path) -> tuple[bool, str]:
     proc = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0,%r); import chunk;"
-         "print(chunk.chunks([1,2,3,4,5], 2))" % str(ws)],
+        _runtime_argv() + [
+            "-c",
+            "import sys; sys.path.insert(0,%r); import chunk;"
+            "print(chunk.chunks([1,2,3,4,5], 2))" % _ws_path(ws)],
         capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
         return False, f"chunks() raised: {proc.stderr.strip()[:160]}"
@@ -197,7 +199,8 @@ def _run_solution(ws: Path, timeout: int = 60) -> tuple[bool, str]:
     if not prog.exists():
         return False, "solve.py was never created"
     try:
-        p = subprocess.run([sys.executable, "solve.py"], cwd=str(ws),
+        p = subprocess.run(_runtime_argv(_ws_path(ws)) + ["solve.py"],
+                           cwd=str(ws),
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, f"solve.py did not finish within {timeout}s"
@@ -471,8 +474,12 @@ def _check_add_toml(ws: Path) -> tuple[bool, str]:
         "tree = ast.parse(src)\n"
         "fn = next((n for n in ast.walk(tree)\n"
         "           if isinstance(n, ast.FunctionDef) and 'toml' in ast.dump(n)), None)\n"
-        "print('FOUND' if fn else 'MISSING')\n" % str(src_path))
-    p = subprocess.run([sys.executable, str(probe)], capture_output=True,
+        "print('FOUND' if fn else 'MISSING')\n"
+        % f"{_ws_path(ws)}/executor_server.py")
+    # Same interpreter rule as everywhere else: the probe ast.parse()s the
+    # agent's source, so it has to run under the Python that source targets.
+    p = subprocess.run(_runtime_argv(_ws_path(ws)) + ["_probe_toml.py"],
+                       cwd=str(ws), capture_output=True,
                        text=True, timeout=60)
     probe.unlink(missing_ok=True)
     if "FOUND" not in p.stdout:
@@ -585,9 +592,10 @@ def _check_multiturn(ws: Path) -> tuple[bool, str]:
         if want not in names:
             return False, f"{want}() missing after both turns (have {sorted(names)})"
     proc = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0,%r); import stats;"
-         "print(stats.median([3,1,2]), stats.mode([1,2,2,3]))" % str(ws)],
+        _runtime_argv() + [
+            "-c",
+            "import sys; sys.path.insert(0,%r); import stats;"
+            "print(stats.median([3,1,2]), stats.mode([1,2,2,3]))" % _ws_path(ws)],
         capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
         return False, f"a function raised: {proc.stderr.strip()[:150]}"
@@ -695,17 +703,17 @@ def _check_multifile(ws: Path) -> tuple[bool, str]:
     if len(store_src.splitlines()) < 5:
         return False, "store.py is a stub"
 
-    tp = subprocess.run([sys.executable, "-m", "pytest", "test_store.py", "-q"],
+    tp = subprocess.run(_runtime_argv(_ws_path(ws)) + ["-m", "pytest", "test_store.py", "-q"],
                         cwd=str(ws), capture_output=True, text=True, timeout=120)
     if tp.returncode != 0:
         tail = (tp.stdout or tp.stderr).strip().splitlines()
         return False, f"tests fail: {tail[-1][:120] if tail else 'no output'}"
 
-    add = subprocess.run([sys.executable, "todo.py", "add", "buy milk"],
+    add = subprocess.run(_runtime_argv(_ws_path(ws)) + ["todo.py", "add", "buy milk"],
                          cwd=str(ws), capture_output=True, text=True, timeout=60)
     if add.returncode != 0:
         return False, f"`todo.py add` failed: {add.stderr.strip()[:120]}"
-    lst = subprocess.run([sys.executable, "todo.py", "list"],
+    lst = subprocess.run(_runtime_argv(_ws_path(ws)) + ["todo.py", "list"],
                          cwd=str(ws), capture_output=True, text=True, timeout=60)
     if lst.returncode != 0:
         return False, f"`todo.py list` failed: {lst.stderr.strip()[:120]}"
@@ -756,6 +764,41 @@ def _js_parses(js: str) -> tuple[bool, str]:
 # Set once from --sandbox-container. The sandbox's interpreter is the one that
 # will run the agent's code, and it is not necessarily this script's.
 _SANDBOX_CONTAINER = ""
+# Container-side path of the run workspace, set from --subdir. Empty when no
+# sandbox was configured, which is the only case that falls back to the host.
+_SANDBOX_WORKDIR = ""
+
+
+def _runtime_argv(workdir: str = "") -> list[str]:
+    """Run the agent's code in the interpreter that actually runs it.
+
+    This script's Python is 3.9; the sandbox the agent writes and verifies its
+    code in is 3.13. Judging one with the other is how a working program gets
+    scored as broken. Measured on multifile_cli rep2, which wrote
+
+        print(f"{i}: {status} {todo["text"]}")
+
+    -- nested same-type quotes in an f-string, valid since PEP 701 (3.12+).
+    The sandbox ran the app correctly (3 tests pass, `add` and `list` both
+    work); this script raised SyntaxError and recorded a task failure, while
+    ATLAS had truthfully reported deliverables_demonstrated.
+
+    _sandbox_python_parses already established exactly this reasoning for the
+    parse check -- "this script's own interpreter is not the one the code runs
+    under ... ask the runtime that will execute it". It was never applied to
+    the checks that EXECUTE the code, which is where it matters most.
+    """
+    if _SANDBOX_CONTAINER and _SANDBOX_WORKDIR:
+        argv = ["docker", "exec"]
+        if workdir:
+            argv += ["-w", workdir]
+        return argv + [_SANDBOX_CONTAINER, "python3"]
+    return [sys.executable]
+
+
+def _ws_path(ws: Path) -> str:
+    """The workspace as the interpreter that will run the code sees it."""
+    return _SANDBOX_WORKDIR or str(ws)
 
 
 def _sandbox_python_parses(text: str) -> tuple[Optional[bool], str]:
@@ -1488,8 +1531,12 @@ def main() -> int:
         print(f"error: no known tasks in {args.tasks!r}", file=sys.stderr)
         return 2
 
-    global _SANDBOX_CONTAINER
+    global _SANDBOX_CONTAINER, _SANDBOX_WORKDIR
     _SANDBOX_CONTAINER = args.sandbox_container or ""
+    # Where the run workspace appears inside the sandbox. Both halves are
+    # required before any check leaves the host interpreter, so a run without
+    # --sandbox-container behaves exactly as it did before.
+    _SANDBOX_WORKDIR = f"/workspace/{args.subdir}" if args.subdir else ""
     if problems := preflight(args.sandbox_container, args.subdir):
         for line in problems:
             print(f"error: {line}", file=sys.stderr)
