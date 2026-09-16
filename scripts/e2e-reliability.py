@@ -438,6 +438,94 @@ _EXISTING_LANGS = ("python", "javascript", "typescript", "go", "java",
                    "kotlin", "rust", "ruby", "php", "bash", "json", "yaml")
 
 
+# Runs inside the sandbox. Prints one JSON line: {"ok": bool, "why": str}.
+_TOML_PROBE = r'''
+import ast, json, sys, tempfile, types
+from pathlib import Path
+
+def verdict(ok, why=""):
+    print(json.dumps({"ok": ok, "why": why}))
+    sys.exit(0)
+
+new_src = open("executor_server.py").read()
+old_src = open("_probe_original.py").read()
+
+def dispatch(src):
+    """The lang if/elif chain with the most branches, and its function."""
+    best = None
+    for fn in [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef)]:
+        for stmt in fn.body:
+            if not (isinstance(stmt, ast.If) and "lang" in (ast.get_source_segment(src, stmt.test) or "")):
+                continue
+            chain, node = {}, stmt
+            while True:
+                key = " ".join((ast.get_source_segment(src, node.test) or "").split())
+                chain[key] = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+                if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+                    node = node.orelse[0]
+                    continue
+                if node.orelse:
+                    chain["<else>"] = ast.dump(ast.Module(body=node.orelse, type_ignores=[]))
+                break
+            if best is None or len(chain) > len(best[1]):
+                best = (fn, chain)
+    return best
+
+old = dispatch(old_src)
+new = dispatch(new_src)
+if new is None:
+    verdict(False, "the lang dispatch chain is gone")
+old_fn, old_chain = old
+new_fn, new_chain = new
+if new_fn.name != old_fn.name:
+    verdict(False, "the dispatch moved from %s to %s" % (old_fn.name, new_fn.name))
+changed = [k for k in old_chain if new_chain.get(k) != old_chain[k]]
+if changed:
+    verdict(False, "existing branch changed or removed: %s" % ", ".join(changed[:3]))
+toml_keys = [k for k in new_chain if k not in old_chain and "toml" in k]
+if not toml_keys:
+    verdict(False, "no toml branch in %s's dispatch" % new_fn.name)
+
+# The prompt permits the toml package; the sandbox ships only tomllib. Alias
+# it so a permitted choice is not failed by the environment. This supplies no
+# logic the agent did not write.
+try:
+    import toml  # noqa: F401
+except ImportError:
+    import tomllib
+    shim = types.ModuleType("toml")
+    shim.loads = tomllib.loads
+    shim.TomlDecodeError = tomllib.TOMLDecodeError
+    shim.TOMLDecodeError = tomllib.TOMLDecodeError
+    sys.modules["toml"] = shim
+
+ns = {}
+for stmt in ast.parse(new_src).body:
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        try:
+            exec(compile(ast.Module(body=[stmt], type_ignores=[]), "executor_server.py", "exec"), ns)
+        except Exception:
+            pass
+ns.setdefault("_safe_overlay_path", lambda f: f)
+exec(compile(ast.Module(body=[new_fn], type_ignores=[]), "executor_server.py", "exec"), ns)
+check = ns[new_fn.name]
+tmp = Path(tempfile.mkdtemp())
+try:
+    good = check("toml", 'title = "ok"\n[owner]\nname = "x"\n', tmp)
+except Exception as e:
+    verdict(False, "valid TOML raised %s: %s" % (type(e).__name__, str(e)[:80]))
+try:
+    bad = check("toml", 'title = "unterminated\n[owner\n', tmp)
+except Exception as e:
+    verdict(False, "invalid TOML raised %s instead of appending an error: %s" % (type(e).__name__, str(e)[:80]))
+if not isinstance(good, list) or good:
+    verdict(False, "valid TOML reported errors: %r" % (good,)[:120])
+if not isinstance(bad, list) or not bad:
+    verdict(False, "invalid TOML reported no error")
+verdict(True)
+'''
+
+
 def _check_add_toml(ws: Path) -> tuple[bool, str]:
     src_path = ws / "executor_server.py"
     src = src_path.read_text()
@@ -464,27 +552,51 @@ def _check_add_toml(ws: Path) -> tuple[bool, str]:
     if not re.search(r"import\s+toml|tomllib|tomli", src):
         return False, "toml branch added but nothing parses TOML"
 
-    # Behavioural: the added branch has to actually accept valid TOML and
-    # reject broken TOML. Exercised by importing just the checker, so this
-    # does not need the server running.
+    # Behavioural, and against the seeded original. The comment here used to
+    # promise this while the probe only checked that "toml" appeared inside
+    # some function, and the success message claimed "all 12 existing
+    # languages intact" having checked only that each was still dispatched.
+    #
+    # Measured on 84296fd smallrung_toml rep2, scored PASS by that check:
+    # insert_after placed `elif lang == "toml":` inside the java branch,
+    # between `stderr = result.get(...)` and the loop that turns compiler
+    # output into errors. The file parsed and every language was still
+    # dispatched -- yet java compile errors were no longer reported, and the
+    # toml branch raised UnboundLocalError on invalid TOML instead of
+    # appending an error. The prompt says "Change nothing else -- the existing
+    # language branches must keep working exactly as they do now", so both
+    # halves are what the user asked for, not a hidden bar.
+    (ws / "_probe_original.py").write_text(_EXECUTOR.read_text())
     probe = ws / "_probe_toml.py"
-    probe.write_text(
-        "import ast, sys\n"
-        "src = open(%r).read()\n"
-        "tree = ast.parse(src)\n"
-        "fn = next((n for n in ast.walk(tree)\n"
-        "           if isinstance(n, ast.FunctionDef) and 'toml' in ast.dump(n)), None)\n"
-        "print('FOUND' if fn else 'MISSING')\n"
-        % f"{_ws_path(ws)}/executor_server.py")
-    # Same interpreter rule as everywhere else: the probe ast.parse()s the
-    # agent's source, so it has to run under the Python that source targets.
-    p = subprocess.run(_runtime_argv(_ws_path(ws)) + ["_probe_toml.py"],
-                       cwd=str(ws), capture_output=True,
-                       text=True, timeout=60)
-    probe.unlink(missing_ok=True)
-    if "FOUND" not in p.stdout:
-        return False, "toml appears in the file but not inside any function"
-    return True, "toml handling added, all 12 existing languages intact, file parses"
+    probe.write_text(_TOML_PROBE)
+    # Runs under the sandbox's Python: it needs tomllib (3.11+) and it parses
+    # the agent's source, which targets that interpreter.
+    p = None
+    try:
+        p = subprocess.run(_runtime_argv(_ws_path(ws)) + ["_probe_toml.py"],
+                           cwd=str(ws), capture_output=True,
+                           text=True, timeout=60)
+        out = p.stdout
+    except subprocess.TimeoutExpired:
+        out = ""
+    finally:
+        probe.unlink(missing_ok=True)
+        (ws / "_probe_original.py").unlink(missing_ok=True)
+    verdict = None
+    for line in reversed(out.splitlines()):
+        if line.startswith("{"):
+            try:
+                verdict = json.loads(line)
+            except json.JSONDecodeError:
+                pass
+            break
+    if verdict is None:
+        tail = ((p.stderr if p else "") or out or "timed out")[-160:]
+        return False, f"toml probe produced no verdict: {tail}"
+    if not verdict.get("ok"):
+        return False, verdict.get("why", "toml probe failed")
+    return True, ("toml branch accepts valid TOML and reports invalid TOML; "
+                  "all existing dispatch branches unchanged")
 
 
 TASKS["smallrung_toml"] = Task(
