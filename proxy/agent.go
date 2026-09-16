@@ -2346,6 +2346,13 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						}
 						log.Printf("[agent] verification recorded: turn=%d cmd=%q",
 							turn, truncateStr(rc.Command, 60))
+					} else if verificationNeverRan(result) {
+						// The command failed before it could exercise
+						// anything. Not evidence the artifact is broken, so it
+						// must not latch -- and not evidence it works, so it
+						// does not clear either. Strictly neutral.
+						log.Printf("[agent] verification did not run: turn=%d cmd=%q — neither latching nor clearing",
+							turn, truncateStr(rc.Command, 60))
 					} else {
 						// Red test/build. Latches the verification gate on
 						// for this loop until something verifies green.

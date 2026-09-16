@@ -2908,3 +2908,41 @@ func readOnlyRequestRefusal(tool *ToolDef, ctx *AgentContext) string {
 			"deliverable for this request, so no file needs to change for it to be complete.",
 		tool.Name, tool.Name, what)
 }
+
+// verificationNeverRan reports that a verification command failed before it
+// could exercise anything: the runner could not find what it was pointed at,
+// or collected nothing to run.
+//
+// That is not evidence the artifact is broken, so it must not latch the
+// verification gate. It is not evidence the artifact works either, so it never
+// clears the gate. Strictly neutral.
+//
+// Measured on smallrung_toml rep1: the model had ALREADY verified green
+// ("Successfully parsed: {'title': 'Test'}"), then invented
+// `python3 -m pytest tests/test_syntax_check.py`. Its own next call,
+// find_file on tests/, returned 0 matches -- the directory never existed.
+// pytest collected nothing, the gate latched on that as a red test, and the
+// session spent the rest of its 570 s budget chasing a directory that was not
+// there, ending work_deadline with a correct edit already on disk.
+//
+// Deliberately keyed ONLY on messages a runner emits about its own arguments.
+// A generic "no such file or directory" is excluded on purpose: a test that
+// fails because the program under test did not create a file says exactly
+// that, and neutralising it would let a genuine failure through.
+func verificationNeverRan(result *ToolResult) bool {
+	if result == nil {
+		return false
+	}
+	hay := strings.ToLower(result.Error + " " + string(result.Data))
+	for _, runnerSaysItFoundNothing := range []string{
+		"no tests ran",
+		"no tests collected",
+		"error: file or directory not found",
+		"can't open file",
+	} {
+		if strings.Contains(hay, runnerSaysItFoundNothing) {
+			return true
+		}
+	}
+	return false
+}

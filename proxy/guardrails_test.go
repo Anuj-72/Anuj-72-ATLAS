@@ -2429,3 +2429,43 @@ func TestImportingAModuleCountsAsRunningIt(t *testing.T) {
 		}
 	}
 }
+
+// A command that never ran anything is not a failed verification.
+//
+// Measured on smallrung_toml rep1: the model had already verified green, then
+// ran `pytest tests/test_syntax_check.py` against a tests/ directory that did
+// not exist (its own find_file returned 0 matches). pytest collected nothing,
+// the verification gate latched on it as a red test, and the session burned
+// the rest of its 570s chasing a directory that was never there — ending
+// work_deadline with a correct edit already on disk.
+func TestACommandThatNeverRanIsNotAFailedVerification(t *testing.T) {
+	neverRan := []struct{ why, payload string }{
+		{"pytest collected nothing", `ERROR: file or directory not found: tests/test_syntax_check.py`},
+		{"pytest ran no tests", `collected 0 items` + "\n" + `no tests ran in 0.01s`},
+		{"python could not open the script", `python3: can't open file '/w/missing.py': [Errno 2] No such file or directory`},
+	}
+	for _, c := range neverRan {
+		if !verificationNeverRan(&ToolResult{Error: c.payload}) {
+			t.Errorf("%s: should be neutral, got latched: %q", c.why, c.payload)
+		}
+	}
+
+	// The other half, and the one that matters: a genuine failure must STILL
+	// latch. A test failing because the program under test did not create a
+	// file says "no such file or directory" too — neutralising that would let
+	// a real failure through, which is the opposite of the point.
+	realFailures := []struct{ why, payload string }{
+		{"assertion failed", `FAILED test_store.py::test_add - assert 0 == 1` + "\n" + `1 failed, 2 passed`},
+		{"program did not create its output", `FileNotFoundError: [Errno 2] No such file or directory: 'todos.json'`},
+		{"traceback from the artifact", `Traceback (most recent call last):` + "\n" + `SyntaxError: invalid syntax`},
+		{"build failure", `# command-line-arguments` + "\n" + `./main.go:7:2: undefined: Chunks`},
+	}
+	for _, c := range realFailures {
+		if verificationNeverRan(&ToolResult{Error: c.payload}) {
+			t.Errorf("%s: a real failure was neutralised: %q", c.why, c.payload)
+		}
+	}
+	if verificationNeverRan(nil) {
+		t.Error("nil result must not be treated as a non-run")
+	}
+}
