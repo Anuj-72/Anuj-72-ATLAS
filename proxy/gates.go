@@ -3465,3 +3465,204 @@ func modifiedSinceSessionView(ctx *AgentContext, path string, data []byte) bool 
 	}
 	return !diskIsOwnWrite(ctx, path, data)
 }
+
+// insertionReparentsPython reports an insert_after that would move EXISTING
+// Python statements into a different enclosing block, and describes the first
+// one moved. insert_after only adds lines; it never re-indents the lines after
+// the insertion point. So if an existing statement's enclosing block changes,
+// the insertion has restructured code the model did not ask to touch, and the
+// file can still parse -- which is why no syntax gate sees it.
+//
+// Measured on 84296fd smallrung_toml rep2: `elif lang == "toml":` inserted
+// after line 1359 of executor_server.py, between `stderr = result.get(...)`
+// and `for line in stderr.splitlines():`. The file parsed. The java branch's
+// loop that turns compiler output into errors now belonged to the new toml
+// branch's `except`, so java compile errors were no longer reported, and the
+// toml branch raised on invalid TOML. The task scored PASS under a static
+// check and was later corrected to fail.
+//
+// This is a structural invariant for an insertion, not a claim about
+// behaviour: an insertion that leaves every existing statement in its block
+// can still be wrong. Indentation is read from logical line starts, skipping
+// continuation lines, triple-quoted strings and bracketed spans. If the
+// original file cannot be scanned consistently the check is skipped rather
+// than risk refusing a sound edit.
+func insertionReparentsPython(path string, lines []string, at int, insert []string) (string, bool) {
+	if strings.ToLower(filepath.Ext(path)) != ".py" || len(insert) == 0 || at < 0 || at > len(lines) {
+		return "", false
+	}
+	orig, ok := pythonBlockParents(lines)
+	if !ok {
+		return "", false
+	}
+	merged := make([]string, 0, len(lines)+len(insert))
+	merged = append(merged, lines[:at]...)
+	merged = append(merged, insert...)
+	merged = append(merged, lines[at:]...)
+	upd, ok := pythonBlockParents(merged)
+	if !ok {
+		return "", false
+	}
+	const inserted = -3
+	toOrig := func(u int) int {
+		switch {
+		case u < 0:
+			return u
+		case u < at:
+			return u
+		case u < at+len(insert):
+			return inserted
+		default:
+			return u - len(insert)
+		}
+	}
+	for j := at; j < len(lines); j++ {
+		u := j + len(insert)
+		if (orig[j] == notLogicalStart) != (upd[u] == notLogicalStart) {
+			return fmt.Sprintf(
+				"insert_after at line %d would change how existing line %d (`%s`) is read: the inserted text leaves "+
+					"a string or bracket open, so that line would no longer be its own statement. Insert complete "+
+					"statements only.", at, j+1, strings.TrimSpace(lines[j])), true
+		}
+		if orig[j] == notLogicalStart {
+			continue
+		}
+		if was, now := orig[j], toOrig(upd[u]); was != now {
+			from := "the top level of the file"
+			if was >= 0 {
+				from = fmt.Sprintf("`%s` (line %d)", strings.TrimSpace(lines[was]), was+1)
+			}
+			to := "the top level of the file"
+			if now == inserted {
+				to = fmt.Sprintf("your inserted `%s`", strings.TrimSpace(merged[upd[u]]))
+			} else if now >= 0 {
+				to = fmt.Sprintf("`%s` (line %d)", strings.TrimSpace(lines[now]), now+1)
+			}
+			return fmt.Sprintf(
+				"insert_after at line %d would move existing code into a different block: line %d `%s` belongs to %s "+
+					"and would now belong to %s. The file would still parse, but that existing code would silently "+
+					"change behaviour. Nothing was written. Pick an insertion point where the next existing line is "+
+					"not indented deeper than the code you insert -- usually after the LAST line of the block you are "+
+					"adding next to, not in the middle of it.",
+				at, j+1, strings.TrimSpace(lines[j]), from, to), true
+		}
+	}
+	return "", false
+}
+
+const notLogicalStart = -2
+
+// pythonBlockParents returns, for each line, the index of the logical line
+// that encloses it by indentation (-1 for module level), or notLogicalStart
+// for blank lines, comment-only lines and lines that continue a previous
+// statement. ok is false when the scan ends inside a string or bracket, i.e.
+// the scanner cannot vouch for the structure it found.
+func pythonBlockParents(lines []string) ([]int, bool) {
+	parents := make([]int, len(lines))
+	type frame struct{ indent, index int }
+	var stack []frame
+	var triple string // `"""` or `'''` while inside a triple-quoted string
+	depth := 0
+	continued := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		start := triple == "" && depth == 0 && !continued && trimmed != "" && !strings.HasPrefix(trimmed, "#")
+		if start {
+			indent := pythonIndent(line)
+			for len(stack) > 0 && stack[len(stack)-1].indent >= indent {
+				stack = stack[:len(stack)-1]
+			}
+			if len(stack) == 0 {
+				parents[i] = -1
+			} else {
+				parents[i] = stack[len(stack)-1].index
+			}
+			stack = append(stack, frame{indent, i})
+		} else {
+			parents[i] = notLogicalStart
+		}
+		// Advance string/bracket state across this line.
+		continued = false
+		for k := 0; k < len(line); k++ {
+			c := line[k]
+			if triple != "" {
+				if strings.HasPrefix(line[k:], triple) {
+					k += 2
+					triple = ""
+				} else if c == '\\' {
+					k++
+				}
+				continue
+			}
+			switch c {
+			case '#':
+				k = len(line)
+			case '"', '\'':
+				q := string(c)
+				if strings.HasPrefix(line[k:], q+q+q) {
+					triple = q + q + q
+					k += 2
+					continue
+				}
+				// single-line string: skip to its closing quote
+				for k++; k < len(line); k++ {
+					if line[k] == '\\' {
+						k++
+						continue
+					}
+					if line[k] == c {
+						break
+					}
+				}
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				if depth > 0 {
+					depth--
+				}
+			}
+		}
+		if triple == "" && depth == 0 && strings.HasSuffix(strings.TrimRight(stripPythonComment(line), " \t"), "\\") {
+			continued = true
+		}
+	}
+	return parents, triple == "" && depth == 0 && !continued
+}
+
+func pythonIndent(line string) int {
+	n := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			n++
+		case '\t':
+			n += 8 - n%8
+		default:
+			return n
+		}
+	}
+	return n
+}
+
+// stripPythonComment removes a trailing comment that is outside any string on
+// a single line; used only to see whether a line ends in a continuation.
+func stripPythonComment(line string) string {
+	var q byte
+	for k := 0; k < len(line); k++ {
+		c := line[k]
+		if q != 0 {
+			if c == '\\' {
+				k++
+			} else if c == q {
+				q = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			q = c
+		} else if c == '#' {
+			return line[:k]
+		}
+	}
+	return line
+}

@@ -3900,6 +3900,12 @@ func insertAfterTool() *ToolDef {
 					in.Line, in.Path, limit)), nil
 			}
 			insert := strings.Split(strings.TrimSuffix(in.Content, "\n"), "\n")
+			// Before any pipeline work: an insertion that moves existing
+			// statements into another block is refused outright, however well
+			// the result parses. See insertionReparentsPython.
+			if msg, moved := insertionReparentsPython(path, lines, in.Line, insert); moved {
+				return structuralRefusal(msg), nil
+			}
 			merged := append([]string{}, lines[:in.Line]...)
 			merged = append(merged, insert...)
 			merged = append(merged, lines[in.Line:]...)
