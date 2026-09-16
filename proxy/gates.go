@@ -1473,7 +1473,35 @@ func actionMatchesTool(action, toolName string) bool {
 	if verb != "" && strings.HasPrefix(a, verb) {
 		return true
 	}
+	// The edit tools are one family. A plan step that says "edit_file
+	// stats.py" is satisfied by editing stats.py, whichever edit tool did it
+	// — the step describes the change, not the spelling of the call.
+	//
+	// Measured: add_function planned `s1: edit_file`, added the function with
+	// insert_after, and was told at the exit that s1 had not landed. The
+	// statement was false: the file had been edited, the test passed, and the
+	// session spent its three plan-gate bounces arguing about it.
+	//
+	// This does not loosen the gate. Family membership only decides the ACTION
+	// half; the target half still has to agree, and it now can, because these
+	// tools finally report their path above. An insert_after on some other
+	// file satisfies nothing.
+	if editToolFamily[toolName] && editToolFamily[strings.ReplaceAll(a, " ", "_")] {
+		return true
+	}
 	return false
+}
+
+// editToolFamily is the set of tools that change part of an existing file.
+//
+// write_file is deliberately NOT a member. Replacing a whole file is a
+// different act from editing one, and TestActionMatchesTool has pinned
+// "write_file" against the edit_file tool since before this: a plan that says
+// to rewrite a file is not satisfied by a one-line edit, or the other way
+// round. That contract is untouched here.
+var editToolFamily = map[string]bool{
+	"edit_file": true, "structural_edit": true,
+	"insert_after": true, "replace_lines": true,
 }
 
 // targetsOverlap reports whether two paths/targets refer to the same
@@ -1531,7 +1559,11 @@ func extractToolTarget(toolName string, args json.RawMessage) string {
 		if json.Unmarshal(args, &x) == nil {
 			return x.Path
 		}
-	case "edit_file":
+	case "edit_file", "structural_edit", "insert_after", "replace_lines":
+		// Every edit tool takes `path`. Only edit_file was listed, so a step
+		// satisfied by structural_edit/insert_after/replace_lines produced no
+		// target at all, and the target check was skipped for exactly the
+		// tools whose file it most needed to know.
 		var x struct {
 			Path string `json:"path"`
 		}

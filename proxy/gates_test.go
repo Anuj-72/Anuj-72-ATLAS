@@ -2108,3 +2108,44 @@ func TestAFileTheSessionNeverTouchedStillRequiresARead(t *testing.T) {
 		t.Error("an absent file is not a current view")
 	}
 }
+
+// A step that says "edit stats.py" is satisfied by editing stats.py.
+//
+// Measured on add_function, both reps: the plan's s1 was `edit_file` on
+// stats.py, the model added the function with insert_after, the test it wrote
+// passed -- and the exit gate still said "2 of 3 planned steps have landed,
+// and these have not: s1: edit_file". The file HAD been edited. Two causes,
+// both fixed here: the edit tools other than edit_file reported no target at
+// all, and the matcher treated their names as unrelated operations.
+func TestAnEditStepIsSatisfiedByAnyEditTool(t *testing.T) {
+	plan := &Plan{Steps: []PlanStep{
+		{ID: "s1", Action: "edit_file", Target: "stats.py"},
+		{ID: "s2", Action: "write_file", Target: "test_stats.py"},
+		{ID: "s3", Action: "run_command", Target: "python3 test_stats.py"},
+	}}
+	args := func(v interface{}) json.RawMessage { b, _ := json.Marshal(v); return b }
+
+	for _, tool := range []string{"insert_after", "structural_edit", "replace_lines", "edit_file"} {
+		satisfied := make([]bool, len(plan.Steps))
+		got := matchPlanStep(plan, satisfied, tool, args(map[string]string{"path": "stats.py"}))
+		if got != 0 {
+			t.Errorf("%s on stats.py matched step %d, want s1 (0)", tool, got)
+		}
+	}
+
+	// The target half still has to agree: the same tool on a different file
+	// satisfies nothing. This is what stops the fix from loosening the gate.
+	satisfied := make([]bool, len(plan.Steps))
+	if got := matchPlanStep(plan, satisfied, "insert_after",
+		args(map[string]string{"path": "unrelated.py"})); got != -1 {
+		t.Errorf("insert_after on an unrelated file matched step %d, want no match", got)
+	}
+
+	// And a whole-file write is still not an edit: pinned by
+	// TestActionMatchesTool, restated here because this fix is next to it.
+	satisfied = make([]bool, len(plan.Steps))
+	if got := matchPlanStep(plan, satisfied, "write_file",
+		args(map[string]string{"path": "stats.py", "content": "x = 1\n"})); got == 0 {
+		t.Error("write_file satisfied an edit_file step; that contract must hold")
+	}
+}
