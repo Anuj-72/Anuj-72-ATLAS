@@ -1041,10 +1041,32 @@ def h4_gate_escape(s: Session, task: Task = None) -> list[str]:
             "action-intent prompt, without saying it had stopped"]
 
 
+def _reads(p: Path) -> str | None:
+    try:
+        return p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def h5_corrupt_write(s: Session, task: Task) -> list[str]:
     out = []
     for p in sorted(s.workspace.rglob("*")):
         if not p.is_file() or p.suffix not in (".py", ".html", ".htm", ".js"):
+            continue
+        # A file the session never touched cannot be a corrupt WRITE. Measured:
+        # bugfind_tiebreak is seeded with ATLAS's own v3-service/adapters.py,
+        # which contains a regex literal for stripping script tags. The
+        # extractor's own `<script>` pattern matches inside that literal,
+        # pulls out `]*\bsrc=)[^>]*>(.*?)`, hands that to `node --check`, and
+        # reports the pristine fixture as unparseable. Both reps of the task
+        # lost harness integrity over a file they never opened — the sessions
+        # wrote nothing at all (quality.files == 0).
+        #
+        # Seeded bytes are the reference, not an allowlist: the moment the
+        # session changes the file it is checked like anything else, so a
+        # fixture the agent genuinely corrupts is still caught.
+        seeded = task.files.get(p.name)
+        if seeded is not None and _reads(p) == seeded:
             continue
         ok, why = _file_parses(p)
         if not ok:
