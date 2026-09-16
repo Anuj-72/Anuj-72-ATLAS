@@ -2393,3 +2393,39 @@ func TestModuleReferenceRequiresImportContext(t *testing.T) {
 		}
 	}
 }
+
+// Running a module by importing it counts as having run it.
+//
+// The run-first gate refuses an edit to a file whose warned version "has never
+// been run", so the model reads the real traceback before guessing. Measured
+// on multifile_cli rep2, that became a deadlock: the model wrote a broken
+// store.py, ran it with `python3 -c "import store; ..."` -- which loads the
+// file and raises its SyntaxError, the exact traceback the gate wants read --
+// and every subsequent edit_file was refused for never having run it, while
+// re-sending the run tripped the identical-call detector. Told to do the one
+// thing it had already done and could no longer repeat. For a file that does
+// not parse there is no run that succeeds; the only exit is the edit.
+func TestImportingAModuleCountsAsRunningIt(t *testing.T) {
+	for _, c := range []struct {
+		cmd  string
+		path string
+		want bool
+		why  string
+	}{
+		{`python3 -c "import store; store.complete_todo(1)"`, "store.py", true, "the measured command"},
+		{`python3 -c "from store import add; add('x')"`, "store.py", true, "from-import"},
+		{`python3 store.py`, "store.py", true, "named directly, unchanged"},
+		{`python3 -m pytest test_store.py`, "test_store.py", true, "named via -m, unchanged"},
+		{`./store.py`, "store.py", true, "direct execution, unchanged"},
+		// Must not spread: a different module, prose, or no executor at all.
+		{`python3 -c "import other; other.go()"`, "store.py", false, "a different module"},
+		{`echo "import store"`, "store.py", false, "no executor"},
+		{`python3 -c "print('store is fine')"`, "store.py", false, "mentions the name, imports nothing"},
+		{`cat store.py`, "store.py", false, "reading is not running"},
+	} {
+		if got := executionAttempt(c.cmd, c.path); got != c.want {
+			t.Errorf("%s: executionAttempt(%q, %q) = %v, want %v",
+				c.why, c.cmd, c.path, got, c.want)
+		}
+	}
+}

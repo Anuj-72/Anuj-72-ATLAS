@@ -1905,7 +1905,56 @@ func executionAttempt(command, path string) bool {
 			}
 		}
 	}
+	// An import IS an execution. `python3 -c "import store; store.add(...)"`
+	// loads store.py and raises its SyntaxError -- exactly the traceback the
+	// run-first gate exists to make the model read -- but the command never
+	// spells "store.py", so the token scan above cannot see it.
+	//
+	// Measured on multifile_cli rep2: the model wrote a broken store.py, ran
+	// it this way, got the traceback, and then had every edit_file refused as
+	// "has never been run", while re-sending the run tripped the
+	// identical-call detector. It was told to do the one thing it had already
+	// done and was no longer permitted to repeat, and the session ended
+	// `repeated_refusal` with the file still broken. A deadlock, not a model
+	// failure: for a file that does not parse there is no run that succeeds,
+	// and the only exit is the edit the gate was refusing.
+	return inlineCodeExecutesPath(command, path)
+}
+
+// inlineCodeExecutesPath reports whether an executor was handed inline code
+// that loads `path`. Narrow on purpose: an executor must actually be invoked,
+// and the code it was given has to reference the file the way an import does.
+func inlineCodeExecutesPath(command, path string) bool {
+	for _, segment := range splitShellSegments(command) {
+		code, ok := inlineCodePayload(segment)
+		if !ok {
+			continue
+		}
+		// `;` separates statements the way a newline does, and
+		// sourceReferencesPath reads lines. Same reference rule the
+		// verification coverage uses, so the two cannot disagree about what
+		// counts as loading a file.
+		if sourceReferencesPath(strings.ReplaceAll(code, ";", "\n"), path) {
+			return true
+		}
+	}
 	return false
+}
+
+// inlineCodePayload returns the code an executor was asked to run inline, and
+// whether this segment is such an invocation at all. `python3 -m pytest x.py`
+// is not inline code -- it names its file, which the token scan already sees.
+func inlineCodePayload(segment string) (string, bool) {
+	toks := strings.Fields(segment)
+	if len(toks) == 0 || !executorNames[filepath.Base(strings.Trim(toks[0], `"'`))] {
+		return "", false
+	}
+	for i, tok := range toks[1:] {
+		if strings.Trim(tok, `"'`) == "-c" {
+			return strings.Trim(strings.Join(toks[i+2:], " "), `"'`), true
+		}
+	}
+	return "", false
 }
 
 // workspaceFileReader reads a workspace-relative path for the guardrails
