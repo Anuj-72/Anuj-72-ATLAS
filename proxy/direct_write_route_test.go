@@ -639,13 +639,15 @@ func TestWriteRoutesDoNotRecomputeTheirObservation(t *testing.T) {
 		}
 		return true
 	})
-	// 17 since candidate authorization became the proxy's alone: the write
-	// route's ungranted floor writes the caller's own bytes and observes them
-	// first, like every other restoring branch. Every site is beside the bytes
-	// it describes; a site that re-derived an observation a route already
-	// holds would be the recomputation this counts against.
-	if structured != 17 {
-		t.Errorf("fallbackSyntaxOutcomeFor call sites = %d, want 17; a new one on a "+
+	// 18 since structural_edit began observing the bytes it splices. Every
+	// site is beside the bytes it describes; a site that re-derived an
+	// observation a route already holds would be the recomputation this
+	// counts against. structural_edit held none: it recorded not_run for its
+	// own output, which is why a file it edited carried mutation debt that
+	// nothing could discharge. Asking once, about bytes no one had asked
+	// about, is the opposite of recomputation.
+	if structured != 18 {
+		t.Errorf("fallbackSyntaxOutcomeFor call sites = %d, want 18; a new one on a "+
 			"route that already holds an observation is a recomputation", structured)
 	}
 	// The migration is complete: no route calls the legacy wrapper any more.
