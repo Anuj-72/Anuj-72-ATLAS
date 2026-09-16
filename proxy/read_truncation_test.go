@@ -22,7 +22,10 @@ import (
 //
 // The same model prompted directly never reads the file and scored 83-100%.
 func TestTruncationNoticeDoesNotSteerTowardPipelines(t *testing.T) {
-	notice := readFileTruncationNotice(1131, 2001, 8707)
+	// A DATA file: start 0, 1131 lines shown of 2001, 8707 bytes. The data
+	// advice is the whole point of this test and must survive the source/data
+	// split added for smallrung_toml.
+	notice := readFileTruncationNotice(0, 1131, 2001, 8707, false)
 	for _, banned := range []string{"grep", "awk", "sed", "run_command"} {
 		if strings.Contains(notice, banned) {
 			t.Errorf("truncation notice must not suggest %q: %s", banned, notice)
@@ -37,10 +40,19 @@ func TestTruncationNoticeDoesNotSteerTowardPipelines(t *testing.T) {
 }
 
 func TestTruncationNoticeStatesWhatWasShown(t *testing.T) {
-	notice := readFileTruncationNotice(255, 401, 12800)
+	notice := readFileTruncationNotice(0, 255, 401, 12800, false)
 	for _, want := range []string{"255", "401", "12800"} {
 		if !strings.Contains(notice, want) {
 			t.Errorf("notice should report %s: %s", want, notice)
 		}
+	}
+	// And it must state the WINDOW, not "the first N": an offset read that
+	// called itself "the first" made pagination look broken to the model.
+	off := readFileTruncationNotice(214, 225, 2026, 15000, false)
+	if !strings.Contains(off, "215-439") {
+		t.Errorf("offset read must report lines 215-439: %s", off)
+	}
+	if strings.Contains(off, "the first") {
+		t.Errorf("offset read must not call itself 'the first': %s", off)
 	}
 }

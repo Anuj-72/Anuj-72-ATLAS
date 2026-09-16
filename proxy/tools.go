@@ -378,8 +378,17 @@ func readFileTool() *ToolDef {
 				if nl := strings.LastIndexByte(content[:cut], '\n'); nl > 0 {
 					cut = nl + 1
 				}
-				shown := strings.Count(content[:cut], "\n")
-				content = content[:cut] + readFileTruncationNotice(shown, totalLines, len(data))
+				// content opens with the one-line "line numbers are added"
+				// header, so its newline count is one MORE than the number of
+				// numbered rows actually returned. Counting the header made
+				// the window label overshoot by a line and made shownEnd
+				// record a line the model never saw.
+				shown := strings.Count(content[:cut], "\n") - 1
+				if shown < 0 {
+					shown = 0
+				}
+				content = content[:cut] + readFileTruncationNotice(
+					start, shown, totalLines, len(data), fileIsSourceCode(input.Path))
 				truncated = true
 				shownEnd = start + shown
 				if shownEnd > totalLines {
@@ -1440,14 +1449,50 @@ func isBinaryContent(data []byte) bool {
 // The score tracks the notice rather than the problem. The same model
 // prompted directly never reads the file at all and scored 83-100% on every
 // one of them.
-func readFileTruncationNotice(shown, totalLines, totalBytes int) string {
+// It also said "the first N" whatever offset was asked for, and told the model
+// the head was enough whatever kind of file it was. Both are wrong for source.
+//
+// Measured on smallrung_toml, which failed 6 of 6 attempts. executor_server.py
+// is 2026 lines with two routines that dispatch on `lang`: normalize_language
+// at line 208, which only maps aliases, and _syntax_check_impl at line 1266,
+// which is the one the request describes. A default read returns the first 214
+// lines, so the decoy is visible and the target is not. All six sessions edited
+// the decoy. Two paginated correctly with offset=214 and were told "showing the
+// first 225 of 2026 lines" -- a false label that makes pagination look broken.
+// No session ever called search_files or outline_file, either of which finds
+// _syntax_check_impl immediately, while this notice was telling them the rest
+// was unnecessary.
+//
+// The data-file advice stays for data files: it was measured to help on the AoC
+// tasks, where the right move IS to have the program open the file at runtime.
+// Source code gets the advice that fits source code -- where the window is and
+// how to find a symbol.
+func readFileTruncationNotice(start, shown, totalLines, totalBytes int, isSource bool) string {
+	where := fmt.Sprintf("lines %d-%d of %d (%d bytes total)",
+		start+1, start+shown, totalLines, totalBytes)
+	if isSource {
+		return fmt.Sprintf(
+			"\n... [read_file truncated: showing %s. The rest of this file is NOT "+
+				"shown, and what you are looking for may be in it. To find a symbol "+
+				"use `search_files` or `outline_file` \u2014 do not assume the part you "+
+				"can see is the part the request is about. To read a different range, "+
+				"read again with offset/limit.]",
+			where)
+	}
 	return fmt.Sprintf(
-		"\n... [read_file truncated: showing the first %d of %d lines (%d bytes). "+
-			"The head is shown, which is enough to see the format. If you are writing "+
-			"code that reads this file when it runs, you do not need the rest here \u2014 "+
-			"have your program open it. To look at a different part of the file, read "+
-			"it again with offset/limit.]",
-		shown, totalLines, totalBytes)
+		"\n... [read_file truncated: showing %s. If you are writing code that reads "+
+			"this file when it runs, you do not need the rest here \u2014 have your "+
+			"program open it. To look at a different part of the file, read it again "+
+			"with offset/limit.]",
+		where)
+}
+
+// fileIsSourceCode reports whether a path holds code a request might ask to
+// change, as opposed to data or markup a program consumes. Reuses the
+// registry's own Executable flag so this cannot drift from it.
+func fileIsSourceCode(path string) bool {
+	meta, known := syntaxGateLanguages[strings.ToLower(filepath.Ext(path))]
+	return known && meta.Executable
 }
 
 // writeNewFileWithWarning lands syntactically broken content in a file that
