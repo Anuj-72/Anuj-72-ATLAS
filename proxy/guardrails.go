@@ -816,6 +816,113 @@ func commandNamesPath(command, path string) bool {
 	return false
 }
 
+// coverageForGreenCommand binds a green run to the files it exercised.
+//
+// Direct naming is the floor: a command that typed a path ran that path. But
+// the standard way to verify a change is to run something that USES it -- a
+// test, a driver, a reproduction script -- and coverage that stops at the
+// command line cannot see through that. Measured: three tasks wrote a test
+// beside the fix and ran it green (`python3 test_stats.py` printing
+// "median() passed"), then were told nothing in the run verified the code,
+// because the command named the test and not stats.py. Those runs had done
+// exactly the right thing and were failed for it.
+//
+// So coverage follows the entry point into the workspace files it references.
+// The inference is the same strength as the direct case, not weaker: if
+// test_stats.py imports stats and the process exited 0, then stats.py was
+// located, parsed and its module body executed -- which is precisely, and
+// only, what `python3 stats.py` proves. Neither shows a particular function
+// is correct; that was never this gate's claim. Code that nothing which ran
+// refers to stays uncovered, and a red run still records nothing at all.
+func coverageForGreenCommand(ctx *AgentContext, command string) map[string]string {
+	covered := map[string]string{}
+	candidates := changedPathsForCoverage(ctx)
+	var entries []string
+	for _, p := range candidates {
+		if commandNamesPath(command, p) {
+			if h := fileSHA256(ctx, p); h != "" {
+				covered[p] = h
+				entries = append(entries, p)
+			}
+		}
+	}
+	// Breadth-first, bounded by the candidate set: each file is admitted at
+	// most once, so an import cycle terminates and nothing outside the set of
+	// files this session already tracks can be pulled in.
+	for i := 0; i < len(entries); i++ {
+		src, err := os.ReadFile(entries[i])
+		if err != nil {
+			continue
+		}
+		for _, q := range candidates {
+			if _, already := covered[q]; already {
+				continue
+			}
+			if !sourceReferencesPath(string(src), q) {
+				continue
+			}
+			if h := fileSHA256(ctx, q); h != "" {
+				covered[q] = h
+				entries = append(entries, q)
+			}
+		}
+	}
+	return covered
+}
+
+// sourceReferencesPath reports whether running src would load q: it names the
+// file outright, or imports it by module name. Import context is required for
+// the bare module name so that a file merely mentioning the word "stats" does
+// not claim to have exercised stats.py.
+func sourceReferencesPath(src, q string) bool {
+	base := filepath.Base(q)
+	if base == "" || base == "." {
+		return false
+	}
+	if strings.Contains(src, base) {
+		return true
+	}
+	module := strings.TrimSuffix(base, filepath.Ext(base))
+	if module == "" || module == base {
+		return false
+	}
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "import ") && !strings.HasPrefix(trimmed, "from ") &&
+			!strings.Contains(trimmed, "require(") && !strings.Contains(trimmed, "import(") &&
+			!strings.Contains(trimmed, "import_module") {
+			continue
+		}
+		if referencesModuleWord(trimmed, module) {
+			return true
+		}
+	}
+	return false
+}
+
+// referencesModuleWord finds module as a whole identifier, so "stats" does not
+// match "statsd" or "my_stats".
+func referencesModuleWord(line, module string) bool {
+	for i := 0; ; {
+		j := strings.Index(line[i:], module)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(module)
+		beforeOK := start == 0 || !isIdentByte(line[start-1])
+		afterOK := end == len(line) || !isIdentByte(line[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
 // --- work-contract verification demand ---------------------------------------
 //
 // verificationDemandedAndUnmet asks one session-wide question: did anything
@@ -1603,6 +1710,23 @@ type actionDemand struct {
 // handed, no shadow state, and the same answer whether or not capture is on.
 func decideActionDemand(tc *TaskContract, userMessage string, tier Tier,
 	inspectedWorkspace bool) actionDemand {
+	// A change the user explicitly forbade cannot also be required. The
+	// read-only boundary in executeToolCallInner will REFUSE every mutating
+	// tool for this request, so demanding one produces a run that is told to
+	// do the one thing it is not allowed to do, bounces its own exit until the
+	// budget runs out, and reports incomplete work it was never permitted to
+	// perform. Measured: a client declared task_mode=work on prompts whose
+	// text says "do not change any code", and all six such sessions ended
+	// action_demanded_unmet while the guard correctly refused their edits.
+	//
+	// This outranks the contract deliberately. A caller's task_mode describes
+	// what it believes it is asking for; the user's own words are the request.
+	// When they disagree about whether the workspace may change, the safe and
+	// coherent reading is the prohibition — and the run still completes, on
+	// its answer, because a run that writes nothing owes no file obligation.
+	if isExplainOnlyMessage(strings.ToLower(userMessage)) {
+		return actionDemand{Required: false, Source: actionDemandLegacy, Legacy: false}
+	}
 	// Evaluated exactly once, here, for every path. Reporting it costs
 	// nothing because the heuristic is pure, and having it always present
 	// keeps the shadow record identical whether or not capture is enabled.

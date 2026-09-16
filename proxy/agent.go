@@ -2319,14 +2319,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						// Evidence record: bind this green run to the files it
 						// actually named and the exact bytes they held. Lens
 						// labeling reads these — never the session-wide flag.
-						covered := map[string]string{}
-						for _, p := range changedPathsForCoverage(ctx) {
-							if commandNamesPath(rc.Command, p) {
-								if h := fileSHA256(ctx, p); h != "" {
-									covered[p] = h
-								}
-							}
-						}
+						covered := coverageForGreenCommand(ctx, rc.Command)
 						// Stamped AFTER recordLedgerEffect ran for this call:
 						// executeToolCall reconciles a shell effect into the
 						// ledger (invalidateTrackedValidation rehashes every

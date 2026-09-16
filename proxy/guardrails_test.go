@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2264,6 +2265,131 @@ func TestOrdinaryWorkIsUnaffectedByTheReadOnlyGuard(t *testing.T) {
 		}
 		if got := readOnlyRequestRefusal(getTool("write_file"), ctx); got != "" {
 			t.Errorf("write_file refused for %q — the guard must only fire on an explicit prohibition", ask)
+		}
+	}
+}
+
+// A change the user forbade must never also be REQUIRED.
+//
+// The reliability harness declares task_contract {"task_mode":"work"} on every
+// task, including the ones it marks conversational. A contract is authoritative
+// when present, so the action gate demanded a change on prompts whose text says
+// "do not change any code" — while the read-only boundary correctly refused
+// every edit. All six such sessions bounced their own exit and ended
+// action_demanded_unmet. ATLAS must not require what it forbids.
+func TestAForbiddenChangeIsNeverAlsoDemanded(t *testing.T) {
+	work := &TaskContract{TaskMode: TaskModeWork}
+	for _, ask := range []string{
+		"In orders.py, what does find_duplicates do, and what is its time complexity? Just explain — do not change any code.",
+		"Explain what is going on here and whether it is actually a bug. Do not change the code.",
+		"Find the cause. Tell me which file and which comparison is wrong — do not change any code.",
+	} {
+		// Even with an explicit work contract AND the workspace inspected.
+		if d := decideActionDemand(work, ask, Tier0Conversational, true); d.Required {
+			t.Errorf("action demanded under an explicit prohibition (contract=work): %q", ask)
+		}
+		if d := decideActionDemand(nil, ask, Tier2Medium, true); d.Required {
+			t.Errorf("action demanded under an explicit prohibition (no contract): %q", ask)
+		}
+	}
+	// The contract still governs ordinary work: this must NOT be weakened.
+	for _, ask := range []string{
+		"add a median() function to stats.py",
+		"fix the off-by-one in chunks()",
+	} {
+		if d := decideActionDemand(work, ask, Tier2Medium, true); !d.Required {
+			t.Errorf("a work contract must still demand action for: %q", ask)
+		}
+	}
+}
+
+// Running a test that imports the fix must count as verifying the fix.
+//
+// Measured on 6 of 28 benchmark sessions: the run edited the deliverable,
+// wrote a test beside it, ran the test green -- `python3 test_stats.py`
+// printing "mean() passed / median() passed" -- and was then refused its exit
+// with "nothing in this run verified it does the right thing", because
+// coverage was attributed only to paths typed on the command line. The run had
+// verified its work in the most ordinary way there is.
+func TestRunningATestCoversTheCodeTheTestImports(t *testing.T) {
+	dir := t.TempDir()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.PermissionMode = PermissionYolo
+	ctx.TaskContract = &TaskContract{TaskMode: TaskModeWork}
+
+	write := func(rel, body string) {
+		args, _ := json.Marshal(map[string]string{"path": rel, "content": body})
+		if res := executeToolCall("write_file", args, ctx); res == nil || !res.Success {
+			t.Fatalf("setup write of %s failed: %+v", rel, res)
+		}
+	}
+	write("stats.py", "def mean(v):\n    return sum(v) / len(v)\n\n\ndef median(v):\n    s = sorted(v)\n    return s[len(s) // 2]\n")
+	write("test_stats.py", "from stats import mean, median\n\nassert mean([1, 2, 3]) == 2\nassert median([3, 1, 2]) == 2\nprint('passed')\n")
+
+	stats := resolveAgentPath(ctx, "stats.py")
+	covered := coverageForGreenCommand(ctx, "python3 test_stats.py")
+	if _, ok := covered[stats]; !ok {
+		t.Fatalf("running the test did not cover the code it imports; covered=%v", covered)
+	}
+
+	// The production decision, not just the helper: with that evidence the
+	// work contract must be settled rather than demanding more.
+	ctx.VerificationEvidence = append(ctx.VerificationEvidence, VerificationRecord{
+		Command: "python3 test_stats.py", Covered: covered, Turn: 1,
+	})
+	if d := decideVerificationDemand(ctx, ctx.TaskContract, nil); d.Required && !d.Met {
+		t.Errorf("a green test over the deliverable left verification unmet (missing %q)", d.Missing)
+	}
+
+	// Editing the deliverable afterwards must re-arm the demand: coverage is
+	// bound to bytes, and this fix must not open a verify-then-modify hole.
+	write("stats.py", "def mean(v):\n    return 0\n")
+	if d := decideVerificationDemand(ctx, ctx.TaskContract, nil); d.Met {
+		t.Error("rewriting a covered file after a green run left it verified")
+	}
+}
+
+// Coverage must not spread to code the run never exercised.
+func TestCoverageDoesNotSpreadToUnreferencedFiles(t *testing.T) {
+	dir := t.TempDir()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.PermissionMode = PermissionYolo
+	write := func(rel, body string) {
+		args, _ := json.Marshal(map[string]string{"path": rel, "content": body})
+		if res := executeToolCall("write_file", args, ctx); res == nil || !res.Success {
+			t.Fatalf("setup write of %s failed: %+v", rel, res)
+		}
+	}
+	// Mentions "stats" as a bare word in prose and in an unrelated identifier,
+	// but imports nothing.
+	write("driver.py", "# prints some stats about a list\nmy_stats = [1, 2, 3]\nprint(sum(my_stats))\n")
+	write("unrelated.py", "def untouched():\n    return 1\n")
+
+	covered := coverageForGreenCommand(ctx, "python3 driver.py")
+	if _, ok := covered[resolveAgentPath(ctx, "unrelated.py")]; ok {
+		t.Errorf("coverage reached a file the run never referenced: %v", covered)
+	}
+	if _, ok := covered[resolveAgentPath(ctx, "driver.py")]; !ok {
+		t.Errorf("the named entry point itself was not covered: %v", covered)
+	}
+}
+
+// A bare module name only counts inside an import.
+func TestModuleReferenceRequiresImportContext(t *testing.T) {
+	for _, c := range []struct {
+		src  string
+		want bool
+		why  string
+	}{
+		{"from stats import median\n", true, "python from-import"},
+		{"import stats\n", true, "python import"},
+		{"const s = require('./stats')\n", true, "js require"},
+		{"# these are the stats we want\n", false, "prose mention"},
+		{"statsd = 1\nimport statsd\n", false, "longer identifier is a different module"},
+		{"print(open('stats.py').read())\n", true, "names the file outright"},
+	} {
+		if got := sourceReferencesPath(c.src, "/w/stats.py"); got != c.want {
+			t.Errorf("%s: sourceReferencesPath=%v want %v for %q", c.why, got, c.want, c.src)
 		}
 	}
 }
