@@ -672,3 +672,56 @@ func TestBaselineAllowsRepairOnlyOnDemonstratedFailure(t *testing.T) {
 		})
 	}
 }
+
+// Landing unparseable bytes silently is the same as lying about them.
+//
+// The route above asserts the SERVER-SIDE verdict: applied + syntax + failed.
+// Nothing asserted what the model is handed, and the model is the only party
+// that can act on it. It was handed {"bytes_written":N} and nothing else,
+// which reads as a clean write.
+//
+// Measured on multifile_cli rep2. The model rewrote test_store.py containing
+// `store.add("Buy milk"")`, was told the write succeeded, ran pytest, could
+// not reconcile the failure with a write it had been told was fine, and
+// resent content until the repetition breaker closed the path. The file was
+// still unparseable when the session ended, and the sandbox had been
+// answering valid:false for those exact bytes the whole time.
+func TestLandedUnparseableBytesTellTheModelSo(t *testing.T) {
+	res, disk, _ := runDebugRoute(t, debugRouteOpts{
+		rel: "mod.py", baseline: debugBaselineBroken, proposal: debugProposalBroken})
+
+	if !res.Success || disk != debugProposalBroken {
+		t.Fatalf("precondition: the repair attempt must land (success=%v)", res.Success)
+	}
+	var out WriteFileOutput
+	if err := json.Unmarshal(res.Data, &out); err != nil {
+		t.Fatalf("write_file output is not WriteFileOutput: %v (%s)", err, res.Data)
+	}
+	if out.Warning == "" {
+		t.Fatal("the model was told the write succeeded and nothing else, " +
+			"over bytes the checker had just reported as invalid")
+	}
+	if !strings.Contains(out.Warning, "does not parse") {
+		t.Errorf("warning does not say the file is broken: %q", out.Warning)
+	}
+	// The same fact, and it must not disagree with the server-side verdict.
+	if res.ValidationStatus != ValidationFailed {
+		t.Errorf("warned the model but recorded %q", res.ValidationStatus)
+	}
+}
+
+// Negative control: a rewrite that parses must NOT be warned about.
+func TestALandedParsingRewriteCarriesNoWarning(t *testing.T) {
+	res, _, _ := runDebugRoute(t, debugRouteOpts{
+		rel: "mod.py", baseline: debugBaselineBroken, proposal: debugProposalHealthy})
+	if !res.Success {
+		t.Fatalf("a parsing repair must land: %q", res.Error)
+	}
+	var out WriteFileOutput
+	if err := json.Unmarshal(res.Data, &out); err != nil {
+		t.Fatalf("write_file output is not WriteFileOutput: %v (%s)", err, res.Data)
+	}
+	if out.Warning != "" {
+		t.Errorf("a clean rewrite was warned about: %q", out.Warning)
+	}
+}

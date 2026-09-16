@@ -1240,6 +1240,29 @@ func writeFileTool() *ToolDef {
 				}
 			}
 
+			// The destination exists and these exact bytes were already
+			// observed not to parse. A healthy baseline was refused outright
+			// above, so reaching here means what is on disk is itself broken
+			// or unreadable — the same case the non-bypassed route lands with
+			// a warning. Land it the same way, and say so.
+			//
+			// Only the SAYING is new. The observation was already overlaid
+			// onto the result below, so the ledger and the completion gate
+			// knew; the model did not. It was handed {"bytes_written":1243}
+			// and nothing else, which reads as a clean write. Measured on
+			// multifile_cli rep2: the model rewrote test_store.py containing
+			// `store.add("Buy milk"")`, was told the write succeeded, ran
+			// pytest, could not reconcile the failure with a write it had
+			// been told was fine, and resent content until the repetition
+			// breaker closed the path — leaving the file unparseable at the
+			// end of the session. The sandbox had answered `valid:false` for
+			// those bytes the whole time.
+			if proposalCheck.Status == ValidationFailed {
+				log.Printf("[write_file] %s: landing an unparseable rewrite with a warning (%s)",
+					logPath(input.Path), safeDiagnosticSummary(proposalCheck.Detail))
+				return preflightWarnedWrite(path, input.Path, input.Content, proposalCheck, ctx)
+			}
+
 			// T1: Direct write — config, data, boilerplate
 			res, err := writeFileRecorded(path, input.Content, ctx)
 			if err == nil && res != nil && res.Success {
