@@ -2654,12 +2654,7 @@ func editFileTool() *ToolDef {
 			content := string(data)
 
 			// Check for staleness
-			ctx.mu.Lock()
-			lastRead := ctx.FileReadTimes[path]
-			ctx.mu.Unlock()
-
-			info, err := os.Stat(path)
-			if err == nil && info.ModTime().After(lastRead) {
+			if modifiedSinceSessionView(ctx, path, data) {
 				return nil, errNoMutation(fmt.Errorf("file modified since last read — read it again before editing: %s", input.Path))
 			}
 
@@ -3142,10 +3137,7 @@ func structuralEditTool() *ToolDef {
 					len(input.Content), len(source), input.Selector)), nil
 			}
 
-			ctx.mu.Lock()
-			lastRead := ctx.FileReadTimes[path]
-			ctx.mu.Unlock()
-			if info, err := os.Stat(path); err == nil && info.ModTime().After(lastRead) {
+			if modifiedSinceSessionView(ctx, path, data) {
 				return nil, errNoMutation(fmt.Errorf("file modified since last read — read it again before structural_edit: %s", input.Path))
 			}
 

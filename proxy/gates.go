@@ -3411,11 +3411,57 @@ func editViewIsCurrent(ctx *AgentContext, path string) bool {
 		// Unreadable or absent: nothing is known about it.
 		return false
 	}
+	return diskIsOwnWrite(ctx, path, data)
+}
+
+// diskIsOwnWrite reports whether data -- the bytes now on disk at path -- are
+// exactly the bytes this session last wrote there. Identity, not ownership:
+// Generation > 0 && CurrentHash == hash(disk), the same test the restoration
+// path applies.
+func diskIsOwnWrite(ctx *AgentContext, path string, data []byte) bool {
+	if ctx == nil {
+		return false
+	}
 	disk := hashBytes(data)
 	key := ledgerKey(ctx, path)
 	ctx.LedgerMu.Lock()
 	d := ctx.Ledger[key]
-	current := d != nil && !d.Tombstoned && d.Generation > 0 && d.CurrentHash == disk
+	own := d != nil && !d.Tombstoned && d.Generation > 0 && d.CurrentHash == disk
 	ctx.LedgerMu.Unlock()
-	return current
+	return own
+}
+
+// modifiedSinceSessionView reports whether path changed after the session last
+// established what is in it -- by reading it, or by writing it. data is the
+// content the caller just read from disk.
+//
+// This was an mtime-versus-read-time comparison inline in edit_file and
+// structural_edit, and write_file is the one mutating tool that never records a
+// read time. So after ANY write_file, the file's mtime is later than a read
+// time that is either older or absent (zero), and a follow-up edit was refused
+// "file modified since last read" although nothing but the session had touched
+// it. editViewIsCurrent had already been taught identity for exactly this
+// scenario; the check immediately after it had not, so the fix moved the
+// refusal to a different message instead of removing it -- its test exercised
+// the helper, never the tool.
+//
+// Measured across the saved benchmark and acceptance events: 9 refusals in 5
+// sessions, and in all 9 the last thing to touch the path was the session's own
+// write_file (4 directly, 5 with only a run_command such as `python3 solve.py`
+// between). They include the four refusals in the multifile_cli-rep2 deadlock
+// and aoc_sonar-rep1, where the model ran its broken solve.py as instructed,
+// read the real traceback, and had its one-line repair refused.
+//
+// A genuine change still refuses: if a command or anything else altered the
+// bytes, they no longer equal the session's own write, and the mtime rule
+// applies exactly as before.
+func modifiedSinceSessionView(ctx *AgentContext, path string, data []byte) bool {
+	ctx.mu.Lock()
+	lastRead := ctx.FileReadTimes[path]
+	ctx.mu.Unlock()
+	info, err := os.Stat(path)
+	if err != nil || !info.ModTime().After(lastRead) {
+		return false
+	}
+	return !diskIsOwnWrite(ctx, path, data)
 }
