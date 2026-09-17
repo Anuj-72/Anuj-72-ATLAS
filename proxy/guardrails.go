@@ -1579,6 +1579,89 @@ func expectedOutputPaths(msg string) []string {
 	return out
 }
 
+// reInvestigationScope matches a request whose subject is more than one file:
+// "these files", "across the modules", "the codebase", "this directory". It
+// reads the user's own words and nothing else -- no plan, no task name, no
+// knowledge of any particular project.
+var reInvestigationScope = regexp.MustCompile(`(?i)\b(?:these|those)\s+(?:\w+\s+){0,2}(?:files|modules|scripts|services|packages)\b` +
+	`|\bacross\b[^.]{0,40}?\b(?:files|modules|codebase|project|services|packages)\b` +
+	`|\bthe\s+(?:codebase|repo|repository)\b` +
+	`|\bthis\s+(?:directory|repo|repository)\b` +
+	`|\b(?:each|every|all)\s+(?:of\s+the\s+)?(?:files|modules)\b`)
+
+// investigationScopeUnmet answers one question about a read-only run: the user
+// asked how several files behave, so does the answer account for more than one
+// of the files this run actually opened?
+//
+// Measured (stabilization cycle 3, family S): asked to walk through how the
+// pricing cache works ACROSS five modules and why the hit rate is low, the run
+// read three of them and answered with one function pair in one file. Every
+// existing exit gate passed -- nothing was written, nothing was deferred, no
+// question was asked, no file was cited unread -- so the reply was finalized
+// completed. Half an investigation and a whole one were indistinguishable.
+//
+// The evidence is the ordinary request and the run's own reads. Nothing here
+// judges whether the answer is correct, or good: that is not decidable from
+// the workspace, and a rule that pretended otherwise would be a guess with a
+// status attached.
+func investigationScopeUnmet(ctx *AgentContext, userMessage, claimText string,
+	readOnly bool, toolsRun int) (read, cited []string, unmet bool) {
+	if ctx == nil || !readOnly || toolsRun == 0 || strings.TrimSpace(claimText) == "" {
+		return nil, nil, false
+	}
+	if !reInvestigationScope.MatchString(userMessage) {
+		return nil, nil, false
+	}
+	read = bodiesSeenInRun(ctx)
+	if len(read) < 2 {
+		// One file opened cannot span anything; the answer is judged by the
+		// gates that already exist.
+		return read, nil, false
+	}
+	for _, name := range read {
+		if strings.Contains(claimText, name) {
+			cited = append(cited, name)
+		}
+	}
+	return read, cited, len(cited) < 2
+}
+
+// bodiesSeenInRun lists the base names of files whose contents this run was
+// actually shown, sorted, so a message about them reads the same way twice.
+func bodiesSeenInRun(ctx *AgentContext) []string {
+	seen := map[string]bool{}
+	ctx.mu.Lock()
+	for path, ok := range ctx.BodySeen {
+		if ok {
+			seen[filepath.Base(path)] = true
+		}
+	}
+	ctx.mu.Unlock()
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// investigationScopeMessage asks for the coverage the request asked for. It
+// names the files the run opened and says nothing about what is in them.
+func investigationScopeMessage(read, cited []string) string {
+	var sb strings.Builder
+	sb.WriteString("The request asks about how several files behave together. ")
+	switch len(cited) {
+	case 0:
+		fmt.Fprintf(&sb, "Your reply does not mention any of the files you read (%s). ", strings.Join(read, ", "))
+	default:
+		fmt.Fprintf(&sb, "Your reply accounts for %s, but you read %s. ", strings.Join(cited, ", "), strings.Join(read, ", "))
+	}
+	sb.WriteString("Answer for the files you examined: say what each one contributes and how they connect, " +
+		"in a single `text` reply that stands on its own. If a file you opened turned out to be irrelevant, " +
+		"say so and why. Do not change any files.")
+	return sb.String()
+}
+
 // missingExpectedOutputs returns the expected output files that do not
 // exist on disk. Checks the resolved path with os.Stat so it counts a
 // file created by ANY means (write_file OR a run_command that

@@ -167,6 +167,9 @@ type runState struct {
 	// the one send-back (handoffSentBack) was spent or could not fit.
 	replyAwaitsUser bool
 	replyHandedBack bool
+	// replyScopeUnmet: the request asked about several files, the run opened
+	// several, and the answer accounted for fewer than two of them.
+	replyScopeUnmet bool
 	handoffSentBack bool
 	// Name of a tool_call that has been streamed but not yet answered by a
 	// tool_result. The call is announced before permission and execution,
@@ -462,7 +465,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// session incomplete. Before this, a spent bounce fell straight through
 	// to "completed", so the cap turned an unfinished reply into a success.
 	s.replyOutstanding, s.replyDeclaredIncomplete = false, false
-	s.replyAwaitsUser, s.replyHandedBack = false, false
+	s.replyAwaitsUser, s.replyHandedBack, s.replyScopeUnmet = false, false, false
 	if promisesMoreContent(claimText) {
 		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
 			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
@@ -531,6 +534,22 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		log.Printf("[agent] evidence gate: bouncing exit at turn %d — reply cites %v with no read (bounce %d/%d)",
 			s.turn, cited, s.gateBounces["evidence_gate"], maxGateBounces)
 		return "evidence_gate", unreadCitationMessage(cited)
+	}
+	// An investigation that answers for less than it opened. Only for a
+	// read-only run whose request named several files (investigationScopeUnmet),
+	// and only after the reply has been judged by the gates above, so a
+	// deferral, a question or an unread citation keeps its own, more specific
+	// outcome.
+	if !s.replyOutstanding && !s.replyDeclaredIncomplete && !s.replyAwaitsUser && !s.replyHandedBack {
+		if read, cited, unmet := investigationScopeUnmet(ctx, userMessage, claimText,
+			!s.madeProductiveChange, s.toolsRun); unmet {
+			if s.continuationFits(ctx) && s.chargeBounce("scope_gate") {
+				log.Printf("[agent] scope gate: reply accounts for %d of %d files read (bounce %d/%d)",
+					len(cited), len(read), s.gateBounces["scope_gate"], maxGateBounces)
+				return "scope_gate", investigationScopeMessage(read, cited)
+			}
+			s.replyScopeUnmet = true
+		}
 	}
 	// A warned, never-executed artifact is not a deliverable. Without this a
 	// session whose prompt carried no verification wording could end with a
@@ -8421,6 +8440,11 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	// never opened. Awaiting: it had nothing to open, or already looked.
 	if st.replyHandedBack {
 		return TerminalIncomplete, "investigation_handed_back"
+	}
+	// The run opened several files and answered for fewer than two of them,
+	// after being sent back for the coverage the request asked for.
+	if st.replyScopeUnmet {
+		return TerminalIncomplete, "investigation_scope_unmet"
 	}
 	if st.replyAwaitsUser {
 		return TerminalIncomplete, "clarification_requested"
