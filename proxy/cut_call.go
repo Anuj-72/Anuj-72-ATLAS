@@ -164,6 +164,10 @@ func cutCallDiagnostic(ctx *AgentContext, raw string) string {
 	name := filepath.Base(path)
 	constants := largeStringConstants(path, source)
 	selector := rc.Args["selector"]
+	var regions []EmbeddedRegion
+	if strings.HasSuffix(path, ".py") {
+		_, _, regions = outlineViaV3(ctx, path, source)
+	}
 	if rc.Tool == "structural_edit" && selector != "" {
 		if span, ok := selectorSpan(ctx, path, source, selector); ok {
 			fmt.Fprintf(&sb, " In %s, `%s` is %s.", name, selector, span.describe())
@@ -177,6 +181,13 @@ func cutCallDiagnostic(ctx *AgentContext, raw string) string {
 	if len(constants) > 0 {
 		fmt.Fprintf(&sb, " Most of %s is %s, a module-level string; no selector reaches inside a string literal.",
 			name, strings.Join(constants, " and "))
+	}
+	for _, r := range regions {
+		if len(r.Symbols) == 0 {
+			continue
+		}
+		fmt.Fprintf(&sb, " The %s functions %s are at lines %d-%d, in %s; they are not selectable either.",
+			r.Kind, strings.Join(r.Symbols, ", "), r.StartLine, r.EndLine, r.Where)
 	}
 	sb.WriteString(" To change this code without one long call: ")
 	if len(constants) > 0 || rc.Tool != "write_file" {

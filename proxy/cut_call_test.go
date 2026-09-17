@@ -201,3 +201,39 @@ func TestTheCapturedFlaskCutIsRefusedAndTheNamedRecoveryLands(t *testing.T) {
 		t.Error("the recovery insert_after did not land as sent")
 	}
 }
+
+// Prints the refusal the product sends for the captured flask cut, using a real
+// v3-service outline, so a replay can use the exact bytes. Runs only when
+// ATLAS_PROBE_PRINT_V3 names a v3-service URL.
+func TestPrintTheCapturedFlaskCutRefusal(t *testing.T) {
+	v3 := os.Getenv("ATLAS_PROBE_PRINT_V3")
+	if v3 == "" {
+		t.Skip("set ATLAS_PROBE_PRINT_V3 to a v3-service URL")
+	}
+	app, err := os.ReadFile("../scripts/fixtures/snake_app.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("testdata/flask_cut_response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured struct{ Deltas []string }
+	if err := json.Unmarshal(raw, &captured); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.py"), app, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.V3URL = v3
+	_, feedback := parseFailureFeedback(ctx, strings.Join(captured.Deltas, ""), "content_loop")
+	out := os.Getenv("ATLAS_PROBE_PRINT_OUT")
+	if out != "" {
+		if err := os.WriteFile(out, []byte(feedback), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Log(feedback)
+}
