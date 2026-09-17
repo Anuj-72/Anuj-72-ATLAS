@@ -1176,7 +1176,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// bounded, before considering the partial reply an outcome.
 				if st.contentLoopRecoveries < maxContentLoopRecoveries {
 					st.contentLoopRecoveries++
-					_, corrective := classifyParseFailure(response, ctx.LastStreamCut)
+					_, corrective := parseFailureFeedback(ctx, response, ctx.LastStreamCut)
 					log.Printf("[agent] content loop at turn %d — correcting and continuing (%d/%d)",
 						turn, st.contentLoopRecoveries, maxContentLoopRecoveries)
 					ctx.Stream("agent_loop_recovery", map[string]interface{}{
@@ -1213,7 +1213,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					return nil
 				}
 			}
-			category, feedback := classifyParseFailure(response, ctx.LastStreamCut)
+			category, feedback := parseFailureFeedback(ctx, response, ctx.LastStreamCut)
 			log.Printf("[agent] parse error: %v | category=%s raw_len=%d | raw %s",
 				parseErr, category, len(response), safeTextSummary(response))
 			ctx.Stream("error", map[string]string{
@@ -5370,13 +5370,33 @@ func classifyParseFailure(raw, streamCut string) (category, feedback string) {
 			if strings.Contains(stripped, `&lt;`) || strings.Contains(stripped, `&gt;`) ||
 				strings.Contains(stripped, `<body>`) || strings.Contains(stripped, `<head>`) ||
 				strings.Contains(stripped, `def `) || strings.Contains(stripped, `class `) {
-				structuralHint = " For whole-function or whole-element replacements, use `structural_edit` instead — it takes a selector (e.g. `function:dashboard`, `<body>`) and drops `old_str` entirely, so it doesn't truncate."
+				structuralHint = " For whole-function or whole-element replacements, use `structural_edit` instead — it takes the selector of the node you are changing and drops `old_str` entirely, so it doesn't truncate."
 			}
 			return "truncated_tool", "Your last tool call was TRUNCATED — the response hit the token cap mid-args. The fix is to shrink old_str/new_str: edit ONE function or block per call, not the whole file. If you need to change multiple routes/functions, do them in separate edit_file calls (one per turn). Common offenders: pasting all of app.py into old_str, embedding 5+ @app.route handlers in a single replacement." + structuralHint + " Respond now with a smaller edit_file or a structural_edit call."
 		}
 		return "truncated_tool", "Your tool call was truncated mid-args. Make a smaller call — keep `content`, `old_str`, and `new_str` short (under ~30 lines). Respond now with the corrected, smaller call."
 	}
 	return "malformed_tool", "Your tool_call JSON was malformed. Re-emit it as a single valid JSON object: {\"type\":\"tool_call\",\"name\":\"<tool>\",\"args\":{...}}. No prose, no markdown fences, no trailing commas."
+}
+
+// parseFailureFeedback is classifyParseFailure grounded in the call that was
+// cut: when the prefix names a write tool, the generic advice is replaced by
+// what the complete tokens and the file on disk establish (cutCallDiagnostic).
+// Nothing in the cut call is executed either way.
+func parseFailureFeedback(ctx *AgentContext, raw, streamCut string) (string, string) {
+	category, feedback := classifyParseFailure(raw, streamCut)
+	if category != "loop_cut" && category != "truncated_tool" {
+		return category, feedback
+	}
+	diag := cutCallDiagnostic(ctx, raw)
+	if diag == "" {
+		return category, feedback
+	}
+	if category == "loop_cut" {
+		return category, "Your response was cut off because it had started repeating itself, so what arrived " +
+			"was an unfinished tool call; sending the same call again repeats the same way. " + diag
+	}
+	return category, "Your tool call was cut off at the per-turn token cap. " + diag
 }
 
 // extractModelResponse extracts a ModelResponse from the LLM output,
