@@ -141,11 +141,9 @@ def _check_flask_pause(ws: Path) -> tuple[bool, str]:
 
 def _check_add_function(ws: Path) -> tuple[bool, str]:
     src = (ws / "stats.py").read_text()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError as e:
-        return False, f"stats.py does not parse: {e}"
-    names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    names, err = _function_names(src)
+    if err:
+        return False, f"stats.py does not parse: {err}"
     if "median" not in names:
         return False, f"no median() defined (found {sorted(names)})"
     # Behaviour, not just presence.
@@ -529,10 +527,9 @@ verdict(True)
 def _check_add_toml(ws: Path) -> tuple[bool, str]:
     src_path = ws / "executor_server.py"
     src = src_path.read_text()
-    try:
-        ast.parse(src)
-    except SyntaxError as e:
-        return False, f"broke the file: {e.msg} (line {e.lineno})"
+    _, err = _function_names(src)
+    if err:
+        return False, f"broke the file: {err}"
 
     # Regression first — this is the "did everything break" question, and it
     # matters more than the feature.
@@ -695,11 +692,9 @@ def _check_multiturn(ws: Path) -> tuple[bool, str]:
     behave, not just the newest one.
     """
     src = (ws / "stats.py").read_text()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError as e:
-        return False, f"stats.py does not parse after the follow-up: {e}"
-    names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    names, err = _function_names(src)
+    if err:
+        return False, f"stats.py does not parse after the follow-up: {err}"
     for want in ("mean", "median", "mode"):
         if want not in names:
             return False, f"{want}() missing after both turns (have {sorted(names)})"
@@ -942,6 +937,71 @@ def _sandbox_python_parses(text: str) -> tuple[Optional[bool], str]:
     return None, ""
 
 
+EVALUATOR_VERSION = "e2e-eval-v2"
+
+
+def _quality_parser():
+    return _target_parse if _SANDBOX_CONTAINER else None
+
+
+def evaluator_identity() -> dict:
+    """Which interpreter judged Python syntax in this run.
+
+    v1 used this script's interpreter for the quality count and three task
+    checks; the dev server host is 3.9 and the sandbox runs 3.13, so code
+    valid where it runs was scored unparseable. v2 asks the sandbox whenever
+    one is configured and names the fallback when it is not.
+    """
+    target = "unavailable"
+    if _SANDBOX_CONTAINER:
+        try:
+            proc = subprocess.run(["docker", "exec", _SANDBOX_CONTAINER, "python3", "-c",
+                                   "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+                                  capture_output=True, text=True, timeout=20)
+            image = subprocess.run(["docker", "inspect", "-f", "{{.Image}}", _SANDBOX_CONTAINER],
+                                   capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0:
+                target = (f"sandbox {_SANDBOX_CONTAINER} python {proc.stdout.strip()} "
+                          f"image {image.stdout.strip()[:19]}")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"version": EVALUATOR_VERSION, "python_parser": target,
+            "fallback": f"host python {sys.version_info.major}.{sys.version_info.minor}"}
+
+
+def _target_parse(text: str) -> tuple[Optional[bool], str]:
+    return _sandbox_python_parses(text)
+
+
+def _function_names(src: str) -> tuple[set, str]:
+    """Top-level-and-nested def names, judged by the interpreter that runs the
+    code. Returns (names, "") or (set(), error)."""
+    ok, why = _target_parse(src)
+    if ok is False:
+        return set(), why
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        if ok is None:
+            return set(), f"{e} (host python {sys.version_info.major}.{sys.version_info.minor}; sandbox unreachable)"
+        names, err = _sandbox_function_names(src)
+        return names, err
+    return {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}, ""
+
+
+def _sandbox_function_names(src: str) -> tuple[set, str]:
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "-i", _SANDBOX_CONTAINER, "python3", "-c",
+             "import ast,json,sys\n"
+             "t=ast.parse(sys.stdin.read())\n"
+             "print(json.dumps(sorted({n.name for n in ast.walk(t) if isinstance(n, ast.FunctionDef)})))\n"],
+            input=src, capture_output=True, text=True, timeout=20)
+        return set(json.loads(proc.stdout)), ""
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return set(), f"sandbox could not list functions: {e}"
+
+
 def _file_parses(path: Path) -> tuple[bool, str]:
     """Whole-file parse plus the embedded-script layer, mirroring the gates."""
     try:
@@ -949,20 +1009,17 @@ def _file_parses(path: Path) -> tuple[bool, str]:
     except (UnicodeDecodeError, OSError):
         return True, ""  # binary or unreadable: not our concern
     if path.suffix == ".py":
-        try:
-            ast.parse(text)
-        except SyntaxError as e:
-            # This script's own interpreter is not the one the code runs
-            # under. The host here is 3.9 and the sandbox is 3.13, and PEP 701
-            # (3.12+) allows nested same-type quotes inside f-strings —
-            # `f"{items[i]["title"]}"` parses in the sandbox and raises
-            # `f-string: unmatched '['` here. That reported a perfectly good
-            # file as a corrupt write. Ask the runtime that will execute it.
-            ok, why = _sandbox_python_parses(text)
-            if ok is None:
+        # The interpreter that runs the code decides (evaluator v2). v1
+        # consulted it only after a host 3.9 failure, so a file valid under
+        # 3.9 and invalid under 3.13 would have passed.
+        ok, why = _target_parse(text)
+        if ok is False:
+            return False, f"python: {why}"
+        if ok is None:
+            try:
+                ast.parse(text)
+            except SyntaxError as e:
                 return False, f"python ({sys.version_info.major}.{sys.version_info.minor}): {e}"
-            if not ok:
-                return False, f"python: {why}"
     js = _extract_script(text) if path.suffix in (".py", ".html", ".htm") else None
     if js:
         ok, err = _js_parses(js)
@@ -1540,7 +1597,7 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
         s.task_detail = (f"modified the fixture it was given: "
                          f"{', '.join(sorted(tampered))}")
         try:
-            s.quality = analyze_quality(workspace, set(task.files)).as_dict()
+            s.quality = analyze_quality(workspace, set(task.files), _quality_parser(), evaluator_identity()["python_parser"]).as_dict()
         except Exception as e:
             s.quality = {"error": str(e)}
         return s
@@ -1553,7 +1610,7 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
         s.task_passed, s.task_detail = False, f"check raised: {e}"
     # Quality of what the agent wrote, excluding the fixtures it was handed.
     try:
-        s.quality = analyze_quality(workspace, set(task.files)).as_dict()
+        s.quality = analyze_quality(workspace, set(task.files), _quality_parser(), evaluator_identity()["python_parser"]).as_dict()
     except Exception as e:
         s.quality = {"error": str(e)}
     return s
@@ -1698,6 +1755,8 @@ def main() -> int:
                 print(f"      ! {d}", flush=True)
 
     report(sessions, known)
+    EVAL_ID = evaluator_identity()
+    print(f"evaluator: {EVAL_ID}")
     if args.json_out:
         Path(args.json_out).write_text(json.dumps([{
             "task": s.task, "rep": s.rep, "task_passed": s.task_passed,
@@ -1705,6 +1764,7 @@ def main() -> int:
             "turns": len(s.of_type("turn_start")),
             "tools": len(s.of_type("tool_call")), "wall_s": round(s.wall_s, 1),
             "quality": s.quality,
+            "evaluator": EVAL_ID,
         } for s in sessions], indent=2))
         print(f"\nwrote {args.json_out}")
     return 0 if all(not s.defects for s in sessions) else 1
