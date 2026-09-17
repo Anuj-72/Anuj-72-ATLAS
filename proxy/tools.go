@@ -625,7 +625,7 @@ func embeddedRegionNote(regions []EmbeddedRegion) string {
 	}
 	sb.WriteString("These are NOT selectable. To the host grammar the whole block is one " +
 		"string literal or one raw text node, so `structural_edit` cannot address anything " +
-		"listed above — `function:NAME` will report that the symbol does not exist. Change " +
+		"listed above — a selector naming any of them reports that the symbol does not exist. Change " +
 		"this code with replace_lines (the line numbers above), edit_file on one unique line, " +
 		"or insert_after.\n")
 	return sb.String()
@@ -1301,7 +1301,7 @@ func writeFileTool() *ToolDef {
 				}
 			}
 
-			logMandatoryChecks("write_file", input.Path, "direct")
+			logMandatoryChecks(ctx, "write_file", input.Path, "direct")
 			// T1: Direct write — config, data, boilerplate
 			res, err := writeFileRecorded(path, input.Content, ctx)
 			if err == nil && res != nil && res.Success {
@@ -1539,7 +1539,7 @@ func fileIsSourceCode(path string) bool {
 // session: three AoC sessions and a novel-arm session all died as
 // "solve.py was never created" — code on hand, nothing on disk.
 func writeNewFileWithWarning(path, inputPath, content, synErr string, ctx *AgentContext) (*ToolResult, error) {
-	logMandatoryChecks("write_file", inputPath, "syntax failed, landing with a warning")
+	logMandatoryChecks(ctx, "write_file", inputPath, "syntax failed, landing with a warning")
 	res, err := writeFileRecorded(path, content, ctx)
 	if err != nil || res == nil || !res.Success {
 		return res, err
@@ -2490,7 +2490,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	// normally returns what it was handed; it re-evaluates only if a future
 	// branch alters the bytes without saying what it found about them, which is
 	// the one way this invariant could rot.
-	logMandatoryChecks("write_file", path, "candidate route")
+	logMandatoryChecks(ctx, "write_file", path, "candidate route")
 	final := deliveredCheck
 	if checkedFor != code {
 		log.Printf("[write_file] final bytes for %s are not the observed ones — re-checking",
@@ -2802,10 +2802,9 @@ func editFileTool() *ToolDef {
 					strings.Contains(input.OldStr, "&amp;")
 				literalsOnDisk := strings.ContainsAny(content, "<>&")
 				if hasEntities && literalsOnDisk {
-					ext := strings.ToLower(filepath.Ext(input.Path))
 					alt := ""
-					if hint := structuralSelectorHint(ext); hint != "" {
-						alt = " For whole-element rewrites, structural_edit is the cleaner option — it takes a selector (" + hint + ") and the new content body, no old_str needed."
+					if guide := selectorGuidance(input.Path, content); guide != "" {
+						alt = " For whole-element rewrites, structural_edit is the cleaner option — it takes a selector and the new content body, no old_str needed; " + guide + "."
 					}
 					return nil, errNoMutation(fmt.Errorf("string to replace not found in file. Your `old_str` contains HTML-entity-encoded characters (`&lt;` / `&gt;` / `&amp;`) but the file on disk has literal `<` / `>` / `&`. Re-emit `old_str` with literal angle brackets — JSON strings should contain literal `<` not `&lt;`.%s\nSearched for: %s",
 						alt, truncateStr(input.OldStr, 200)))
@@ -2815,13 +2814,12 @@ func editFileTool() *ToolDef {
 				// smaller models do constantly). For structured files,
 				// structural_edit sidesteps the whole problem: it selects the node
 				// by name, no old_str to reproduce exactly. Steer there.
-				ext := strings.ToLower(filepath.Ext(input.Path))
 				astAlt := ""
-				if hint := structuralSelectorHint(ext); hint != "" {
+				if guide := selectorGuidance(input.Path, content); guide != "" {
 					astAlt = " To replace a whole function/class/element without " +
-						"matching exact text, use structural_edit with a selector " +
-						"(" + hint + ") and the " +
-						"new content — no old_str needed, so a near-miss can't fail it."
+						"matching exact text, use structural_edit with a selector and the " +
+						"new content — no old_str needed, so a near-miss can't fail it; " +
+						guide + "."
 				}
 				// Ground the retry in the file's REAL content. A small model
 				// frequently writes old_str from its memory of the file
@@ -3009,7 +3007,7 @@ func editFileTool() *ToolDef {
 				log.Printf("[edit_file] edit duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
 				return structuralRefusal(msg), nil
 			}
-			logMandatoryChecks("edit_file", input.Path, "")
+			logMandatoryChecks(ctx, "edit_file", input.Path, "")
 
 			// Atomic write
 			tmpPath := path + ".atlas.tmp"
@@ -3218,7 +3216,7 @@ func structuralEditTool() *ToolDef {
 			if !astResp.Success {
 				// The selector matched nothing, or the splice would not parse:
 				// either way no replacement content came back to write.
-				return noMutation(astResp.Error), nil
+				return noMutation(astResp.Error + moduleLevelContentNote(ctx, input.Path, input.Content)), nil
 			}
 
 			// Shrinkage guard — catch the May 9 2026 destructive-stub bug
@@ -3347,7 +3345,7 @@ func structuralEditTool() *ToolDef {
 				log.Printf("[structural_edit] edit duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
 				return structuralRefusal(msg), nil
 			}
-			logMandatoryChecks("structural_edit", input.Path, "")
+			logMandatoryChecks(ctx, "structural_edit", input.Path, "")
 
 			// Atomic write — same pattern as edit_file/write_file.
 			tmpPath := path + ".atlas.tmp"
@@ -3958,7 +3956,7 @@ func insertAfterTool() *ToolDef {
 			if msg := duplicateMainGuard(path, original, updated); msg != "" {
 				return structuralRefusal(msg), nil
 			}
-			logMandatoryChecks("insert_after", in.Path, "")
+			logMandatoryChecks(ctx, "insert_after", in.Path, "")
 
 			if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 				return nil, editWriteFailure(path,
@@ -4149,12 +4147,11 @@ func replaceLinesTool() *ToolDef {
 				return noMutation(fmt.Sprintf(
 					"replace_lines: %d lines is too large a range (limit %d). A replacement that size is a rewrite rather "+
 						"than an edit. Split it into consecutive replace_lines calls of at most %d lines, working from "+
-						"the BOTTOM of the file upward so the earlier line numbers stay valid. For a whole Python "+
-						"function or class, structural_edit with function:NAME / class:NAME replaces the node in one "+
-						"call — but only for real Python nodes: code inside a string literal (a <script> block in an "+
-						"HTML template, say) is one string to the Python grammar and no selector reaches into it, so "+
-						"there the split is the way.",
-					span, replaceLinesMaxSpan, replaceLinesMaxSpan)), nil
+						"the BOTTOM of the file upward so the earlier line numbers stay valid. For a whole function "+
+						"or class, structural_edit replaces the node in one call (%s) — but only for real nodes: code "+
+						"inside a string literal (a <script> block in an HTML template, say) is one string to the "+
+						"host grammar and no selector reaches into it, so there the split is the way.",
+					span, replaceLinesMaxSpan, replaceLinesMaxSpan, selectorGuidanceOrOutline(in.Path, original))), nil
 			}
 			// A stale range that simply moved is relocated rather than
 			// refused: the numbers go stale as soon as an earlier edit
@@ -4223,7 +4220,7 @@ func replaceLinesTool() *ToolDef {
 			if msg := duplicateMainGuard(path, original, updated); msg != "" {
 				return structuralRefusal(msg), nil
 			}
-			logMandatoryChecks("replace_lines", in.Path, "")
+			logMandatoryChecks(ctx, "replace_lines", in.Path, "")
 
 			if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 				return nil, editWriteFailure(path,
@@ -6334,7 +6331,7 @@ func writeWithoutCandidate(ctx *AgentContext, path, content, message string) (*T
 				ValidationDetail: msg}, nil
 		}
 	}
-	logMandatoryChecks("write_file", path, "producer fallback")
+	logMandatoryChecks(ctx, "write_file", path, "producer fallback")
 	if message != "" {
 		ctx.Stream("text", map[string]string{"content": message})
 	}
@@ -6372,9 +6369,22 @@ func logBudgetBypass(tool, relPath string, reason candidateBypassReason) {
 // write owes (syntax with healthy->broken, unresolved names, embedded script,
 // duplicate entrypoint) were applied on this route. One line per write, so a
 // run's log can be counted against its writes.
-func logMandatoryChecks(tool, path, route string) {
+func logMandatoryChecks(ctx *AgentContext, tool, path, route string) {
 	if route != "" {
 		route = " (" + route + ")"
 	}
-	log.Printf("[gates] %s %s: mandatory checks applied%s", tool, logPath(path), route)
+	unavailable := ""
+	if n := ctx.checkServiceFailureSummary(); n != "" {
+		unavailable = "; could not run this session: " + n
+	}
+	log.Printf("[gates] %s %s: mandatory checks applied%s%s", tool, logPath(path), route, unavailable)
+}
+
+// selectorGuidanceOrOutline is selectorGuidance, or a pointer to outline_file
+// for a language structural_edit does not handle.
+func selectorGuidanceOrOutline(path, source string) string {
+	if g := selectorGuidance(path, source); g != "" {
+		return g
+	}
+	return "run outline_file on " + filepath.Base(path) + " to see what a selector can name"
 }

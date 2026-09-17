@@ -1961,7 +1961,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			if p := extractFailurePath(parsed.Name, parsed.Args); p != "" &&
 				st.toolBanned[parsed.Name+"\x00"+p] {
 				log.Printf("[agent] turn=%d blocked %s on %s (tool withdrawn for this file)", turn, parsed.Name, p)
-				st.bounceToolCall(ctx, parsed.Name, toolBanNote(parsed.Name, p))
+				st.bounceToolCall(ctx, parsed.Name, toolBanNoteFor(ctx, parsed.Name, p))
 				consecutiveErrors++
 				totalFailures++
 				// A bounce off the ban is a failure like any other. This
@@ -2041,7 +2041,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						st.toolBanned[key] = true
 						log.Printf("[agent] %s is now unavailable for %s — identical rejected call re-sent", parsed.Name, p)
 					}
-					refusal += " " + toolBanNote(parsed.Name, p)
+					refusal += " " + toolBanNoteFor(ctx, parsed.Name, p)
 				}
 				st.bounceToolCall(ctx, parsed.Name, refusal)
 				// A refusal is a failure and has to count as one. Skipping
@@ -2521,13 +2521,23 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// second miss never fires (observed: 1 edit_file all session,
 				// then 9 run_command re-runs).
 				if editMissByPath[mp] >= 1 && (ext == ".py" || ext == ".html" || ext == ".htm") {
-					pendingRepeatCorrective = "edit_file's old_str did not match " +
-						mp + " (small drift in whitespace/quotes is enough to miss). " +
-						"Do NOT re-read or run the file — switch to structural_edit, which " +
-						"needs no old_str: {\"type\":\"tool_call\",\"name\":\"structural_edit\"," +
-						"\"args\":{\"path\":\"" + mp + "\",\"selector\":\"function:NAME\" " +
-						"(or class:NAME, or <tag> for HTML),\"content\":\"<the full " +
-						"replacement function/class/element>\"}}."
+					var source string
+					if b, rerr := os.ReadFile(resolveAgentPath(ctx, mp)); rerr == nil {
+						source = string(b)
+					}
+					if sels := selectorsInFile(mp, source); len(sels) > 0 {
+						pendingRepeatCorrective = "edit_file's old_str did not match " +
+							mp + " (small drift in whitespace/quotes is enough to miss). " +
+							"Do NOT re-read or run the file — switch to structural_edit, which " +
+							"needs no old_str: call it with path " + mp + ", the selector of the " +
+							"node you are changing, and that node's complete replacement as " +
+							"content. " + selectorGuidance(mp, source) + "."
+					} else {
+						pendingRepeatCorrective = "edit_file's old_str did not match " +
+							mp + " (small drift in whitespace/quotes is enough to miss). " +
+							selectorGuidanceOrOutline(mp, source) + ". Use replace_lines with " +
+							"the line numbers read_file shows instead of reproducing old_str."
+					}
 					log.Printf("[agent] edit_file miss on %q — forcing structural_edit steer", mp)
 				}
 			}
@@ -2949,15 +2959,17 @@ func buildStepRequest(ctx *AgentContext) ([]AgentMessage, string) {
 		return messages, ""
 	}
 
-	selectors := structuralSelectorHint(ext)
-	if selectors == "" {
-		selectors = "`function:NAME` or `class:NAME`"
+	_, target := stepExclusionTarget(ctx)
+	var source string
+	if b, rerr := os.ReadFile(resolveAgentPath(ctx, target)); rerr == nil {
+		source = string(b)
 	}
 	note := fmt.Sprintf(
-		"[system note]: For this single decision, %s is unavailable. The previous write_file was rejected because the target is an existing %s file >5 lines. Use structural_edit with a structural selector (%s) to rewrite the named node. structural_edit doesn't need old_str so it doesn't truncate on long content. Emit exactly one JSON object: {\"type\":\"tool_call\",\"name\":\"structural_edit\",\"args\":{\"path\":\"...\",\"selector\":\"...\",\"content\":\"...\"}}.",
+		"[system note]: For this single decision, %s is unavailable. The previous write_file was rejected because the target is an existing %s file >5 lines. Use structural_edit to rewrite the named node you are changing (%s). structural_edit doesn't need old_str so it doesn't truncate on long content. Emit exactly one structural_edit tool_call with path %s, that selector, and the node's complete replacement as content.",
 		strings.Join(excluded, " and "),
 		strings.TrimPrefix(ext, "."),
-		selectors,
+		selectorGuidanceOrOutline(target, source),
+		target,
 	)
 	messages := append([]AgentMessage(nil), ctx.Messages...)
 	if planReminder != "" {
@@ -2980,6 +2992,16 @@ func buildStepRequest(ctx *AgentContext) ([]AgentMessage, string) {
 // scanned is the last 6 messages (assistant call + tool result + a few
 // recent siblings).
 func stepExclusions(ctx *AgentContext) ([]string, string) {
+	tools, path := stepExclusionTarget(ctx)
+	if tools == nil {
+		return nil, ""
+	}
+	return tools, strings.ToLower(filepath.Ext(path))
+}
+
+// stepExclusionTarget is stepExclusions with the rejected write's path, which
+// the steering note needs in order to name selectors that exist in it.
+func stepExclusionTarget(ctx *AgentContext) ([]string, string) {
 	n := len(ctx.Messages)
 	if n == 0 {
 		return nil, ""
@@ -3032,7 +3054,7 @@ func stepExclusions(ctx *AgentContext) ([]string, string) {
 		// Ban write_file (just got rejected) and edit_file (the wrong
 		// shortcut the model is biased toward). Leave structural_edit and the
 		// read/run/etc tools available.
-		return []string{"edit_file", "write_file"}, ext
+		return []string{"edit_file", "write_file"}, path
 	}
 	return nil, ""
 }

@@ -2955,7 +2955,7 @@ func toolBanNote(tool, path string) string {
 		structuralFits = true
 	}
 	candidates := []struct{ name, how string }{
-		{"structural_edit", "`structural_edit` (a selector such as `function:update` plus the new body — no old_str to reproduce)"},
+		{"structural_edit", "`structural_edit` (the selector of the node you are changing plus its new body — no old_str to reproduce)"},
 		{"replace_lines", "`replace_lines` (assert only the first and last line of the range)"},
 		{"write_file", "`write_file` with the complete new contents"},
 	}
@@ -2972,6 +2972,24 @@ func toolBanNote(tool, path string) string {
 	return fmt.Sprintf(
 		"%s is no longer available for %s in this session: it was sent and rejected unchanged, so it is not a path to a working edit here. Use %s.",
 		tool, path, strings.Join(alts, " or "))
+}
+
+// toolBanNoteFor is toolBanNote plus the selectors that exist in the file
+// when structural_edit is one of the alternatives it names, so the suggestion
+// can be acted on without inventing a name.
+func toolBanNoteFor(ctx *AgentContext, tool, path string) string {
+	note := toolBanNote(tool, path)
+	if tool == "structural_edit" || !strings.Contains(note, "`structural_edit`") {
+		return note
+	}
+	b, err := os.ReadFile(resolveAgentPath(ctx, path))
+	if err != nil {
+		return note
+	}
+	if g := selectorGuidance(path, string(b)); g != "" {
+		note += " For structural_edit, " + g + "."
+	}
+	return note
 }
 
 // --- explicit read-only requests --------------------------------------------

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -279,5 +280,91 @@ func TestTheProducerFallbackAppliesTheComparativeChecks(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(w.dir, "solve.py")); string(b) != before {
 		t.Error("the file on disk changed")
+	}
+}
+
+// Skipping generation must not remove a delivery that could have happened.
+// For every contract/policy/capture configuration the skip predicate calls
+// undeliverable, the real candidate route is forced to run with the strongest
+// candidate the fixture can offer; the caller's baseline must be what lands.
+// Where the predicate says deliverable, the same fixture must be able to
+// deliver in at least one configuration, or the matrix proves nothing.
+func TestSkippingGenerationLosesNoDelivery(t *testing.T) {
+	contracts := map[string]string{
+		"work only (the reliability runner)": `{"task_mode":"work"}`,
+		"automatic_v3, no declared outputs":  `{"task_mode":"work","candidate_policy":"automatic_v3"}`,
+		"advisory, no declared outputs":      `{"task_mode":"work","candidate_policy":"advisory"}`,
+		"strict, declared output":            strictContract,
+		"automatic_v3, declared output":      automaticContract,
+		"advisory, declared output":          advisoryContract,
+		"verification declared, no outputs":  `{"task_mode":"work","verification_knowledge":"declared","verification":["python3 solve.py"]}`,
+	}
+	delivered := 0
+	for name, contract := range contracts {
+		for _, supported := range []bool{true, false} {
+			for _, capture := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/supported=%v/capture=%v", name, supported, capture), func(t *testing.T) {
+					if capture {
+						t.Setenv(CandidateCaptureOnlyEnv, "1")
+					}
+					w := newAutomaticWorld(t, contract, routeWinner, nil, supported)
+					deliverable := candidateDeliverableUnderPolicy(w.ctx)
+					if _, err := w.write(t); err != nil {
+						t.Fatalf("write failed: %v", err)
+					}
+					got := w.disk(t)
+					if !deliverable && got != routeBaseline {
+						t.Fatalf("the skip predicate said undeliverable, but the forced route delivered %q", got)
+					}
+					if got == routeWinner {
+						delivered++
+					}
+					t.Logf("deliverable=%v delivered=%v", deliverable, got == routeWinner)
+				})
+			}
+		}
+	}
+	if delivered == 0 {
+		t.Fatal("no configuration delivered: the fixture cannot show that a skip loses nothing")
+	}
+}
+
+// With generation skipped, an unreachable check service is still visible: the
+// client is told once, and every write's gate log carries the count.
+func TestACheckServiceOutageIsVisibleWhenGenerationIsSkipped(t *testing.T) {
+	w := newBudgetWorld(t)
+	var notices []string
+	w.ctx.StreamFn = func(event string, data interface{}) {
+		if m, ok := data.(map[string]string); ok && event == "text" {
+			notices = append(notices, m["content"])
+		}
+	}
+	w.seed(t, "solve.py", budgetModule)
+	// The check service is down; the sandbox (syntax) still answers.
+	sandbox := w.ctx.SandboxURL
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	w.ctx.V3URL = dead.URL
+	w.ctx.SandboxURL = sandbox
+	for i := 0; i < 2; i++ {
+		changed := strings.Replace(budgetModule, "return 2 * math.pi * radius", fmt.Sprintf("return %d * math.pi * radius", 3+i), 1)
+		if res := w.write(t, "solve.py", changed); !res.Success {
+			t.Fatalf("write %d did not land: %s", i, res.Error)
+		}
+	}
+	if got := writeGenerationBypass(w.ctx, Tier2Medium, false, true); got != bypassCandidateUndeliverable {
+		t.Fatalf("fixture must skip generation, got %q", got)
+	}
+	shown := 0
+	for _, n := range notices {
+		if strings.Contains(n, "unresolved-name check unavailable") {
+			shown++
+		}
+	}
+	if shown != 1 {
+		t.Errorf("the outage was shown %d times, want exactly once: %v", shown, notices)
+	}
+	if s := w.ctx.checkServiceFailureSummary(); !strings.Contains(s, "unresolved-name=") {
+		t.Errorf("the session does not count the outage: %q", s)
 	}
 }

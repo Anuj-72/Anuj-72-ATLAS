@@ -274,11 +274,17 @@ func checkStructuralUnresolved(ctx *AgentContext, path, content string) ([]strin
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		noteCheckServiceUnavailable(ctx, "unresolved-name", "service unreachable")
 		return nil, false // fail-open
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		noteCheckServiceUnavailable(ctx, "unresolved-name", "response unreadable")
+		return nil, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		noteCheckServiceUnavailable(ctx, "unresolved-name", fmt.Sprintf("service returned %d", resp.StatusCode))
 		return nil, false
 	}
 	var r struct {
@@ -775,10 +781,12 @@ func embeddedScriptOutcome(ctx *AgentContext, path, content, previous string) ch
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		noteCheckServiceUnavailable(ctx, "embedded-script", "service unreachable")
 		return checkOutcome{Status: ValidationNotRun, Detail: "service unreachable"}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		noteCheckServiceUnavailable(ctx, "embedded-script", fmt.Sprintf("service returned %d", resp.StatusCode))
 		return checkOutcome{Status: ValidationNotRun, Detail: "service returned a non-200"}
 	}
 	var out struct {
@@ -1066,28 +1074,107 @@ func allLinesLineNumbered(s string) bool {
 	return true
 }
 
-// structuralSelectorHint names the selectors structural_edit actually accepts
-// for a file's language, or "" when the file has no structural support at all.
-//
-// The callers are all failure nudges, which fire when the model is already
-// stuck and is therefore most likely to follow them literally. Offering a
-// selector the target cannot accept spends the next turn on a second
-// rejection: an E2E session editing a Flask app reached for `<script>` on the
-// .py file (its script lives inside a Python template string, so the Python
-// grammar has no such node) and got "unknown selector '<script>' for python".
-// The system prompt already qualifies `<tag>` as HTML-only; these did not.
-func structuralSelectorHint(ext string) string {
-	switch ext {
-	case ".html", ".htm":
-		return "e.g. `<body>`, `<script>`"
-	case ".py":
-		return "`function:NAME` or `class:NAME`"
-	case ".go":
-		// function:NAME matches a func or a method, so the model does not
-		// have to know which it is looking at.
-		return "`function:NAME` or `type:NAME`"
-	case ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
-		return "`function:NAME` or `class:NAME`"
+// selectorGuidance says which structural_edit selectors exist in a file, read
+// from the file itself, or how to find out. It never offers a placeholder: a
+// refusal that suggested "a selector (`function:NAME` or `class:NAME`)" was
+// answered with the literal selector `function:NAME` and a correct whole-file
+// fix as content, which was then refused too (stabilization cycle 1, W1
+// aoc_slope rep1). Returns "" for a language structural_edit does not handle.
+func selectorGuidance(path, source string) string {
+	if !structuralLanguage(path) {
+		return ""
+	}
+	name := filepath.Base(path)
+	sels := selectorsInFile(path, source)
+	if len(sels) == 0 {
+		return fmt.Sprintf("%s has no top-level function, class or element a selector can name; "+
+			"run outline_file on %s to see its structure", name, name)
+	}
+	more := ""
+	if len(sels) > 8 {
+		more = fmt.Sprintf(" and %d more (outline_file lists them)", len(sels)-8)
+		sels = sels[:8]
+	}
+	return fmt.Sprintf("selectors that exist in %s: `%s`%s", name, strings.Join(sels, "`, `"), more)
+}
+
+func structuralLanguage(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".html", ".htm", ".go", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs":
+		return true
+	}
+	return false
+}
+
+// selectorsInFile lists selectors that name exactly one top-level node in the
+// source: column-0 definitions for code, and elements that occur once for
+// HTML. A name defined twice is left out, since its selector would be
+// ambiguous.
+func selectorsInFile(path, source string) []string {
+	ext := strings.ToLower(filepath.Ext(path))
+	var out []string
+	if ext == ".html" || ext == ".htm" {
+		low := strings.ToLower(source)
+		for _, tag := range []string{"html", "head", "body", "main", "header", "nav", "footer", "script", "style"} {
+			n := 0
+			for _, sep := range []string{"<" + tag + ">", "<" + tag + " ", "<" + tag + "\n"} {
+				n += strings.Count(low, sep)
+			}
+			if n == 1 {
+				out = append(out, "<"+tag+">")
+			}
+		}
+		return out
+	}
+	count := map[string]int{}
+	var order []string
+	for _, sym := range outlineByRegex(path, source) {
+		prefix := sym.Kind
+		if prefix == "type" && ext != ".go" {
+			continue
+		}
+		sel := prefix + ":" + sym.Name
+		if count[sel] == 0 {
+			order = append(order, sel)
+		}
+		count[sel]++
+	}
+	for _, sel := range order {
+		if count[sel] == 1 {
+			out = append(out, sel)
+		}
+	}
+	return out
+}
+
+// moduleLevelContentNote explains a structural_edit refusal whose content is
+// not one node at all: Python content with module-level code (an import, a
+// `if __name__` block, an assignment at column 0) reads as a whole file, and
+// structural_edit replaces a single function or class. The note names the
+// line that shows it and the tool that replaces a whole file, or edits outside
+// a node. Python only, where column-0 code outside a def/class is unambiguous.
+func moduleLevelContentNote(ctx *AgentContext, path, content string) string {
+	if strings.ToLower(filepath.Ext(path)) != ".py" {
+		return ""
+	}
+	for i, line := range strings.Split(content, "\n") {
+		t := strings.TrimRight(line, " \t\r")
+		if t == "" || line[0] == ' ' || line[0] == '\t' {
+			continue
+		}
+		if strings.HasPrefix(t, "#") || strings.HasPrefix(t, "@") || strings.HasPrefix(t, "def ") ||
+			strings.HasPrefix(t, "async def ") || strings.HasPrefix(t, "class ") ||
+			t == ")" || t == "]" || t == "}" || strings.HasPrefix(t, strings.Repeat("\"", 3)) || strings.HasPrefix(t, strings.Repeat("'", 3)) {
+			continue
+		}
+		name := filepath.Base(path)
+		how := "use replace_lines with the line numbers read_file shows, or edit_file anchored on one unique line"
+		if ctx != nil && ctx.SessionWrites[path] {
+			how = fmt.Sprintf("write_file with the complete file is the tool that replaces all of %s", name)
+		}
+		return fmt.Sprintf(" Your content is not a single function or class: line %d (`%s`) is module-level code, "+
+			"so it reads as a whole file, and structural_edit replaces one named node. To change the whole file, %s.",
+			i+1, truncateStr(t, 60), how)
 	}
 	return ""
 }
@@ -3684,4 +3771,51 @@ func stripPythonComment(line string) string {
 		}
 	}
 	return line
+}
+
+// noteCheckServiceUnavailable records that a mandatory check could not run
+// because the service behind it did not answer. Both checks fail open, which
+// is right for a single write, but an outage must not be invisible: before
+// optional generation was skipped for undeliverable candidates, every Tier 2
+// write reached the same service and a failure surfaced as "V3 unavailable,
+// writing directly". The client is told once per check per session; every
+// later write's gate log line carries the running count.
+func noteCheckServiceUnavailable(ctx *AgentContext, check, detail string) {
+	if ctx == nil {
+		return
+	}
+	ctx.mu.Lock()
+	if ctx.CheckServiceFailures == nil {
+		ctx.CheckServiceFailures = map[string]int{}
+	}
+	ctx.CheckServiceFailures[check]++
+	first := ctx.CheckServiceFailures[check] == 1
+	ctx.mu.Unlock()
+	log.Printf("[gates] %s check could not run: %s — the write continues without it", check, detail)
+	if first {
+		ctx.Stream("text", map[string]string{"content": fmt.Sprintf(
+			"  └─ %s check unavailable (%s); writes continue without it", check, detail)})
+	}
+}
+
+// checkServiceFailureSummary is "embedded-script=2, unresolved-name=1", or "".
+func (c *AgentContext) checkServiceFailureSummary() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.CheckServiceFailures) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(c.CheckServiceFailures))
+	for k := range c.CheckServiceFailures {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, k := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, c.CheckServiceFailures[k]))
+	}
+	return strings.Join(parts, ", ")
 }

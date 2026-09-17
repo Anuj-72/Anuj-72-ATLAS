@@ -1219,6 +1219,9 @@ type AgentContext struct {
 
 	// Context for cancellation
 	Ctx context.Context
+	// Mandatory checks that could not run because their service did not
+	// answer, by check name. Guarded by mu. See noteCheckServiceUnavailable.
+	CheckServiceFailures map[string]int
 }
 
 // NewAgentContext creates a new agent context with defaults.
