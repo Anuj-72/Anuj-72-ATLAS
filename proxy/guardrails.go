@@ -1532,6 +1532,14 @@ var reOutputWriteVerb = regexp.MustCompile(`(?i)\b(sav|writ|creat|output|generat
 // Checked in a window AFTER the filename.
 var reMustProduce = regexp.MustCompile(`(?i)^\s*(must (exist|contain|include|be (creat|writt|present|generat)))`)
 
+// reReadsTheFile matches a read verb that directly governs the filename after
+// it ("reads input.txt", "loads the file config.yaml"). Such a file is the
+// task's input even when a write verb sits within the window before it:
+// "Write solve.py that reads input.txt" asks for solve.py alone. Only a
+// determiner or "file"/"data"/"contents" may stand between the verb and the
+// name, so "Write the parse results to out.json" still names an output.
+var reReadsTheFile = regexp.MustCompile(`(?i)\b(read|reads|reading|load|loads|loading|parse|parses|parsing|open|opens|opening)\s+((the|a|an|its|file|data|contents?|of)\s+){0,3}$`)
+
 // expectedOutputPaths extracts the file(s) a task prompt explicitly asks
 // the model to produce: a filename token preceded within ~70 chars by a
 // write/save/create/output verb. Grounded in the task text (many bench and
@@ -1556,7 +1564,7 @@ func expectedOutputPaths(msg string) []string {
 		}
 		// Output signal: a write verb within ~70 chars before the filename,
 		// OR "must exist/contain" requirement phrasing right after it.
-		if !reOutputWriteVerb.MatchString(msg[start:m[0]]) &&
+		if (!reOutputWriteVerb.MatchString(msg[start:m[0]]) || reReadsTheFile.MatchString(msg[start:m[0]])) &&
 			!reMustProduce.MatchString(msg[m[1]:afterEnd]) {
 			continue // input/incidental filename
 		}

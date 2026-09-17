@@ -38,6 +38,14 @@ type integrityRun struct {
 func integrityLoop(t *testing.T, request string, preexisting map[string]string, turns []string,
 	fencedReply func(prompt string) string) *integrityRun {
 	t.Helper()
+	return integrityLoopWith(t, request, preexisting, turns, fencedReply, nil)
+}
+
+// integrityLoopWith is integrityLoop with a hook that adjusts the session
+// before it runs (a task contract, as the request boundary would set it).
+func integrityLoopWith(t *testing.T, request string, preexisting map[string]string, turns []string,
+	fencedReply func(prompt string) string, setup func(*AgentContext)) *integrityRun {
+	t.Helper()
 	dir := t.TempDir()
 	for p, c := range preexisting {
 		full := filepath.Join(dir, p)
@@ -128,6 +136,9 @@ func integrityLoop(t *testing.T, request string, preexisting map[string]string, 
 				run.terminal[k] = fmt.Sprint(v)
 			}
 		}
+	}
+	if setup != nil {
+		setup(ctx)
 	}
 	t.Setenv("ATLAS_FENCED_STALL_SEC", "2")
 	t.Setenv("ATLAS_FENCED_FIRST_CONTENT_SEC", "3")
