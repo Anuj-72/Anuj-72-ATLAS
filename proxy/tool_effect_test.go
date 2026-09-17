@@ -870,7 +870,12 @@ func TestDirectMutatorOutcomeTable(t *testing.T) {
 // results, and the three turns spent on them -- and the run finishes at turn
 // 4 instead of turn 7. The 34 that remain are the parent's, in order and
 // byte-for-byte, which is what this pin is for.
-const ledgerLoopTranscriptHash = "77fb8fd44901a0573bcf752e8d49bc77e19d2c3123770cc8c853d1a11cc0a908"
+//
+// Re-pinned at 35 events: this fixture's service answers the unresolved-name
+// check with 503, and an unreachable check service is now shown to the client
+// once per session (noteCheckServiceUnavailable). That one `text` event is the
+// only difference; the ledger is still invisible.
+const ledgerLoopTranscriptHash = "7a51fb61ef80cbef3ff70816a4f2b8a4a4f1a1194395e4e272703359a2e40a46"
 
 // prompt_tokens is elided for a fixture reason rather than a timing one: the
 // workspace path is part of the system prompt and t.TempDir() varies in
@@ -1622,7 +1627,12 @@ func TestWhichMutatorsCanEverPromoteACheckpoint(t *testing.T) {
 // final.py sat on disk. Counting move_file as work removes those two turns and
 // the run reaches the debt gate directly (5 requests / 6000 bytes). The
 // classification keys this pin exists for are absent from both.
-const modelPromptBytesHash = "cd35d94c8870d8f357c28aba1651448acd187b4adebfa8e22e206a42b829524b"
+//
+// Re-pinned at 5 requests / 6072 bytes: the edit_file refusal and the forced
+// structural_edit steer no longer offer placeholder selectors; for this
+// fixture's solve.py, which defines nothing a selector can name, they point to
+// outline_file and replace_lines. Classification keys are still absent.
+const modelPromptBytesHash = "ec8f2ec30980c9ddd99e307545ccadc7aa3de37d9ec020a07467a11fca7336ed"
 
 // conversationBytes keeps every message except the system prompt, whose tool
 // descriptions are rendered in Go map order and therefore differ between two

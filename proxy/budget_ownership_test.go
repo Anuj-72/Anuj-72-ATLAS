@@ -368,3 +368,22 @@ func TestACheckServiceOutageIsVisibleWhenGenerationIsSkipped(t *testing.T) {
 		t.Errorf("the session does not count the outage: %q", s)
 	}
 }
+
+// A check the session itself cancelled is not an outage.
+func TestACancelledCheckIsNotReportedAsAnOutage(t *testing.T) {
+	w := newBudgetWorld(t)
+	var notices int
+	w.ctx.StreamFn = func(event string, _ interface{}) {
+		if event == "text" {
+			notices++
+		}
+	}
+	c, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.ctx.Ctx = c
+	noteCheckServiceUnavailable(w.ctx, "unresolved-name", "service unreachable")
+	if notices != 0 || w.ctx.checkServiceFailureSummary() != "" {
+		t.Errorf("a cancelled request was reported as an outage (notices=%d, summary=%q)",
+			notices, w.ctx.checkServiceFailureSummary())
+	}
+}

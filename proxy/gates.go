@@ -3784,6 +3784,11 @@ func noteCheckServiceUnavailable(ctx *AgentContext, check, detail string) {
 	if ctx == nil {
 		return
 	}
+	// A request this session cancelled, or whose deadline passed, did not find
+	// the service down.
+	if ctx.Ctx != nil && ctx.Ctx.Err() != nil {
+		return
+	}
 	ctx.mu.Lock()
 	if ctx.CheckServiceFailures == nil {
 		ctx.CheckServiceFailures = map[string]int{}
