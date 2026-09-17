@@ -24,19 +24,17 @@ import (
 // string. "@fenced" routes the file body around the JSON channel via one
 // unconstrained sub-call.
 
-func TestFencedContentRegexExtractsTheBlock(t *testing.T) {
+func TestFencedContentExtractsTheBlock(t *testing.T) {
 	reply := "Here is the file:\n```python\nx = 1\nprint(x)\n```\nDone."
-	m := fencedContentRe.FindStringSubmatch(reply)
-	if m == nil || m[1] != "x = 1\nprint(x)\n" {
-		t.Fatalf("extraction failed: %#v", m)
+	if got := extractFencedContent(reply); got != "x = 1\nprint(x)\n" {
+		t.Fatalf("extraction failed: %q", got)
 	}
 }
 
-func TestFencedContentRegexHandlesBareFence(t *testing.T) {
+func TestFencedContentHandlesBareFence(t *testing.T) {
 	reply := "```\ny = 2\n```"
-	m := fencedContentRe.FindStringSubmatch(reply)
-	if m == nil || m[1] != "y = 2\n" {
-		t.Fatalf("extraction failed: %#v", m)
+	if got := extractFencedContent(reply); got != "y = 2\n" {
+		t.Fatalf("extraction failed: %q", got)
 	}
 }
 
@@ -119,12 +117,17 @@ func TestRawResponseForFenceRoundTrips(t *testing.T) {
 
 // A file that itself contains ``` (markdown, docstring examples) must not
 // be cut at its first interior fence; the trailing-anchored form wins.
+// A file that contains its own ``` lines is never cut at an interior fence.
+// Inside a ``` wrapper those lines are indistinguishable from a second block,
+// so no bytes are returned (the sub-call is re-asked with a four-backtick
+// retry note); inside a ```` wrapper the whole file comes back.
 func TestFencedExtractionSurvivesInteriorFences(t *testing.T) {
 	body := "# readme\n\n```\nexample\n```\n\ntail line"
-	reply := "```markdown\n" + body + "\n```"
-	got := extractFencedContent(reply)
-	if got != body+"\n" {
-		t.Fatalf("interior fence cut the file: %q", got)
+	if got := extractFencedContent("```markdown\n" + body + "\n```"); got != "" {
+		t.Fatalf("an ambiguous ``` wrapper was resolved by guessing: %q", got)
+	}
+	if got := extractFencedContent("````markdown\n" + body + "\n````"); got != body+"\n" {
+		t.Fatalf("four-backtick wrapper lost bytes: %q", got)
 	}
 }
 

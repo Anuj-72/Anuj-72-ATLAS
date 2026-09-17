@@ -851,7 +851,7 @@ func writeFileTool() *ToolDef {
 		InputSchema: WriteFileInput{},
 		ReadOnly:    false,
 		Destructive: true,
-		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (*ToolResult, error) {
+		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (res *ToolResult, execErr error) {
 			var input WriteFileInput
 			if err := json.Unmarshal(rawInput, &input); err != nil {
 				return nil, errNoMutation(fmt.Errorf("invalid input: %w", err))
@@ -870,9 +870,10 @@ func writeFileTool() *ToolDef {
 			// lands on disk verbatim and the file becomes unparseable.
 			cleaned, sanitized := sanitizeFileContent(input.Path, input.Content)
 			if sanitized {
-				log.Printf("[write_file] sanitised markdown wrapper from %s (was %d chars, now %d)",
+				log.Printf("[write_file] removed a whole-file fence wrapper from %s (was %d chars, now %d)",
 					input.Path, len(input.Content), len(cleaned))
 				input.Content = cleaned
+				defer func() { noteContentChange(res, wholeFileWrapperNote) }()
 			}
 
 			// Pattern-matching reflex. When the model creates a
@@ -1017,6 +1018,7 @@ func writeFileTool() *ToolDef {
 				ctx.V3GenerationEnabled())
 			recordCandidateGenerationBypass(ctx, "write_file", writeBypass,
 				fileTier, strings.Count(input.Content, "\n")+1)
+			logBudgetBypass("write_file", input.Path, writeBypass)
 			if writeBypass == bypassNone {
 				// The regression gate above evaluated these exact bytes
 				// whenever the destination exists, so the evaluation here is
@@ -1272,6 +1274,34 @@ func writeFileTool() *ToolDef {
 				return preflightWarnedWrite(path, input.Path, input.Content, proposalCheck, ctx)
 			}
 
+			// The two comparative gates the V3 route applies to the bytes it
+			// writes (writeFileWithV3). They are checks on the write, not part
+			// of candidate generation, so a write that does not generate --
+			// small, mid-iteration, or with nothing deliverable -- must not skip
+			// them. Healthy->broken and fail-soft, as there. The demo baseline
+			// pane stays ungated.
+			if !ctx.V3Bypassed() {
+				if original, ok := readOriginalForGate(path); ok {
+					if msg := embeddedScriptGate(ctx, path, original, input.Content); msg != "" {
+						log.Printf("[write_file] direct write breaks an embedded script in %s — rejecting", logPath(input.Path))
+						return &ToolResult{Success: false, Error: msg,
+							MutationStatus:   MutationRefused,
+							ValidationKind:   ValidationKindStructural,
+							ValidationStatus: ValidationFailed,
+							ValidationDetail: msg}, nil
+					}
+					if msg := duplicateMainGuard(path, original, input.Content); msg != "" {
+						log.Printf("[write_file] direct write duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
+						return &ToolResult{Success: false, Error: msg,
+							MutationStatus:   MutationRefused,
+							ValidationKind:   ValidationKindStructural,
+							ValidationStatus: ValidationFailed,
+							ValidationDetail: msg}, nil
+					}
+				}
+			}
+
+			logMandatoryChecks("write_file", input.Path, "direct")
 			// T1: Direct write — config, data, boilerplate
 			res, err := writeFileRecorded(path, input.Content, ctx)
 			if err == nil && res != nil && res.Success {
@@ -1509,6 +1539,7 @@ func fileIsSourceCode(path string) bool {
 // session: three AoC sessions and a novel-arm session all died as
 // "solve.py was never created" — code on hand, nothing on disk.
 func writeNewFileWithWarning(path, inputPath, content, synErr string, ctx *AgentContext) (*ToolResult, error) {
+	logMandatoryChecks("write_file", inputPath, "syntax failed, landing with a warning")
 	res, err := writeFileRecorded(path, content, ctx)
 	if err != nil || res == nil || !res.Success {
 		return res, err
@@ -2459,6 +2490,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	// normally returns what it was handed; it re-evaluates only if a future
 	// branch alters the bytes without saying what it found about them, which is
 	// the one way this invariant could rot.
+	logMandatoryChecks("write_file", path, "candidate route")
 	final := deliveredCheck
 	if checkedFor != code {
 		log.Printf("[write_file] final bytes for %s are not the observed ones — re-checking",
@@ -2609,7 +2641,7 @@ func editFileTool() *ToolDef {
 		InputSchema: EditFileInput{},
 		ReadOnly:    false,
 		Destructive: false,
-		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (*ToolResult, error) {
+		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (res *ToolResult, execErr error) {
 			var input EditFileInput
 			if err := json.Unmarshal(rawInput, &input); err != nil {
 				return nil, errNoMutation(fmt.Errorf("invalid input: %w", err))
@@ -2660,37 +2692,12 @@ func editFileTool() *ToolDef {
 
 			// Find old_str with quote normalization
 			actualOldStr := findActualString(content, input.OldStr)
-			if actualOldStr == "" {
-				// GH #39: model occasionally HTML-entity-encodes < > &
-				// inside JSON tool-call args (a recurring small-model quirk). When the
-				// disk has literal angle brackets, findActualString
-				// misses. Try once with entities decoded — if the
-				// decoded form matches the file, accept it
-				// transparently (also decode new_str so the
-				// replacement preserves intent). Faster than burning a
-				// turn on the corrective and matches what the model
-				// almost certainly meant. If decoded still doesn't
-				// match (or there were no entities to decode), fall
-				// through to the targeted error so the model knows
-				// what's wrong.
-				hasEntities := strings.Contains(input.OldStr, "&lt;") ||
-					strings.Contains(input.OldStr, "&gt;") ||
-					strings.Contains(input.OldStr, "&amp;")
-				if hasEntities {
-					decoder := strings.NewReplacer(
-						"&lt;", "<",
-						"&gt;", ">",
-						"&amp;", "&",
-					)
-					decodedOld := decoder.Replace(input.OldStr)
-					if maybeMatch := findActualString(content, decodedOld); maybeMatch != "" {
-						log.Printf("[edit_file] auto-decoded HTML entities in old_str of %s — proceeding with decoded match (saved a stuck-loop turn)", input.Path)
-						input.OldStr = decodedOld
-						input.NewStr = decoder.Replace(input.NewStr)
-						actualOldStr = maybeMatch
-					}
-				}
-			}
+			// An old_str that matches only after decoding HTML entities is NOT
+			// accepted by decoding new_str to match (GH #39's old shortcut):
+			// the replacement may hold entities on purpose (&amp; in markup,
+			// or in a Python string), and decoding it wrote different bytes
+			// from the ones sent. The targeted refusal below names the
+			// entities and the retry.
 			if actualOldStr == "" {
 				// read_file prints "12<tab>" before each line for reference
 				// and the model pastes back what it was shown. The prefix is
@@ -2862,8 +2869,9 @@ func editFileTool() *ToolDef {
 			// that slip through, every line of the edit would have a
 			// stray ``` at the top and bottom.
 			if cleanedNew, sanitized := sanitizeFileContent(input.Path, input.NewStr); sanitized {
-				log.Printf("[edit_file] sanitised markdown wrapper from new_str of %s", input.Path)
+				log.Printf("[edit_file] removed a whole-content fence wrapper from new_str of %s", input.Path)
 				input.NewStr = cleanedNew
+				defer func() { noteContentChange(res, wholeFileWrapperNote) }()
 			}
 
 			var newContent string
@@ -3001,6 +3009,7 @@ func editFileTool() *ToolDef {
 				log.Printf("[edit_file] edit duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
 				return structuralRefusal(msg), nil
 			}
+			logMandatoryChecks("edit_file", input.Path, "")
 
 			// Atomic write
 			tmpPath := path + ".atlas.tmp"
@@ -3074,7 +3083,7 @@ func structuralEditTool() *ToolDef {
 		InputSchema: StructuralEditInput{},
 		ReadOnly:    false,
 		Destructive: false,
-		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (*ToolResult, error) {
+		Execute: func(rawInput json.RawMessage, ctx *AgentContext) (res *ToolResult, execErr error) {
 			var input StructuralEditInput
 			if err := json.Unmarshal(rawInput, &input); err != nil {
 				return nil, errNoMutation(fmt.Errorf("invalid input: %w", err))
@@ -3144,8 +3153,9 @@ func structuralEditTool() *ToolDef {
 			// Sanitise replacement content the same way edit_file does — the
 			// model occasionally fences fragments with ```python or ```html.
 			if cleaned, sanitized := sanitizeFileContent(input.Path, input.Content); sanitized {
-				log.Printf("[structural_edit] sanitised markdown wrapper from content of %s", input.Path)
+				log.Printf("[structural_edit] removed a whole-content fence wrapper from content of %s", input.Path)
 				input.Content = cleaned
+				defer func() { noteContentChange(res, wholeFileWrapperNote) }()
 			}
 
 			// HTML <html>-selector quirk. structural_edit replaces only the
@@ -3289,6 +3299,7 @@ func structuralEditTool() *ToolDef {
 				isActiveDebugIteration(ctx, input.Path), ctx.V3GenerationEnabled())
 			recordCandidateGenerationBypass(ctx, "structural_edit", structuralBypass,
 				fileTier, strings.Count(finalContent, "\n")+1)
+			logBudgetBypass("structural_edit", input.Path, structuralBypass)
 			if structuralBypass == bypassNone {
 				log.Printf("[structural_edit] V3 pipeline activating for %s (oldTier=%d newTier=%d max=%d, req_tier=%d, cc=%d) post-structural-edit", input.Path, oldTier, newTier, fileTier, ctx.Tier, cc)
 				// THE protected edit route, same owner as the other three edit
@@ -3336,6 +3347,7 @@ func structuralEditTool() *ToolDef {
 				log.Printf("[structural_edit] edit duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
 				return structuralRefusal(msg), nil
 			}
+			logMandatoryChecks("structural_edit", input.Path, "")
 
 			// Atomic write — same pattern as edit_file/write_file.
 			tmpPath := path + ".atlas.tmp"
@@ -3946,6 +3958,7 @@ func insertAfterTool() *ToolDef {
 			if msg := duplicateMainGuard(path, original, updated); msg != "" {
 				return structuralRefusal(msg), nil
 			}
+			logMandatoryChecks("insert_after", in.Path, "")
 
 			if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 				return nil, editWriteFailure(path,
@@ -4210,6 +4223,7 @@ func replaceLinesTool() *ToolDef {
 			if msg := duplicateMainGuard(path, original, updated); msg != "" {
 				return structuralRefusal(msg), nil
 			}
+			logMandatoryChecks("replace_lines", in.Path, "")
 
 			if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
 				return nil, editWriteFailure(path,
@@ -6131,6 +6145,7 @@ func runEditPipeline(ctx *AgentContext, tool, path, relPath, original,
 		isActiveDebugIteration(ctx, relPath), ctx.V3GenerationEnabled())
 	recordCandidateGenerationBypass(ctx, tool, bypass, fileTier,
 		strings.Count(edited, "\n")+1)
+	logBudgetBypass(tool, relPath, bypass)
 	if bypass == bypassActiveDebugIteration {
 		log.Printf("[%s] %s mid-debug iteration — skipping V3, execution is the feedback", tool, relPath)
 	}
@@ -6299,9 +6314,67 @@ func writeWithoutCandidate(ctx *AgentContext, path, content, message string) (*T
 				ValidationDetail: rejection}, nil
 		}
 	}
+	// The comparative gates every other write route applies. The producer
+	// failing or timing out is no reason to skip them.
+	if original, ok := readOriginalForGate(path); ok {
+		if msg := embeddedScriptGate(ctx, path, original, content); msg != "" {
+			log.Printf("[write_file] fallback content breaks an embedded script in %s — rejecting", logPath(path))
+			return &ToolResult{Success: false, Error: msg,
+				MutationStatus:   MutationRefused,
+				ValidationKind:   ValidationKindStructural,
+				ValidationStatus: ValidationFailed,
+				ValidationDetail: msg}, nil
+		}
+		if msg := duplicateMainGuard(path, original, content); msg != "" {
+			log.Printf("[write_file] fallback content duplicates the module entrypoint in %s — rejecting", logPath(path))
+			return &ToolResult{Success: false, Error: msg,
+				MutationStatus:   MutationRefused,
+				ValidationKind:   ValidationKindStructural,
+				ValidationStatus: ValidationFailed,
+				ValidationDetail: msg}, nil
+		}
+	}
+	logMandatoryChecks("write_file", path, "producer fallback")
 	if message != "" {
 		ctx.Stream("text", map[string]string{"content": message})
 	}
 	res, err := writeFileRecorded(path, content, ctx)
 	return applyRouteObservation(res, err, check)
+}
+
+// noteContentChange tells the model, in a successful result, about a change
+// ATLAS made to the content it sent, so no such change is silent. It is a
+// separate key from "warning", which marks a landed file as pending execution.
+func noteContentChange(res *ToolResult, note string) {
+	if res == nil || !res.Success || note == "" {
+		return
+	}
+	var out map[string]interface{}
+	if json.Unmarshal(res.Data, &out) != nil || out == nil {
+		out = map[string]interface{}{}
+	}
+	out["content_note"] = note
+	if b, err := json.Marshal(out); err == nil {
+		res.Data = b
+	}
+}
+
+// logBudgetBypass names, in the proxy log, a write whose optional candidate
+// generation was skipped by the budget-ownership rules, so a run's log shows
+// how many writes each rule turned away.
+func logBudgetBypass(tool, relPath string, reason candidateBypassReason) {
+	if reason == bypassCandidateUndeliverable || reason == bypassWorkAllowance {
+		log.Printf("[%s] V3 skipped for %s: %s", tool, logPath(relPath), reason)
+	}
+}
+
+// logMandatoryChecks records, just before a write lands, that the checks every
+// write owes (syntax with healthy->broken, unresolved names, embedded script,
+// duplicate entrypoint) were applied on this route. One line per write, so a
+// run's log can be counted against its writes.
+func logMandatoryChecks(tool, path, route string) {
+	if route != "" {
+		route = " (" + route + ")"
+	}
+	log.Printf("[gates] %s %s: mandatory checks applied%s", tool, logPath(path), route)
 }

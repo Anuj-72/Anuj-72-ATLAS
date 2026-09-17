@@ -274,6 +274,9 @@ func TestACancelledEditRegistersNothing(t *testing.T) {
 	// A producer address the route will try: the request is cancelled before
 	// dispatch, so nothing is ever sent to it.
 	ctx.V3URL = "http://127.0.0.1:9"
+	// Generation runs only where a candidate could be delivered (C2); declared
+	// outputs make this session one, so the fixture still reaches the V3 route.
+	ctx.TaskContract = declaredOutputs("mod.py")
 	c, cancel := context.WithCancel(context.WithValue(context.Background(), requestIDKey, "req-cancel"))
 	ctx.Ctx = c
 	ctx.RecordFileRead(path, accountingSeed)

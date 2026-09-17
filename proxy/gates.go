@@ -2789,6 +2789,25 @@ func observeDeliverable(ctx *AgentContext, path string, content []byte,
 	d.CheckpointUnavailable = ""
 }
 
+// observeRewrite records that ATLAS itself changed a file's bytes after the
+// tool that wrote them was validated. The file is still the session's own, and
+// no verdict is carried over to the new bytes.
+func observeRewrite(ctx *AgentContext, path string, content []byte) {
+	if ctx == nil {
+		return
+	}
+	key := ledgerKey(ctx, path)
+	ctx.LedgerMu.Lock()
+	defer ctx.LedgerMu.Unlock()
+	d := ledgerEntry(ctx, key)
+	d.CurrentHash = hashBytes(content)
+	d.CurrentSize = len(content)
+	d.Generation++
+	d.ValidatedHash = ""
+	d.ValidationStatus = ValidationUnknown
+	d.ValidationKind = ValidationKindUnknown
+}
+
 // tombstoneDeliverable records a deliberate removal. Checkpoint bytes are
 // retained for a later policy decision, and automatic restoration is
 // prohibited outright: resurrecting a file the user asked to delete is worse

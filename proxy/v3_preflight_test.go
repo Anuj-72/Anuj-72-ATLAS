@@ -179,6 +179,9 @@ func runPreflight(t *testing.T, o preflightOpts) (*ToolResult, string, *prefligh
 	var events []string
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.PermissionMode = PermissionYolo
+	// Generation runs only where a candidate could be delivered (C2); declared
+	// outputs make this session one, so the fixture still reaches the V3 route.
+	ctx.TaskContract = declaredOutputs(o.rel)
 	ctx.StreamFn = func(event string, _ interface{}) { events = append(events, event) }
 	ctx.BypassV3 = false
 	ctx.V3URL = srv.URL

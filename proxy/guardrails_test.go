@@ -11,29 +11,48 @@ import (
 	"testing"
 )
 
-func TestSanitizeFileContentStripsMarkdownWrapper(t *testing.T) {
-	// The exact failure mode from /home/isaac/snake/templates/index.html:
-	// LLM prose preamble + ```html fence + actual HTML + closing fence +
-	// numbered-list explanation containing literal {{ url_for(...) }}.
-	in := strings.Join([]string{
-		"Looking at the task, I need to create a complete index.html file.",
-		"",
-		"```html",
-		"<!DOCTYPE html>",
-		"<html><body>hi</body></html>",
-		"```",
-		"",
-		"This file:",
-		"1. Renders correctly",
-		"2. **Includes Jinja syntax** ({{ url_for(...) }})",
-	}, "\n")
-	got, sanitized := sanitizeFileContent("templates/index.html", in)
-	if !sanitized {
-		t.Fatal("sanitized=false, want true")
-	}
-	want := "<!DOCTYPE html>\n<html><body>hi</body></html>"
-	if got != want {
-		t.Errorf("got %q\nwant %q", got, want)
+// Prose around a fence is not an exact whole-file wrapper, so which lines are
+// the file is a guess. The sanitizer no longer makes it (on c5927b3 the same
+// fuzzy search reduced a YAML file with a ```bash example in a block scalar to
+// "  ls -la\n"); the JSON channel refuses the shape before execution instead.
+func TestSanitizeFileContentLeavesProseAroundAFenceUnchanged(t *testing.T) {
+	for _, c := range []struct{ path, in string }{
+		// The failure mode from /home/isaac/snake/templates/index.html.
+		{"templates/index.html", strings.Join([]string{
+			"Looking at the task, I need to create a complete index.html file.",
+			"",
+			"```html",
+			"<!DOCTYPE html>",
+			"<html><body>hi</body></html>",
+			"```",
+			"",
+			"This file:",
+			"1. Renders correctly",
+			"2. **Includes Jinja syntax** ({{ url_for(...) }})",
+		}, "\n")},
+		{"app.js", strings.Join([]string{
+			"Here's app.js with the /* config */ block rewritten:",
+			"```javascript",
+			"const x = 1;",
+			"export default x;",
+			"```",
+		}, "\n")},
+	} {
+		got, sanitized := sanitizeFileContent(c.path, c.in)
+		if sanitized || got != c.in {
+			t.Errorf("%s: content was rewritten (sanitized=%v):\n%q", c.path, sanitized, got)
+		}
+		args, _ := json.Marshal(map[string]string{"path": c.path, "content": c.in})
+		msg, refused := jsonChannelContentFeedback("write_file", args)
+		if !refused {
+			t.Errorf("%s: prose around a fence was not refused", c.path)
+			continue
+		}
+		for _, want := range []string{"NOT performed", "@fenced", "only the file's own"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: refusal lacks %q:\n%s", c.path, want, msg)
+			}
+		}
 	}
 }
 
@@ -60,19 +79,41 @@ func TestSanitizeFileContentLeavesMarkdownFilesAlone(t *testing.T) {
 	}
 }
 
-func TestSanitizeFileContentHandlesUnmatchedFence(t *testing.T) {
-	// Truncated response: opener but no closer. Take everything after
-	// the opener (better than discarding the file).
+// A fence that never closes (a cut response) is not a wrapper either. The old
+// sanitizer took "everything after the opener", which is a guess about where
+// the file begins and says nothing about where it ends.
+func TestSanitizeFileContentLeavesAnUnclosedFenceUnchanged(t *testing.T) {
 	in := "Here's the code:\n\n```python\ndef foo():\n    return 1\n"
 	got, sanitized := sanitizeFileContent("foo.py", in)
-	if !sanitized {
-		t.Fatal("sanitized=false, want true (opener present)")
+	if sanitized || got != in {
+		t.Errorf("unclosed fence was rewritten (sanitized=%v): %q", sanitized, got)
 	}
-	if !strings.Contains(got, "def foo()") {
-		t.Errorf("lost the code body: %q", got)
+	args, _ := json.Marshal(map[string]string{"path": "foo.py", "content": in})
+	if _, refused := jsonChannelContentFeedback("write_file", args); !refused {
+		t.Error("an unclosed fence with a preamble was not refused")
 	}
-	if strings.Contains(got, "Here's the code") {
-		t.Errorf("kept the prose preamble: %q", got)
+}
+
+// Exactly one fenced block and nothing else is the one shape whose file is
+// unambiguous. It is stripped, and only it.
+func TestSanitizeFileContentStripsOnlyAnExactWholeFileWrapper(t *testing.T) {
+	for _, c := range []struct {
+		name, in, want string
+		stripped       bool
+	}{
+		{"plain wrapper", "```python\ndef foo():\n    pass\n```\n", "def foo():\n    pass\n", true},
+		{"blank lines around it", "\n```python\nx = 1\n```\n\n", "x = 1\n", true},
+		{"four-backtick wrapper keeps interior fences", "````python\ns = \"\"\"\n```\nx\n```\n\"\"\"\n````\n",
+			"s = \"\"\"\n```\nx\n```\n\"\"\"\n", true},
+		{"interior line would close a three-backtick wrapper", "```\n```python\nx = 1\n```\n```\n",
+			"```\n```python\nx = 1\n```\n```\n", false},
+		{"text after the closer", "```python\nx = 1\n```\ny = 2\n", "```python\nx = 1\n```\ny = 2\n", false},
+		{"CRLF wrapper", "```python\r\nx = 1\r\n```\r\n", "x = 1\r\n", true},
+	} {
+		got, stripped := sanitizeFileContent("solve.py", c.in)
+		if stripped != c.stripped || got != c.want {
+			t.Errorf("%s: stripped=%v got %q\n  want stripped=%v %q", c.name, stripped, got, c.stripped, c.want)
+		}
 	}
 }
 
@@ -148,25 +189,6 @@ func TestSanitizeFileContentLeavesInlineDocstringFenceAlone(t *testing.T) {
 	}
 	if got != in {
 		t.Errorf("content changed (data loss):\n%q", got)
-	}
-}
-
-func TestSanitizeFileContentStripsWrapperWithProseCommentMention(t *testing.T) {
-	// A genuine whole-file wrapper whose intro prose merely mentions a
-	// comment marker must still be stripped (the marker is not at line start).
-	in := strings.Join([]string{
-		"Here's app.js with the /* config */ block rewritten:",
-		"```javascript",
-		"const x = 1;",
-		"export default x;",
-		"```",
-	}, "\n")
-	got, sanitized := sanitizeFileContent("app.js", in)
-	if !sanitized {
-		t.Fatal("sanitized=false; the wrapper should have been stripped")
-	}
-	if strings.Contains(got, "```") || strings.Contains(got, "Here's app.js") {
-		t.Errorf("wrapper not fully stripped:\n%q", got)
 	}
 }
 
@@ -1908,15 +1930,15 @@ func TestSanitizeNeverEmptiesAFile(t *testing.T) {
 	}
 }
 
-// Sanitizing already-sanitized content must be a no-op. A single pass strips
-// one wrapper layer, so doubly-wrapped content came back still carrying a
-// ``` line — a syntax error in every language this runs on.
+// Sanitizing already-sanitized content must be a no-op: the result of a write
+// never depends on how many times the content passed through.
 func TestSanitizeIsIdempotent(t *testing.T) {
 	for _, content := range []string{
 		"```python\nx = 1\n```\n",
 		"```\n```python\nx = 1\n```\n```\n",
 		"```\n```0\n```0\n```0\n```0\n0",
 		"Here it is:\n```python\nx = 1\n```\n",
+		"````\n```python\nx = 1\n```\n````\n",
 	} {
 		once, _ := sanitizeFileContent("solve.py", content)
 		twice, _ := sanitizeFileContent("solve.py", once)
@@ -2093,99 +2115,92 @@ func TestChainedInstallThenServerStartIsRedirected(t *testing.T) {
 	}
 }
 
-// A file body escaped for the JSON channel and delivered verbatim is one long
-// line of "\n" text, not a file. Observed 2026-09-14: a delivered README.md
-// was a single 876-character line, unreadable as the install instructions the
-// user asked for. The repair must fire there and nowhere near a genuine file.
-func TestEscapedBodyIsRepairedOnlyWhenTheWholeFileIsEscaped(t *testing.T) {
-	// The real shape, from the delivered artifact.
+// A file body whose escapes were doubled arrives as one long line of "\n"
+// text. Observed 2026-09-14: a delivered README.md was a single 876-character
+// line. It used to be decoded in place, which also decodes content that is
+// meant to be one line; it is now refused before execution, with a retry path
+// that cannot hit the same escaping (@fenced), and never rewritten.
+func TestDoubledEscapesAreRefusedNotDecoded(t *testing.T) {
 	escapedReadme := `# Running Club Website\n\nThis is a simple web application to track runs.\n\n## Setup and Installation\n\n1. **Install dependencies**:\n   ` +
 		"```bash\\npip install -r requirements.txt\\n```" +
 		`\n\n2. **Run the application**:\n   ` +
 		"```bash\\npython3 app.py\\n```" +
 		`\n\nOnce started, the site is at http://127.0.0.1:5000.`
 
-	got, repaired := repairEscapedBody(escapedReadme)
-	if !repaired {
-		t.Fatal("the fully escaped README was not repaired")
+	args, _ := json.Marshal(map[string]string{"path": "README.md", "content": escapedReadme})
+	msg, refused := jsonChannelContentFeedback("write_file", args)
+	if !refused {
+		t.Fatal("the fully escaped README was not refused")
 	}
-	if strings.Contains(got, `\n`) {
-		t.Errorf("literal escapes survived the repair:\n%s", got)
-	}
-	if lines := strings.Count(got, "\n"); lines < 10 {
-		t.Errorf("repaired README has %d newlines, want a real multi-line document", lines)
-	}
-	if !strings.Contains(got, "pip install -r requirements.txt") {
-		t.Errorf("repair lost the install command:\n%s", got)
-	}
-
-	// Everything that must NOT be touched.
-	for _, c := range []struct {
-		name, body string
-	}{
-		{"a genuine multi-line file that uses \\n in a string",
-			"import sys\n\ndef main():\n    sys.stdout.write(\"a\\nb\\n\")\n    return 0\n"},
-		{"a short one-liner that legitimately contains escapes",
-			`printf 'a\nb\nc\n'`},
-		{"a normal file with no escapes at all",
-			"def solve():\n    return 7\n"},
-		{"an escaped-looking body that is too short to be a file",
-			`a\nb\nc`},
-	} {
-		if out, changed := repairEscapedBody(c.body); changed || out != c.body {
-			t.Errorf("%s was rewritten:\n  in:  %q\n  out: %q", c.name, c.body, out)
+	for _, want := range []string{"NOT performed", "escaped once", "@fenced"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, msg)
 		}
 	}
+	if cleaned, modified := sanitizeFileContent("README.md", escapedReadme); modified || cleaned != escapedReadme {
+		t.Error("the sanitizer still rewrites an escaped body")
+	}
 
-	// And it runs as part of the ordinary write sanitizer.
-	cleaned, modified := sanitizeFileContent("README.md", escapedReadme)
-	if !modified || strings.Contains(cleaned, `\n`) {
-		t.Errorf("sanitizeFileContent did not repair the escaped body (modified=%v):\n%s",
-			modified, cleaned)
+	// Everything that must NOT be refused.
+	minified := `{"a":"x\ny","b":"p\nq","c":"r\ns","d":"` + strings.Repeat("z", 120) + `"}`
+	for _, c := range []struct{ name, path, body string }{
+		{"a genuine multi-line file that uses \\n in a string", "main.py",
+			"import sys\n\ndef main():\n    sys.stdout.write(\"a\\nb\\n\")\n    return 0\n"},
+		{"a short one-liner that legitimately contains escapes", "run.sh", `printf 'a\nb\nc\n'`},
+		{"a normal file with no escapes at all", "solve.py", "def solve():\n    return 7\n"},
+		{"one-line minified JSON", "data.json", minified},
+		{"the @fenced sentinel", "README.md", "@fenced"},
+	} {
+		args, _ := json.Marshal(map[string]string{"path": c.path, "content": c.body})
+		if msg, refused := jsonChannelContentFeedback("write_file", args); refused {
+			t.Errorf("%s was refused:\n%s", c.name, msg)
+		}
 	}
 }
 
 // The model wants "\n" then "function" and emits "\function"; the decoder
-// correctly reads the form-feed escape and the file lands with 0x0C where the
-// line break was and "unction" where the word was. Observed 2026-09-15 on
-// every rewrite of one file, commenting out four function declarations. A
-// control character followed by a letter mid-line is that mistake and nothing
-// else; a page-break form feed and a CRLF pair are left alone.
-func TestEatenEscapeLettersAreRestored(t *testing.T) {
-	// The delivered bytes, verbatim.
-	in := " // Serve the frontend\x0cunction serveStatic() {\n  app.get('/', (req, res) => {\n"
-	got, n := repairEatenEscapes(in)
-	if n != 1 {
-		t.Fatalf("repaired %d escapes, want 1", n)
+// correctly reads the form-feed escape and the file would land with 0x0C where
+// the line break was. Observed 2026-09-15. It used to be rewritten to a line
+// break plus the letter -- which also rewrites a real page break before a
+// definition. It is now refused and named, and a genuine control character can
+// still be written through @fenced, which does not go through JSON decoding.
+func TestControlCharacterBeforeALetterIsRefusedNotRewritten(t *testing.T) {
+	refuse := func(tool, field, path, body string) (string, bool) {
+		args, _ := json.Marshal(map[string]string{"path": path, field: body})
+		return jsonChannelContentFeedback(tool, args)
 	}
-	if want := " // Serve the frontend\nfunction serveStatic() {\n  app.get('/', (req, res) => {\n"; got != want {
-		t.Errorf("form feed not restored to a line break plus f:\n got %q\nwant %q", got, want)
+	msg, refused := refuse("write_file", "content", "server.js",
+		" // Serve the frontend\x0cunction serveStatic() {\n  app.get('/', (req, res) => {\n")
+	if !refused {
+		t.Fatal("form feed before a letter was not refused")
 	}
-
-	for _, c := range []struct {
-		name, in, want string
-		n              int
-	}{
-		{"backspace before bar", "x = 1\x08ar = 2\n", "x = 1\nbar = 2\n", 1},
-		{"carriage return ate the r of return, LF file", "  }\return x;\n", "  }\nreturn x;\n", 1},
-		{"five in one file", "a\x0cb\x0cc\x0cd\x0ce\x0cf\n", "a\nfb\nfc\nfd\nfe\nff\n", 5},
-		// Must NOT touch:
-		{"page-break form feed on its own line", "def a():\n    pass\n\x0c\ndef b():\n    pass\n", "def a():\n    pass\n\x0c\ndef b():\n    pass\n", 0},
-		{"CRLF line endings", "line one\r\nline two\r\n", "line one\r\nline two\r\n", 0},
-		{"CR-only file (its own convention)", "line one\rline two\r", "line one\rline two\r", 0},
-		{"form feed before a space", "text \x0c more\n", "text \x0c more\n", 0},
-		{"ordinary source", "def f():\n\treturn 1\n", "def f():\n\treturn 1\n", 0},
-	} {
-		got, n := repairEatenEscapes(c.in)
-		if n != c.n || got != c.want {
-			t.Errorf("%s: n=%d got %q\n   want n=%d %q", c.name, n, got, c.n, c.want)
+	for _, want := range []string{"NOT performed", "form feed", "line 1", "@fenced"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, msg)
 		}
 	}
-
-	// And it runs inside the ordinary write sanitizer.
-	cleaned, modified := sanitizeFileContent("server.js", in)
-	if !modified || strings.Contains(cleaned, "\x0c") {
-		t.Errorf("sanitizeFileContent left the form feed in place (modified=%v): %q", modified, cleaned)
+	for _, c := range []struct {
+		name, tool, field, body string
+		refused                 bool
+	}{
+		{"backspace before bar", "write_file", "content", "x = 1\x08ar = 2\n", true},
+		{"carriage return ate the r of return, LF file", "write_file", "content", "  }\return x;\n", true},
+		{"in an edit replacement", "edit_file", "new_str", "a\x0cb\n", true},
+		{"in inserted lines", "insert_after", "content", "a\x0cb\n", true},
+		// Must NOT refuse:
+		{"page-break form feed on its own line", "write_file", "content", "def a():\n    pass\n\x0c\ndef b():\n    pass\n", false},
+		{"CRLF line endings", "write_file", "content", "line one\r\nline two\r\n", false},
+		{"CR-only file (its own convention)", "write_file", "content", "line one\rline two\r", false},
+		{"form feed before a space", "write_file", "content", "text \x0c more\n", false},
+		{"ordinary source", "write_file", "content", "def f():\n\treturn 1\n", false},
+	} {
+		if _, got := refuse(c.tool, c.field, "server.js", c.body); got != c.refused {
+			t.Errorf("%s: refused=%v, want %v", c.name, got, c.refused)
+		}
+	}
+	in := " // Serve the frontend\x0cunction serveStatic() {\n"
+	if cleaned, modified := sanitizeFileContent("server.js", in); modified || cleaned != in {
+		t.Errorf("the sanitizer still rewrites a control character: %q", cleaned)
 	}
 }
 

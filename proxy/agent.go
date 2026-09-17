@@ -160,6 +160,14 @@ type runState struct {
 	// first person, that the agent could not accomplish the request.
 	replyOutstanding        bool
 	replyDeclaredIncomplete bool
+	// The closing asks the user for something (replyAsksUser) and nothing was
+	// written. replyAwaitsUser: the question is legitimate as far as the run
+	// can tell -- there was nothing to inspect, or the run already looked.
+	// replyHandedBack: the workspace holds files the run never opened, and
+	// the one send-back (handoffSentBack) was spent or could not fit.
+	replyAwaitsUser bool
+	replyHandedBack bool
+	handoffSentBack bool
 	// Name of a tool_call that has been streamed but not yet answered by a
 	// tool_result. The call is announced before permission and execution,
 	// so any exit in between has to answer it or the consumer is left with
@@ -454,6 +462,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// session incomplete. Before this, a spent bounce fell straight through
 	// to "completed", so the cap turned an unfinished reply into a success.
 	s.replyOutstanding, s.replyDeclaredIncomplete = false, false
+	s.replyAwaitsUser, s.replyHandedBack = false, false
 	if promisesMoreContent(claimText) {
 		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
 			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
@@ -490,6 +499,25 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 			return "intent_gate", "Your reply ends by saying what you will do next, but a `text` reply ends the session — that work would never happen, and the user would be left without the answer. If you need to look at something, make that tool call now. If you already have what you need, give your complete final answer as a `text` reply that stands on its own. If you cannot answer, say so plainly."
 		}
 		s.replyOutstanding = true
+	}
+	// A reply that ends by asking the user. A question is a legitimate
+	// outcome, and not a completed one: the user owes an answer. Whether it
+	// was avoidable is decided from evidence, not wording -- if the workspace
+	// holds files and the run opened none, the thing asked about may be right
+	// there, so the reply goes back once (within the shared bounce cap and the
+	// continuation floor) to look first. Only when nothing was written: a run
+	// that delivered work and asks a follow-up is judged by its deliverables.
+	if !s.replyOutstanding && !s.replyDeclaredIncomplete && !s.madeProductiveChange && replyAsksUser(claimText) {
+		if s.inspectedWorkspace || len(inspectableWorkspaceFiles(ctx, 1)) == 0 {
+			s.replyAwaitsUser = true
+		} else if !s.handoffSentBack && s.continuationFits(ctx) && s.chargeBounce("handoff_gate") {
+			s.handoffSentBack = true
+			log.Printf("[agent] handoff gate: reply asks the user about a workspace the run never opened (bounce %d/%d)",
+				s.gateBounces["handoff_gate"], maxGateBounces)
+			return "handoff_gate", handoffMessage(ctx)
+		} else {
+			s.replyHandedBack = true
+		}
 	}
 	// A claim about a file the run never opened. This is the conversational
 	// half of an invariant the write path already enforces — edit_file,
@@ -1246,6 +1274,25 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				}
 				continue
 			}
+			// Content whose intended bytes are ambiguous (prose around a fence,
+			// a doubled escape, a line break that lost its backslash) is
+			// refused, not rewritten into a guess. Same retry cap.
+			if feedback, bad := jsonChannelContentFeedback(parsed.Name, parsed.Args); bad {
+				log.Printf("[agent] turn=%d %s: content bytes ambiguous — refused before execution", turn, parsed.Name)
+				ctx.Stream("error", map[string]string{
+					"error":    "tool call content was refused before execution: its intended bytes were ambiguous",
+					"category": "ambiguous_content",
+				})
+				ctx.Messages = append(ctx.Messages, AgentMessage{Role: "user", Content: feedback})
+				consecutiveErrors++
+				if consecutiveErrors >= 3 {
+					log.Printf("[agent] breaking ambiguous-content loop at turn %d (%d consecutive)", turn, consecutiveErrors)
+					emitTerminal(ctx, st, TerminalStopped, "unusable_model_output",
+						"Stopped: nothing was written for the last three file writes — each one's content was ambiguous (a markdown fence with text around it, or a doubled or lost escape) and was refused rather than guessed at. Ask again."+liveBackgroundJobNote(ctx))
+					return nil
+				}
+				continue
+			}
 		}
 
 		// Log the args truncated — enables diagnosing failures like
@@ -1602,13 +1649,13 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					// The channel can be spent while the model keeps asking
 					// for it. Offer the way out ONCE, before anything tries
 					// another resolution, so the turn costs no generation.
-					if fencedUsable && strings.HasPrefix(trimmed, "@fenced") {
+					if fencedUsable && isFencedSentinel(trimmed) {
 						if msg := fencedChannelRecovery(ctx, st, wfInput.Path); msg != "" {
 							st.bounceToolCall(ctx, "write_file", msg)
 							continue
 						}
 					}
-					if fencedUsable && strings.HasPrefix(trimmed, "@fenced") {
+					if fencedUsable && isFencedSentinel(trimmed) {
 						// Anything after the sentinel is the model inlining
 						// the file anyway. Exactly one of two things arrived,
 						// and only one of them is a file:
@@ -1632,7 +1679,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						// unterminated check never fired once and the
 						// unframed case wrote 1106 truncated bytes that
 						// parsed cleanly. See classifyFencedPayload.
-						inline := strings.TrimLeft(strings.TrimPrefix(trimmed, "@fenced"), "\r\n")
+						inline := strings.TrimLeft(strings.TrimPrefix(trimmed, "@fenced"), " \t\r\n")
 						resolved, framed, why := resolveInlineFencedBody(inline)
 						if framed {
 							inline = resolved
@@ -2291,8 +2338,9 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// authoritative rendering of any content they spelled out, and
 				// the model measurably cannot transcribe bytes (space-prefixed
 				// BPE tokens win after quotes — `BANNER = "ready"` arrives as
-				// `BANNER = " ready"` deterministically). Whitespace-only
-				// drift from a stated literal is repaired in place.
+				// `BANNER = " ready"` deterministically). Spacing drift within
+				// lines of a stated literal is repaired in place; indentation
+				// is never changed (repairLiteralDrift).
 				var wp struct {
 					Path string `json:"path"`
 				}
@@ -2307,13 +2355,17 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 								Emit(NewEnvelope(EvtMetric, "tool", map[string]interface{}{
 									"name": "literal_repair", "value": wp.Path,
 								}))
-								// Deliberately silent. The repair corrects a known
-								// model defect, and the file now holds what the
-								// user asked for, so a read shows the right bytes
-								// either way. Announcing it just hands the model
-								// something to react to: five repairs in one
-								// session meant five correctives, and each one is
-								// a turn spent on spacing rather than the task.
+								// Stated in the result the model is about to read
+								// -- a note, not a corrective turn -- so a change to
+								// what it sent is never silent. The ledger follows
+								// the bytes: without this, the session's own next
+								// edit of the file was refused as "modified since
+								// last read", and the write's verdict described
+								// bytes no longer on disk.
+								noteContentChange(result, fmt.Sprintf(
+									"After the write, spacing inside %d line(s) was changed to match text the user stated exactly: %s",
+									len(repairedLits), truncateStr(strings.Join(repairedLits, " | "), 200)))
+								observeRewrite(ctx, lp, []byte(fixed))
 							}
 						}
 					}
@@ -5329,35 +5381,6 @@ const rawEmissionSentinel = "__raw_text__"
 // short of the multi-minute run to max_tokens it replaces.
 const rawFenceGraceChars = 800
 
-// fencedContentRe grabs the first fenced code block of the sub-call reply.
-// The tag charset includes +, #, . and - so c++, c#, objective-c and
-// asp.net-style tags open a block instead of failing the match entirely.
-//
-// The run after the tag is `[ \t]*\r?\n`, NOT `\s*\n`: \s matches newlines,
-// so a greedy \s* swallowed the file's own leading blank lines along with
-// the fence line's terminator and silently dropped them from what landed on
-// disk (fuzzed). Only the remainder of the fence line belongs to the fence.
-var fencedContentRe = regexp.MustCompile("(?s)```(?:[a-zA-Z0-9+#._-]+)?[ \\t]*\\r?\\n(.*?)```")
-
-// fencedContentTrailingRe is the greedy variant, anchored to a closing fence
-// at the very end of the reply. Preferred over fencedContentRe when it
-// matches: the sub-call asks for ONE block holding the whole file, so a
-// file that itself contains ``` (markdown, a docstring with an example)
-// must not be cut at its first interior fence.
-var fencedContentTrailingRe = regexp.MustCompile("(?s)```(?:[a-zA-Z0-9+#._-]+)?[ \\t]*\\r?\\n(.*)\\r?\\n```[ \\t\\r\\n]*$")
-
-// extractFencedContent pulls the file body out of a fenced sub-call reply:
-// the whole-reply greedy form first, the first-block form as fallback.
-func extractFencedContent(reply string) string {
-	if m := fencedContentTrailingRe.FindStringSubmatch(reply); m != nil && strings.TrimSpace(m[1]) != "" {
-		return m[1] + "\n"
-	}
-	if m := fencedContentRe.FindStringSubmatch(reply); m != nil && strings.TrimSpace(m[1]) != "" {
-		return m[1]
-	}
-	return ""
-}
-
 // fenceTagForPath picks the fence language tag the sub-call prompt asks
 // for, from the target file's extension. The prompt hardcoded ```python
 // whatever the file was — a .html or .go target got asked for a python
@@ -5668,8 +5691,7 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 			ctx.FencedFailures[fencedKey(ctx, path)], maxFencedFailuresPerPath,
 			safeTextSummary(reply))
 		msgs = append(msgs, AgentMessage{Role: "assistant", Content: reply},
-			AgentMessage{Role: "user", Content: fmt.Sprintf(
-				"[system note]: That had no fenced block. Reply with ONE ```%s fenced block containing the complete file, nothing else.", tag)})
+			AgentMessage{Role: "user", Content: fencedRetryNote(framing, tag)})
 	}
 	if lastErr != nil {
 		return "", fmt.Errorf("fenced resolution for %s was cut after %d attempt(s) "+
@@ -5745,14 +5767,15 @@ func extractModelResponse(raw string) (ModelResponse, error) {
 		}
 	}
 
-	// JSON was truncated (max_tokens hit mid-content) or otherwise
-	// malformed — try a generalized tool_call recovery for write_file,
-	// edit_file, and structural_edit. Identical shape (path + payload field),
-	// just different field names. If recovery succeeds, return it; if
-	// not, fall through to the diagnostic error below.
-	if recovered, ok := recoverTruncatedToolCall(raw[start:]); ok {
-		return recovered, nil
-	}
+	// A tool call whose JSON was cut off (max_tokens, a stream cut) or is
+	// otherwise malformed is NOT reconstructed. Recovery used to rebuild
+	// write_file / edit_file / structural_edit args from whatever prefix
+	// arrived and execute them: a write cut at `return [{"user": 1` landed on
+	// disk as that fragment, and an invalid escape was "unescaped" by guesswork,
+	// all reported as a clean success and never told to the model. The bytes
+	// intended are unknowable from a prefix, so the call is refused through the
+	// parse-failure path, which tells the model its call was cut or malformed
+	// and that nothing was executed.
 
 	// Surface the most informative error available. directErr fires
 	// when the response had garbage outside the JSON envelope (prose
@@ -5877,7 +5900,7 @@ func knownArgKeys(toolName string) map[string]bool {
 // took the truncated bytes as its baseline and shipped them.
 //
 // extractModelResponse cannot catch this: the envelope is valid JSON, so the
-// direct parse succeeds and recoverTruncatedToolCall (which only runs on a
+// direct parse succeeds and the parse-failure path (which only runs on a
 // parse ERROR) never fires. The syntax gates cannot either: html.parser is
 // lenient about an unclosed <script>, and embedded_script_check suppresses
 // findings when <script>/</script> counts disagree — which a truncated file
@@ -5921,271 +5944,6 @@ func swallowedContentFeedback(toolName string, args json.RawMessage) (string, bo
 		}
 	}
 	return "", false
-}
-
-// recoverTruncatedToolCall is the generalized counterpart to
-// recoverTruncatedWriteFile. May 9 2026: under BiasBusters mitigations
-// the model now reaches for structural_edit and edit_file too, and either can
-// land malformed JSON (truncated content, stray escape) the same way
-// write_file used to. Old code only recovered write_file; everything
-// else just died with "could not parse JSON". Now we sniff the tool
-// name from the partial bytes and dispatch to a tool-specific recovery
-// when one exists. Returns (response, true) on successful recovery,
-// (zero, false) when no recovery is available so the caller falls
-// through to the diagnostic error.
-func recoverTruncatedToolCall(partial string) (ModelResponse, bool) {
-	switch {
-	case strings.Contains(partial, `"name":"write_file"`) || strings.Contains(partial, `"name": "write_file"`):
-		if r, err := recoverTruncatedWriteFile(partial); err == nil {
-			return r, true
-		}
-	case strings.Contains(partial, `"name":"structural_edit"`) || strings.Contains(partial, `"name": "structural_edit"`):
-		if r, err := recoverTruncatedStructuralEdit(partial); err == nil {
-			return r, true
-		}
-	case strings.Contains(partial, `"name":"edit_file"`) || strings.Contains(partial, `"name": "edit_file"`):
-		if r, err := recoverTruncatedEditFile(partial); err == nil {
-			return r, true
-		}
-	}
-	return ModelResponse{}, false
-}
-
-// looksDegenerate reports whether a recovered field value is the model's
-// own degenerate output rather than real content.
-//
-// Truncation recovery exists for one case: a well-formed tool call whose
-// JSON was cut off by max_tokens. It reconstructs args from whatever
-// extractStringField can read, which is a purely structural operation — a
-// run of repeated newlines parses exactly as well as a real function body.
-// Without this check, a generation that degenerated into a repeating tail
-// (the same condition isLoopingTail cuts the stream on) is "successfully
-// recovered" into an edit_file or write_file call and executed against the
-// user's file. The stream cut prevents the tokens from being generated; it
-// does nothing about the bytes already buffered when recovery runs.
-//
-// Two shapes, both observed: a value that is almost entirely whitespace,
-// and one whose tail repeats. Short values are exempt — a legitimately
-// small new_str has no room to look degenerate, and the length floor keeps
-// ordinary edits out of the check entirely.
-func looksDegenerate(s string) bool {
-	const minJudgeable = 64
-	if len(s) < minJudgeable {
-		return false
-	}
-	var ws int
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case ' ', '\t', '\n', '\r':
-			ws++
-		}
-	}
-	if float64(ws)/float64(len(s)) > 0.9 {
-		return true
-	}
-	// Repetition alone is not degeneracy — real files repeat boilerplate,
-	// and isLoopingTail's "tail occurs 3+ times" fires on a long file with
-	// a handful of similar lines. Rejecting those would break recovery for
-	// exactly the truncated writes it exists to salvage. Require instead
-	// that the repeated tail account for most of the value, which
-	// separates a repeating generation from a file that happens to repeat.
-	const probe = 48
-	if len(s) < probe*3 {
-		return false
-	}
-	tail := s[len(s)-probe:]
-	if strings.TrimSpace(tail) == "" {
-		return false
-	}
-	occurrences := strings.Count(s, tail)
-	return float64(occurrences*probe)/float64(len(s)) > 0.5
-}
-
-// extractStringField pulls a JSON-string field value out of a partial
-// (possibly truncated) tool-call payload. Returns the unescaped value
-// and true on success. The end is determined by the next unescaped `"`
-// — for the trailing field of a truncated payload, the value runs to
-// end-of-input and is closed by the caller.
-func extractStringField(partial, field string) (string, bool) {
-	for _, marker := range []string{`"` + field + `":"`, `"` + field + `": "`} {
-		idx := strings.Index(partial, marker)
-		if idx < 0 {
-			continue
-		}
-		valueStart := idx + len(marker)
-		// Walk until unescaped closing quote.
-		escaped := false
-		for i := valueStart; i < len(partial); i++ {
-			c := partial[i]
-			if escaped {
-				escaped = false
-				continue
-			}
-			if c == '\\' {
-				escaped = true
-				continue
-			}
-			if c == '"' {
-				raw := partial[valueStart:i]
-				var unescaped string
-				if err := json.Unmarshal([]byte(`"`+raw+`"`), &unescaped); err == nil {
-					return unescaped, true
-				}
-				return raw, true
-			}
-		}
-		// Hit end-of-input without finding closing quote — payload was
-		// truncated mid-string. Return what we have, best-effort
-		// unescaping; trailing backslash is dropped to avoid invalid
-		// escape sequences.
-		raw := strings.TrimRight(partial[valueStart:], "\\")
-		var unescaped string
-		if err := json.Unmarshal([]byte(`"`+raw+`"`), &unescaped); err == nil {
-			return unescaped, true
-		}
-		// Manual fallback for the common escapes when Unmarshal rejected
-		// a partial string (rarely happens but cheap insurance).
-		manual := strings.ReplaceAll(raw, `\n`, "\n")
-		manual = strings.ReplaceAll(manual, `\t`, "\t")
-		manual = strings.ReplaceAll(manual, `\"`, `"`)
-		manual = strings.ReplaceAll(manual, `\\`, `\`)
-		return manual, true
-	}
-	return "", false
-}
-
-// recoverTruncatedStructuralEdit recovers a structural_edit tool call whose JSON
-// envelope didn't survive the parser. structural_edit's args are
-// {path, selector, content} — same shape as write_file but with an
-// additional selector field that's always short (function:NAME,
-// class:NAME, <tag>) so it lands intact even on truncation. The
-// content is the long field that gets cut.
-func recoverTruncatedStructuralEdit(partial string) (ModelResponse, error) {
-	path, ok := extractStringField(partial, "path")
-	if !ok || path == "" {
-		return ModelResponse{}, fmt.Errorf("structural_edit recovery: missing path")
-	}
-	selector, ok := extractStringField(partial, "selector")
-	if !ok || selector == "" {
-		return ModelResponse{}, fmt.Errorf("structural_edit recovery: missing selector")
-	}
-	content, ok := extractStringField(partial, "content")
-	if !ok {
-		return ModelResponse{}, fmt.Errorf("structural_edit recovery: missing content")
-	}
-	if looksDegenerate(content) {
-		return ModelResponse{}, fmt.Errorf("structural_edit recovery: content is degenerate output, not a real edit")
-	}
-	args, _ := json.Marshal(StructuralEditInput{Path: path, Selector: selector, Content: content})
-	log.Printf("[agent] recovered truncated structural_edit: path=%s selector=%q content=%d chars",
-		path, selector, len(content))
-	return ModelResponse{Type: "tool_call", Name: "structural_edit", Args: args}, nil
-}
-
-// recoverTruncatedEditFile recovers an edit_file tool call. Args are
-// {path, old_str, new_str, replace_all?}. Either old_str or new_str
-// can be the truncation point; recover whichever one terminated
-// cleanly and warn-log when one didn't, so the agent loop sees the
-// failure category instead of a generic parse error.
-func recoverTruncatedEditFile(partial string) (ModelResponse, error) {
-	path, ok := extractStringField(partial, "path")
-	if !ok || path == "" {
-		return ModelResponse{}, fmt.Errorf("edit_file recovery: missing path")
-	}
-	oldStr, oldOK := extractStringField(partial, "old_str")
-	newStr, newOK := extractStringField(partial, "new_str")
-	if !oldOK && !newOK {
-		return ModelResponse{}, fmt.Errorf("edit_file recovery: missing both old_str and new_str")
-	}
-	if looksDegenerate(oldStr) || looksDegenerate(newStr) {
-		return ModelResponse{}, fmt.Errorf("edit_file recovery: old_str/new_str is degenerate output, not a real edit")
-	}
-	replaceAll := strings.Contains(partial, `"replace_all":true`) ||
-		strings.Contains(partial, `"replace_all": true`)
-	args, _ := json.Marshal(EditFileInput{
-		Path:       path,
-		OldStr:     oldStr,
-		NewStr:     newStr,
-		ReplaceAll: replaceAll,
-	})
-	log.Printf("[agent] recovered truncated edit_file: path=%s old_str=%dch new_str=%dch", path, len(oldStr), len(newStr))
-	return ModelResponse{Type: "tool_call", Name: "edit_file", Args: args}, nil
-}
-
-// recoverTruncatedWriteFile attempts to recover a write_file tool call
-// where the content was truncated by max_tokens.
-func recoverTruncatedWriteFile(partial string) (ModelResponse, error) {
-	// The pattern is: {"type":"tool_call","name":"write_file","args":{"path":"...","content":"...
-	// We need to close the content string and the JSON objects
-
-	// Find the content field, remembering WHICH spelling matched so the
-	// value's offset is known exactly. Re-deriving it afterwards by probing
-	// a fixed 15-byte window read past the end of any buffer whose content
-	// marker sat within 15 bytes of the end — a panic, and net/http answers
-	// a panicking handler by closing the connection, so the session died
-	// mid-stream with no `done` event. Truncation puts the marker near the
-	// end by definition, which is exactly when this function runs.
-	marker := `"content":"`
-	idx := strings.Index(partial, marker)
-	if idx < 0 {
-		marker = `"content": "`
-		idx = strings.Index(partial, marker)
-	}
-	if idx < 0 {
-		return ModelResponse{}, fmt.Errorf("cannot find content field in truncated write_file")
-	}
-
-	// Find the "path" value
-	pathIdx := strings.Index(partial, `"path":"`)
-	pathEnd := -1
-	path := ""
-	if pathIdx >= 0 {
-		pathStart := pathIdx + len(`"path":"`)
-		pathEnd = strings.Index(partial[pathStart:], `"`)
-		if pathEnd >= 0 {
-			path = partial[pathStart : pathStart+pathEnd]
-		}
-	}
-
-	// Extract content: everything after the marker until the end.
-	content := partial[idx+len(marker):]
-
-	// Unescape the content string (it's JSON-escaped)
-	// Remove trailing incomplete escape sequences
-	content = strings.TrimRight(content, "\\")
-	// Close the string
-	content = strings.TrimSuffix(content, `"`)
-	content = strings.TrimSuffix(content, `"}`)
-	content = strings.TrimSuffix(content, `"}}`)
-
-	// Unescape JSON string escapes
-	var unescaped string
-	err := json.Unmarshal([]byte(`"`+content+`"`), &unescaped)
-	if err != nil {
-		// Fallback: manual unescape of common sequences
-		unescaped = strings.ReplaceAll(content, `\n`, "\n")
-		unescaped = strings.ReplaceAll(unescaped, `\t`, "\t")
-		unescaped = strings.ReplaceAll(unescaped, `\"`, "\"")
-		unescaped = strings.ReplaceAll(unescaped, `\\`, "\\")
-	}
-
-	if path == "" {
-		return ModelResponse{}, fmt.Errorf("could not extract path from truncated write_file")
-	}
-	if looksDegenerate(unescaped) {
-		return ModelResponse{}, fmt.Errorf("write_file recovery: content is degenerate output, not a real file")
-	}
-
-	// Build the args JSON
-	args, _ := json.Marshal(WriteFileInput{Path: path, Content: unescaped})
-
-	log.Printf("[agent] recovered truncated write_file: path=%s content=%d chars", path, len(unescaped))
-
-	return ModelResponse{
-		Type: "tool_call",
-		Name: "write_file",
-		Args: args,
-	}, nil
 }
 
 // classifyAgentTier decides whether a request is conversational.
@@ -6983,6 +6741,34 @@ func generatePlan(ctx *AgentContext, userMessage string) *Plan {
 //
 // Capped: a plan does not need ten thousand paths, and the request has to stay
 // small. Names only, no content.
+// inspectableWorkspaceFiles is listWorkspaceFiles without ATLAS's own marker
+// files, which are not something a user could be asked about.
+func inspectableWorkspaceFiles(ctx *AgentContext, max int) []string {
+	if ctx == nil {
+		return nil
+	}
+	var out []string
+	for _, f := range listWorkspaceFiles(ctx.WorkingDir, max+8) {
+		if strings.HasPrefix(filepath.Base(f), ".atlas") {
+			continue
+		}
+		if out = append(out, f); len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// handoffMessage sends back a reply that asked the user about a workspace the
+// run never opened. It names only what list_directory would show.
+func handoffMessage(ctx *AgentContext) string {
+	files := inspectableWorkspaceFiles(ctx, 6)
+	return fmt.Sprintf("Your reply asks the user for something, but you have not looked at the project, and it is "+
+		"available to you: it holds files such as %s. Use list_directory, search_files and read_file to find "+
+		"what you need, then answer in a single `text` reply. Ask the user only for something the files cannot "+
+		"tell you.", strings.Join(files, ", "))
+}
+
 func listWorkspaceFiles(workingDir string, max int) []string {
 	if workingDir == "" {
 		return nil
@@ -7015,8 +6801,7 @@ func listWorkspaceFiles(workingDir string, max int) []string {
 // recoverTruncatedText salvages the answer from a `text` response whose JSON
 // was cut off mid-string.
 //
-// The tool-call path already has recoverTruncatedToolCall; a text answer had
-// no equivalent, so a cut threw the whole thing away. Observed on
+// A cut text answer used to be thrown away entirely. Observed on
 // bugfind_tiebreak: the model had written 5,897 characters answering a
 // question, began repeating itself, the loop detector cut the stream, and the
 // user received nothing at all — because the closing quote and brace were
@@ -7670,12 +7455,17 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 // the deliverables were shown to be valid.
 func serverTerminalFallback(ctx *AgentContext, st *runState, status TerminalStatus, reason string) string {
 	var sb strings.Builder
-	switch status {
-	case TerminalTimedOut:
+	switch {
+	case reason == "clarification_requested":
+		sb.WriteString("Waiting for your answer: the reply asks you a question, so the task is not reported as finished.")
+	case reason == "investigation_handed_back":
+		sb.WriteString("Stopped: the reply asks you to find something in the project files instead of reading " +
+			"them, so the task is not reported as finished.")
+	case status == TerminalTimedOut:
 		sb.WriteString("Stopped: the session ran out of time before the work finished.")
-	case TerminalFailed:
+	case status == TerminalFailed:
 		sb.WriteString("Stopped: the run could not continue.")
-	case TerminalStopped:
+	case status == TerminalStopped:
 		sb.WriteString("Stopped: the run was cut short before the work finished.")
 	default:
 		sb.WriteString("Stopped: the run ended without finishing the task.")
@@ -7746,7 +7536,7 @@ const fencedRecoveryFloor = 90 * time.Second
 func fencedRunFirstRecovery(ctx *AgentContext, st *runState, relPath, content string) string {
 	// Raw model intent only. An inline write is the model doing something
 	// different, which is exactly what this is asking for.
-	if !strings.HasPrefix(strings.TrimSpace(content), "@fenced") {
+	if !isFencedSentinel(content) {
 		return ""
 	}
 	key := ledgerKey(ctx, relPath)
@@ -8582,6 +8372,14 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	}
 	if st.replyDeclaredIncomplete {
 		return TerminalIncomplete, "reply_declared_incomplete"
+	}
+	// The reply asks the user for something. Handed back: the run had files it
+	// never opened. Awaiting: it had nothing to open, or already looked.
+	if st.replyHandedBack {
+		return TerminalIncomplete, "investigation_handed_back"
+	}
+	if st.replyAwaitsUser {
+		return TerminalIncomplete, "clarification_requested"
 	}
 	// Something may still be writing. A hash taken now describes an instant,
 	// not a result, and nothing here can tell a quiet process from a finished

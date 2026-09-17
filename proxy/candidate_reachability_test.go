@@ -157,6 +157,11 @@ func TestTheBypassOwnersAreTheOldConditions(t *testing.T) {
 					for _, warrants := range []bool{false, true} {
 						ctx := NewAgentContext(dir, Tier2Medium)
 						ctx.V3URL, ctx.V3Mode = url, mode
+						// The old conditions, in a session where a candidate
+						// could be delivered and no deadline limits generation;
+						// the budget-ownership reasons are pinned in
+						// budget_ownership_test.go.
+						ctx.TaskContract = declaredOutputs("mod.py")
 						wantWrite := tier >= Tier2Medium && ctx.V3URL != "" &&
 							ctx.V3GenerationEnabled() && !iterating
 						if got := writeGenerationBypass(ctx, tier, iterating,
@@ -192,6 +197,7 @@ func TestTheBypassVocabularyIsClosed(t *testing.T) {
 		bypassTierBelowThreshold, bypassEditBelowComplexityFloor,
 		bypassProducerNotConfigured, bypassGenerationDisabled,
 		bypassActiveDebugIteration, bypassProposalFailedSyntaxGuard,
+		bypassCandidateUndeliverable, bypassWorkAllowance,
 		bypassUnclassified,
 	} {
 		if !knownCandidateBypassReason(r) {

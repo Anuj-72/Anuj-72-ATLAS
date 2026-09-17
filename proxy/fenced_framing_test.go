@@ -108,16 +108,21 @@ func TestFramingIgnoresWhatTheBodyLooksLike(t *testing.T) {
 	}
 }
 
-// A file that legitimately contains fences must not be cut at an interior
-// one: the closing fence at the very end wins.
+// A file that legitimately contains fences must never be cut at an interior
+// one. Under a ``` wrapper an interior closing fence makes the reply ambiguous
+// (it is also the shape of a file plus a second block), so nothing is returned;
+// under a ```` wrapper the whole body is the file.
 func TestFramingKeepsInteriorFences(t *testing.T) {
 	body := "# doc\n```lang\ninner\n```\nmore\n"
-	framing, got := classifyFencedPayload("```markdown\n" + body + "```")
-	if framing != fenceFramingComplete {
-		t.Fatalf("framing %v, want complete", framing)
+	if framing, got := classifyFencedPayload("```markdown\n" + body + "```"); framing != fenceFramingAmbiguous || got != "" {
+		t.Fatalf("``` wrapper: framing %v body %q, want ambiguous and no bytes", framing, got)
 	}
-	if !strings.Contains(got, "inner") || !strings.Contains(got, "more") {
-		t.Fatalf("interior fence truncated the body: %q", got)
+	framing, got := classifyFencedPayload("````markdown\n" + body + "````")
+	if framing != fenceFramingComplete || got != body {
+		t.Fatalf("```` wrapper: framing %v body %q, want the whole body", framing, got)
+	}
+	if !strings.Contains(fencedRetryNote(fenceFramingAmbiguous, "markdown"), "four backticks") {
+		t.Fatalf("the ambiguous retry note does not give the four-backtick path")
 	}
 }
 
@@ -129,6 +134,7 @@ func TestFramingClassificationsAreTruthful(t *testing.T) {
 		{fenceFramingComplete, "complete"},
 		{fenceFramingUnterminated, "fence opened, never closed"},
 		{fenceFramingAbsent, "no fence at all"},
+		{fenceFramingAmbiguous, "more than one fence closes the block"},
 	} {
 		if got := c.f.String(); got != c.want {
 			t.Errorf("%v: %q, want %q", int(c.f), got, c.want)

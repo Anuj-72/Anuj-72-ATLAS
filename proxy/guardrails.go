@@ -21,7 +21,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,171 +28,84 @@ import (
 	"strings"
 )
 
-// sanitizeFileContent strips markdown wrappers and prose preamble from
-// content destined for disk. The local model frequently emits:
-//
-//	Looking at the task, I need to create a complete index.html...
+// sanitizeFileContent is the one content change the write path makes. The
+// local model sometimes sends a file wrapped in a markdown fence:
 //
 //	```html
 //	<!DOCTYPE html>
 //	...
 //	```
 //
-//	This file does X, Y, Z.
-//
-// Without this strip, the whole markdown wrapper lands on disk
-// verbatim — Jinja chokes on `{{ url_for(...) }}` fragments inside a
-// numbered-list explanation, the user sees a 500, debugging starts.
-//
-// The function returns (cleaned, modified). modified=true means a
-// fence/prose was stripped — the caller should log it so we can spot
-// repeat offenders. .md / .markdown / .rst files are passed through
-// unchanged because fences are legitimate content there.
-//
-// Only a WHOLE-FILE wrapper is stripped: the opening fence must sit at
-// the very top of the content (preceded by at most a few prose lines),
-// and the closing fence may be followed only by a short prose trailer.
-// A fence deeper in the file — e.g. a fenced example inside a docstring
-// — is legitimate content and passes through unchanged.
-// Two properties hold over the whole operation, both established by fuzzing
-// (a single pass satisfied neither):
-//
-//   - It never empties a file. One pass on content whose only fence is an
-//     unmatched opener took "everything after the opener" — nothing — and
-//     returned "", so a generation truncated right after ```python would
-//     have landed on disk as an empty file with modified=true.
-//   - It is idempotent. One pass strips one layer, so doubly-wrapped content
-//     came back still carrying a ``` line, which is a syntax error in every
-//     language this runs on. Stripping to a fixpoint means the result never
-//     needs another pass.
+// Written verbatim, the fence lines are a syntax error in every language.
+// The function returns (cleaned, modified); callers that write report a
+// modification to the model (wholeFileWrapperNote) rather than doing it
+// silently. Nested exact wrappers are removed to a fixpoint, so the result
+// never depends on how many times content passes through (V3 re-sanitizes).
 func sanitizeFileContent(filePath, content string) (string, bool) {
-	// Strip to a fixpoint rather than to a fixed number of layers: any fixed
-	// bound is a case where the result still needs another pass, which is
-	// the non-idempotence this is here to avoid. Termination is not a
-	// question of taste — every successful strip consumes at least the
-	// opener line, so the content strictly shrinks, and the line count is a
-	// hard upper bound on how many layers can exist at all.
-	cleaned := content
 	modified := false
-	maxLayers := strings.Count(content, "\n") + 2
-	for i := 0; i < maxLayers; i++ {
-		next, changed := stripOneFenceLayer(filePath, cleaned)
-		if !changed || next == cleaned {
-			break
+	for {
+		stripped, ok := stripWholeFileWrapper(filePath, content)
+		if !ok {
+			return content, modified
 		}
-		// A sanitizer that empties a file is destroying the write, not
-		// cleaning it. Keep the last non-empty form.
-		if strings.TrimSpace(next) == "" && strings.TrimSpace(cleaned) != "" {
-			break
-		}
-		cleaned, modified = next, true
+		content, modified = stripped, true
 	}
-	// A body that arrived escaped for the JSON channel and was delivered
-	// verbatim is not a file, it is one long line of "\n" text.
-	if repaired, ok := repairEscapedBody(cleaned); ok {
-		cleaned, modified = repaired, true
-	}
-	// A JSON escape that swallowed the first letter of the next line.
-	if repaired, n := repairEatenEscapes(cleaned); n > 0 {
-		log.Printf("[write_file] %s: restored %d line break(s) a JSON escape had eaten (\\f, \\b or \\r for \\n + letter)",
-			filePath, n)
-		cleaned, modified = repaired, true
-	}
-	return cleaned, modified
 }
 
-// repairEatenEscapes restores a newline that a JSON escape consumed together
-// with the first letter of the following line.
+// stripWholeFileWrapper removes a markdown fence that wraps the ENTIRE content
+// and nothing else: the first non-blank line opens a fence, the last non-blank
+// line closes it with at least as many backticks, and no line in between would
+// close it. Only then are the bytes unambiguous -- the lines inside are the
+// file -- and only then is anything removed. Documents (.md, .rst, .txt) are
+// never touched, since fences are their content.
 //
-// The model wants "\n" then "function". What it emits, reliably enough to
-// reproduce on every rewrite of one file, is a lone backslash followed by the
-// word: "\function". The decoder is right to read that as the form-feed
-// escape, and the file lands with 0x0C where the line break was and "unction"
-// where the word was. The same slip before "bar" or "return" yields a
-// backspace or a carriage return.
-//
-// A control character immediately followed by a letter, in the middle of a
-// line of a source file, has no legitimate reading; a form feed on a line of
-// its own is a page break and is left alone, as is every CR that belongs to a
-// CRLF pair. Observed 2026-09-15: five such form feeds commented out four
-// function declarations, and the model was told about the dangling brace
-// twenty lines below the cause on each of three rewrites.
-func repairEatenEscapes(content string) (string, int) {
-	if !strings.ContainsAny(content, "\x0c\x08\r") {
-		return content, 0
+// This used to search for a fence behind up to five lines of prose, strip an
+// opener that never closed, and then "repair" the result: decode a one-line
+// body with literal \n escapes, and turn a form feed or backspace before a
+// letter into a line break. Each of those rewrote valid content. Measured on
+// c5927b3 through the real write path: a YAML file whose block scalar held a
+// ```bash example was reduced to "  ls -la\n"; a Python page break (form feed
+// before `def`) became "\nfdef"; one-line minified JSON had its \n escapes
+// decoded. Content that is ambiguous is now left to the syntax gate or, when
+// it arrives through the JSON channel in a shape that is usually an escaping
+// slip, refused before execution (jsonChannelContentFeedback).
+func stripWholeFileWrapper(filePath, content string) (string, bool) {
+	if isDocumentAsset(filePath) {
+		return content, false
 	}
-	hasLF := strings.Contains(content, "\n")
-	isWord := func(b byte) bool {
-		return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-	}
-	var out strings.Builder
-	out.Grow(len(content) + 8)
-	n := 0
-	for i := 0; i < len(content); i++ {
-		c := content[i]
-		var letter byte
-		switch c {
-		case '\x0c':
-			letter = 'f'
-		case '\x08':
-			letter = 'b'
-		case '\r':
-			// Only in a file that otherwise uses LF: a CR-only file is its
-			// own convention, and a CR followed by LF is a CRLF pair.
-			if hasLF && i+1 < len(content) && content[i+1] != '\n' {
-				letter = 'r'
+	lines := strings.Split(content, "\n")
+	first, last := -1, -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			if first < 0 {
+				first = i
 			}
+			last = i
 		}
-		if letter != 0 && i+1 < len(content) && isWord(content[i+1]) {
-			out.WriteByte('\n')
-			out.WriteByte(letter)
-			n++
-			continue
-		}
-		out.WriteByte(c)
 	}
-	return out.String(), n
+	if first < 0 || first == last {
+		return content, false
+	}
+	open := fenceOpenRe.FindStringSubmatch(lines[first])
+	closing := fenceCloseRe.FindStringSubmatch(lines[last])
+	if open == nil || closing == nil || len(closing[1]) < len(open[1]) {
+		return content, false
+	}
+	for i := first + 1; i < last; i++ {
+		if m := fenceCloseRe.FindStringSubmatch(lines[i]); m != nil && len(m[1]) >= len(open[1]) {
+			return content, false
+		}
+	}
+	inner := strings.Join(lines[first+1:last], "\n")
+	if strings.TrimSpace(inner) == "" {
+		return content, false
+	}
+	return inner + "\n", true
 }
 
-// repairEscapedBody decodes a file body that arrived with literal escape
-// sequences instead of real characters.
-//
-// The signal is the whole shape, not the presence of a \n: the content has
-// NOT ONE real newline anywhere, yet several literal \n sequences. Only a
-// body that was escaped for the JSON channel and then written through
-// verbatim looks like that. A genuine file that contains \n on purpose -- a
-// printf, a regex, a docstring -- still has real newlines of its own,
-// including the trailing one almost every file ends with, so it is never
-// touched here.
-//
-// Observed 2026-09-14: a delivered README.md was a single 876-character line
-// whose entire structure was literal \n, which is unreadable as the
-// installation instructions the user asked for.
-func repairEscapedBody(content string) (string, bool) {
-	if strings.ContainsAny(content, "\n\r") {
-		return content, false
-	}
-	// Two guards against a legitimate one-liner (`printf 'a\nb\n'`): it has
-	// to look like a whole file, and carry more than an incidental escape.
-	if len(content) < 120 || strings.Count(content, `\n`) < 3 {
-		return content, false
-	}
-	// Prefer a real JSON string decode, which also handles \t, \" and \\
-	// consistently. Fall back to the unambiguous sequences when the body is
-	// not a valid JSON string literal (a stray backslash, an unescaped quote).
-	var decoded string
-	if err := json.Unmarshal([]byte(`"`+content+`"`), &decoded); err == nil {
-		if strings.Contains(decoded, "\n") {
-			return decoded, true
-		}
-		return content, false
-	}
-	repaired := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\"`, `"`).Replace(content)
-	if repaired == content || !strings.Contains(repaired, "\n") {
-		return content, false
-	}
-	return repaired, true
-}
+// wholeFileWrapperNote is what a write result says when a wrapper was removed.
+const wholeFileWrapperNote = "The content you sent was wrapped in a single ``` fenced block; " +
+	"only the lines inside the fence were written."
 
 // isDocumentAsset reports whether a path is prose rather than code.
 //
@@ -764,6 +676,50 @@ func replyDefersWork(text string) bool {
 	}
 	return promisesMoreContent(text)
 }
+
+// replyAsksUser reports a reply whose last sentence asks the USER to supply
+// something -- a fact, a choice, a file, where to look -- rather than offering
+// optional follow-up or checking in. It says nothing about whether asking was
+// right; exitGates decides that from what the run could inspect.
+//
+// Only the final sentence that is not an offer or a courtesy counts: "Which
+// approach is safer? The second, because..." answers its own question, while
+// "Could you tell me which files handle the pricing cache?" leaves the turn
+// with the user. Measured on c5927b3 acceptance family S: that reply, with no
+// tool call in a workspace of five source files, was reported completed.
+func replyAsksUser(text string) bool {
+	t := strings.TrimSpace(text)
+	if i := strings.LastIndex(t, "\n\n"); i >= 0 && len(strings.TrimSpace(t[i:])) > 0 {
+		t = strings.TrimSpace(t[i:])
+	}
+	if len(t) > 400 {
+		t = t[len(t)-400:]
+	}
+	sentences := replySentenceRe.FindAllString(t, -1)
+	for k := len(sentences) - 1; k >= 0; k-- {
+		sen := strings.ToLower(strings.TrimSpace(sentences[k]))
+		if sen == "" {
+			continue
+		}
+		if userRequestRe.MatchString(sen) {
+			return true
+		}
+		if replyOfferRe.MatchString(sen) || replyCourtesyRe.MatchString(sen) {
+			continue
+		}
+		return strings.HasSuffix(sen, "?") && userQuestionRe.MatchString(sen)
+	}
+	return false
+}
+
+var (
+	// Asking the user to provide or identify something, in any sentence form.
+	userRequestRe = regexp.MustCompile(`\b(?:could|can|would|will) you(?: please)? (?:tell|share|provide|paste|send|upload|show|point|specify|clarify|confirm|describe|give|list|identify|indicate|let me know)\b|\bplease (?:tell|share|provide|paste|send|upload|show|point|specify|clarify|confirm|describe|give|list|identify|indicate)\b|\blet me know (?:which|what|where|how|whether|the)\b`)
+	// A direct question about the user's situation or preference.
+	userQuestionRe = regexp.MustCompile(`(?:^|[:;,]\s*)(?:which|what|where|how|when|who|do you|did you|have you|are you|were you|is it|is this|is that|should the|should it|can you|could you|would you)\b`)
+	// Checking in after an answer: not a request for anything.
+	replyCourtesyRe = regexp.MustCompile(`\b(?:does (?:that|this) (?:help|answer|make sense)|makes? sense\?|any (?:other|more|further) questions|anything else|is (?:that|this) what you)\b`)
+)
 
 // replyDeclaresInability reports a reply whose closing says, in the first
 // person, that the agent could not accomplish what was asked -- "I could not
@@ -2349,26 +2305,21 @@ func patternMatchHint(resolvedPath string, filesRead map[string]string) string {
 		ext, dir, len(siblings), ext, strings.Join(preview, ", "))
 }
 
-// looksCorruptedOnDisk returns true when the file at displayPath has
-// the markdown-fence-with-prose corruption pattern that
-// sanitizeFileContent strips on input.
-//
-// The corruption shape is what `<model> generated` left behind in
-// May 2026 templates: prose preamble ("Looking at the task, I need
-// to create..."), then a ```html fence, then real HTML, then a
-// closing fence with trailing commentary. Once on disk, this file
-// is unparseable to Jinja/the browser, but the surgical-edit
-// gate blocks write_file from cleaning it up. This helper tells the
+// looksCorruptedOnDisk returns true when the file at displayPath has the
+// markdown-fence-with-prose corruption left by earlier writes: prose preamble
+// ("Looking at the task, I need to create..."), a ```html fence, real HTML, a
+// closing fence and trailing commentary. Such a file is unparseable, but the
+// surgical-edit gate would block write_file from cleaning it up; this tells the
 // agent loop "the file is broken, let write_file overwrite it."
 //
-// Mechanism: re-runs the same sanitizer that filters write_file
-// inputs against the existing on-disk content. If sanitizing would
-// change anything, the file is corrupted in the way we know how to
-// recognize. False positives are bounded — sanitizeFileContent only
-// strips when a fence is present, so a clean file (no fence) always
-// returns false here.
+// It uses the tolerant single-layer search (stripOneFenceLayer). A clean file
+// with no fence always returns false.
 func looksCorruptedOnDisk(displayPath, existing string) bool {
-	cleaned, sanitized := sanitizeFileContent(displayPath, existing)
+	// Detection only: nothing is rewritten from this answer. The fuzzy
+	// preamble/trailer search belongs here, where a false positive merely lets
+	// write_file replace a file, and not on the write path, where it destroyed
+	// valid content.
+	cleaned, sanitized := stripOneFenceLayer(displayPath, existing)
 	return sanitized && cleaned != existing
 }
 
@@ -2947,8 +2898,14 @@ func stripAllWhitespace(s string) string {
 }
 
 // repairLiteralDrift returns content with every absent literal whose
-// whitespace-insensitive rendering IS present replaced by the literal's
-// exact bytes. The bool reports whether anything changed.
+// rendering differs from it only in spacing WITHIN lines replaced by the
+// literal's exact bytes. The bool reports whether anything changed.
+//
+// Each line of the window must have exactly the literal line's leading
+// whitespace. Indentation is structure, not spacing: a user's unindented
+// snippet placed inside a function used to match whitespace-insensitively and
+// was re-indented to column 0 after the write -- silently, and into a Python
+// syntax error.
 func repairLiteralDrift(content string, literals []string) (string, []string, bool) {
 	var repaired []string
 	for _, lit := range literals {
@@ -2960,15 +2917,26 @@ func repairLiteralDrift(content string, literals []string) (string, []string, bo
 		lines := strings.Split(content, "\n")
 		for i := 0; i+len(litLines) <= len(lines); i++ {
 			window := strings.Join(lines[i:i+len(litLines)], "\n")
-			if stripAllWhitespace(window) == litKey {
-				lines = append(lines[:i], append(litLines, lines[i+len(litLines):]...)...)
-				content = strings.Join(lines, "\n")
-				repaired = append(repaired, lit)
-				break
+			if stripAllWhitespace(window) != litKey || !sameIndentation(lines[i:i+len(litLines)], litLines) {
+				continue
 			}
+			lines = append(lines[:i], append(litLines, lines[i+len(litLines):]...)...)
+			content = strings.Join(lines, "\n")
+			repaired = append(repaired, lit)
+			break
 		}
 	}
 	return content, repaired, len(repaired) > 0
+}
+
+func sameIndentation(a, b []string) bool {
+	indent := func(l string) string { return l[:len(l)-len(strings.TrimLeft(l, " \t"))] }
+	for k := range a {
+		if indent(a[k]) != indent(b[k]) {
+			return false
+		}
+	}
+	return true
 }
 
 // toolBanNote tells the model a tool is gone for a file and names what is
@@ -3093,4 +3061,119 @@ func verificationNeverRan(result *ToolResult) bool {
 		}
 	}
 	return false
+}
+
+// jsonChannelContentFeedback refuses, before execution, content that arrived
+// through the JSON tool-call channel in a shape that is usually an escaping
+// slip -- and that used to be silently "repaired" by guessing the intended
+// bytes. Refusal names the shape and gives two retry paths: escape the line
+// break once, or send the file with @fenced, whose bytes never pass through
+// JSON decoding (so a genuine control character or one-line body is preserved
+// there).
+//
+//   - A form feed (\f), backspace (\b) or bare carriage return (\r) directly
+//     before a letter: what a "\n" that lost its backslash decodes to
+//     ("\function" -> form feed + "unction"). It can also be real content, so
+//     it is refused rather than rewritten.
+//   - A body of 120+ characters with no real line break and three or more
+//     literal \n sequences: a line-structured file whose escapes were doubled.
+//     Data formats where a single long line is normal are exempt.
+//   - A markdown fence with other text around it ("Here is the file:" then
+//     ```python ... ```), or a fence that never closes, in content the write
+//     path would otherwise store verbatim. Only an exact whole-content wrapper
+//     is removed (sanitizeFileContent); anything looser was a guess about
+//     which lines are the file.
+//
+// Scoped to the free-text fields of write_file (not the @fenced sentinel),
+// edit_file new_str, insert_after / replace_lines content and structural_edit
+// content; the fence check to the three tools that strip wrappers.
+func jsonChannelContentFeedback(toolName string, args json.RawMessage) (string, bool) {
+	var in map[string]interface{}
+	if json.Unmarshal(args, &in) != nil {
+		return "", false
+	}
+	path, _ := in["path"].(string)
+	fields := map[string][]string{
+		"write_file":      {"content"},
+		"edit_file":       {"new_str"},
+		"insert_after":    {"content"},
+		"replace_lines":   {"content"},
+		"structural_edit": {"content"},
+	}[toolName]
+	for _, f := range fields {
+		v, _ := in[f].(string)
+		if v == "" || (toolName == "write_file" && isFencedSentinel(v)) {
+			continue
+		}
+		if name, line, ok := controlBeforeLetter(v); ok {
+			return fmt.Sprintf("Your %s call was NOT performed — nothing was written. The %s for %s contains a %s "+
+				"directly before a letter on line %d. That is what a line break whose \\n lost its backslash "+
+				"decodes to (\\function becomes a form feed followed by \"unction\"). If you meant a line break, "+
+				"resend with it written as \\n. If the character is really part of the file, send the file with "+
+				"\"content\": \"@fenced\" instead.", toolName, f, path, name, line), true
+		}
+		if toolName == "write_file" || toolName == "edit_file" || toolName == "structural_edit" {
+			if _, wrapped := stripOneFenceLayer(path, v); wrapped {
+				if _, exact := stripWholeFileWrapper(path, v); !exact {
+					return fmt.Sprintf("Your %s call was NOT performed — nothing was written. The %s for %s "+
+						"contains a ``` markdown fence with other text around it (or a fence that never closes), "+
+						"and ATLAS does not guess which lines belong in the file. Resend with only the file's own "+
+						"lines — no explanation before or after, no fence. If the fence lines really are part of "+
+						"the file, send it with \"content\": \"@fenced\".", toolName, f, path), true
+				}
+			}
+		}
+		if doubledEscapeBody(path, v) {
+			return fmt.Sprintf("Your %s call was NOT performed — nothing was written. The %s for %s is a single "+
+				"%d-character line whose only line breaks are the two characters \\n, so the escapes were "+
+				"doubled. Resend with each line break escaped once (\\n), or send the file with "+
+				"\"content\": \"@fenced\".", toolName, f, path, len(v)), true
+		}
+	}
+	return "", false
+}
+
+// controlBeforeLetter finds a form feed, backspace or bare carriage return
+// (in content that otherwise uses LF) immediately followed by a letter.
+func controlBeforeLetter(v string) (name string, line int, ok bool) {
+	if !strings.ContainsAny(v, "\x0c\x08\r") {
+		return "", 0, false
+	}
+	hasLF := strings.Contains(v, "\n")
+	isWord := func(b byte) bool {
+		return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	line = 1
+	for i := 0; i+1 < len(v); i++ {
+		c := v[i]
+		if c == '\n' {
+			line++
+			continue
+		}
+		if !isWord(v[i+1]) {
+			continue
+		}
+		switch {
+		case c == '\x0c':
+			return "form feed (\\f)", line, true
+		case c == '\x08':
+			return "backspace (\\b)", line, true
+		case c == '\r' && hasLF:
+			return "carriage return (\\r)", line, true
+		}
+	}
+	return "", 0, false
+}
+
+// doubledEscapeBody reports a long single-line body of literal \n text for a
+// line-structured file.
+func doubledEscapeBody(path, v string) bool {
+	if strings.ContainsAny(v, "\n\r") || len(v) < 120 || strings.Count(v, `\n`) < 3 {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".map":
+		return false
+	}
+	return true
 }

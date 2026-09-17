@@ -111,17 +111,17 @@ func TestInsertingAFullBranchBetweenBranchesIsAccepted(t *testing.T) {
 
 func TestBlockScannerHandlesStringsBracketsAndContinuations(t *testing.T) {
 	src := strings.Join([]string{
-		`def f(x):`,               // 1
-		`    doc = """`,           // 2 triple string opens
+		`def f(x):`,                 // 1
+		`    doc = """`,             // 2 triple string opens
 		`if this looked like code:`, // 3 inside the string
-		`    it is not"""`,        // 4 closes
-		`    total = (x +`,        // 5 bracket opens
-		`  1)`,                    // 6 continuation, odd indent
-		`    y = x \`,             // 7 backslash continuation
-		`        + 2`,             // 8
-		`    if total:`,           // 9
+		`    it is not"""`,          // 4 closes
+		`    total = (x +`,          // 5 bracket opens
+		`  1)`,                      // 6 continuation, odd indent
+		`    y = x \`,               // 7 backslash continuation
+		`        + 2`,               // 8
+		`    if total:`,             // 9
 		`        return y  # (unbalanced in a comment`, // 10
-		`    return total`,        // 11
+		`    return total`, // 11
 	}, "\n")
 	parents, ok := pythonBlockParents(strings.Split(src, "\n"))
 	if !ok {

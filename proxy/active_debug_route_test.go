@@ -223,6 +223,9 @@ func runDebugRoute(t *testing.T, o debugRouteOpts) (*ToolResult, string, *debugR
 
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.PermissionMode = PermissionYolo
+	// Generation runs only where a candidate could be delivered (C2); declared
+	// outputs make this session one, so the fixture still reaches the V3 route.
+	ctx.TaskContract = declaredOutputs(o.rel)
 	ctx.StreamFn = func(string, interface{}) {}
 	ctx.BypassV3 = false
 	ctx.V3URL = srv.URL

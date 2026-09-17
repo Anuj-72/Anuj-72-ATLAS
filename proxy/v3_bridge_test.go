@@ -729,7 +729,7 @@ func TestEditPathRevokesWhenSanitisationChangesTheBytes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.py")
 	inner := "import math\n\n\ndef area(r):\n    if r < 0:\n        raise ValueError('neg')\n    return math.pi * r ** 2\n\n\ndef edge(r):\n    for _ in range(1):\n        pass\n    return math.tau * r\n"
-	fenced := "Looking at the task, I need to update the handler.\n\n```python\n" + inner + "```\n"
+	fenced := "```python\n" + inner + "```\n"
 
 	// The service verified what it returned: the FENCED bytes.
 	srv := editV3Server(t, fenced, true, envelopeFor(t, fenced, nil))

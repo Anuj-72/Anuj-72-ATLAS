@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 // Why the candidate producer was not consulted for a mutation the model
 // actually made.
 //
@@ -45,6 +47,15 @@ const (
 	// A syntax or structural guard answered before the producer could be
 	// asked, so no candidate was generated for these bytes.
 	bypassProposalFailedSyntaxGuard candidateBypassReason = "proposal_failed_syntax_guard"
+	// Nothing the producer returned could reach disk in this session: the
+	// policy is strict or advisory and the request declared no outputs, so the
+	// model's own bytes are retained whatever comes back. Measured on c5927b3:
+	// 32 activations, 3866 s -- about half of all session time -- and 0
+	// candidate deliveries.
+	bypassCandidateUndeliverable candidateBypassReason = "candidate_undeliverable_under_policy"
+	// Generation's time cap would leave the session less than the declared
+	// work allowance (workAllowance) for everything after this write.
+	bypassWorkAllowance candidateBypassReason = "work_budget_allowance"
 	// bypassUnclassified is the fail-closed member. A skip nobody taught this
 	// vocabulary about ends here rather than ending silently, and it may never
 	// be read as an expected one.
@@ -56,6 +67,7 @@ func knownCandidateBypassReason(r candidateBypassReason) bool {
 	case bypassTierBelowThreshold, bypassEditBelowComplexityFloor,
 		bypassProducerNotConfigured, bypassGenerationDisabled,
 		bypassActiveDebugIteration, bypassProposalFailedSyntaxGuard,
+		bypassCandidateUndeliverable, bypassWorkAllowance,
 		bypassUnclassified:
 		return true
 	}
@@ -87,6 +99,10 @@ func writeGenerationBypass(ctx *AgentContext, fileTier Tier, iterating bool,
 		return bypassGenerationDisabled
 	case iterating:
 		return bypassActiveDebugIteration
+	case !candidateDeliverableUnderPolicy(ctx):
+		return bypassCandidateUndeliverable
+	case !generationLeavesWorkAllowance(ctx):
+		return bypassWorkAllowance
 	}
 	return bypassNone
 }
@@ -110,8 +126,66 @@ func editGenerationBypass(ctx *AgentContext, fileTier Tier, warrants bool,
 		return bypassGenerationDisabled
 	case iterating:
 		return bypassActiveDebugIteration
+	case !candidateDeliverableUnderPolicy(ctx):
+		return bypassCandidateUndeliverable
+	case !generationLeavesWorkAllowance(ctx):
+		return bypassWorkAllowance
 	}
 	return bypassNone
+}
+
+// candidateDeliverableUnderPolicy reports whether a candidate could reach disk
+// in this session, asked before generation rather than after it. It mirrors
+// the delivery owners (authorizeCandidateDelivery, decideCandidatePolicy): a
+// delivery needs strict authorization against declared outputs, or
+// automatic_v3. It errs toward "could": a false "could" costs generation time
+// as before, a false "could not" would lose a delivery.
+//
+// Capture-only acquisition keeps generating: it exists to record what would
+// have been authorized.
+func candidateDeliverableUnderPolicy(ctx *AgentContext) bool {
+	if candidateCaptureOnly() {
+		return true
+	}
+	if mode, _ := candidatePolicyOf(ctx); mode == CandidatePolicyAutomaticV3 {
+		return true
+	}
+	return outputKnowledgeDeclared(ctx)
+}
+
+// workAllowance is what optional generation must leave for the rest of the
+// session: max(120 s, 35% of the work budget). Declared in
+// STABILIZATION_CYCLE_1 (C2) before any run measured it.
+func workAllowance() time.Duration {
+	total, reserve := sessionBudget()
+	share := time.Duration(float64(total-reserve) * 0.35)
+	if share < 120*time.Second {
+		return 120 * time.Second
+	}
+	return share
+}
+
+// generationLeavesWorkAllowance reports whether the producer's cap for a call
+// made now would still leave workAllowance of the session. The cap is
+// computed the way callV3GenerateStreaming applies it. Without a deadline
+// there is nothing to protect.
+func generationLeavesWorkAllowance(ctx *AgentContext) bool {
+	if ctx == nil || ctx.Ctx == nil {
+		return true
+	}
+	deadline, ok := ctx.Ctx.Deadline()
+	if !ok {
+		return true
+	}
+	remaining := time.Until(deadline)
+	callCap := remaining // uncapped: the call may run to the deadline
+	if d := v3CallTimeout(); d > 0 {
+		callCap = d
+		if half := remaining / 2; half > 0 && half < d {
+			callCap = half
+		}
+	}
+	return remaining-callCap >= workAllowance()
 }
 
 // recordCandidateGenerationBypass writes one skip.

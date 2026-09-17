@@ -374,55 +374,6 @@ func TestFindActualString(t *testing.T) {
 	})
 }
 
-func TestRecoverTruncatedWriteFile(t *testing.T) {
-	t.Run("recovers path and unescaped content", func(t *testing.T) {
-		partial := `{"type":"tool_call","name":"write_file","args":{"path":"app/main.py","content":"import os\nprint(\"hi\")\n# cut mid-`
-		resp, err := recoverTruncatedWriteFile(partial)
-		if err != nil {
-			t.Fatalf("recovery failed: %v", err)
-		}
-		if resp.Type != "tool_call" || resp.Name != "write_file" {
-			t.Fatalf("recovered envelope %+v", resp)
-		}
-		var input WriteFileInput
-		if err := json.Unmarshal(resp.Args, &input); err != nil {
-			t.Fatalf("recovered args do not parse: %v", err)
-		}
-		if input.Path != "app/main.py" {
-			t.Errorf("path = %q", input.Path)
-		}
-		// JSON escapes must be resolved into real bytes.
-		if !strings.Contains(input.Content, "import os\nprint(\"hi\")") {
-			t.Errorf("content = %q — escapes not resolved", input.Content)
-		}
-	})
-
-	t.Run("trailing incomplete escape is trimmed", func(t *testing.T) {
-		partial := `{"type":"tool_call","name":"write_file","args":{"path":"a.txt","content":"line\n\`
-		resp, err := recoverTruncatedWriteFile(partial)
-		if err != nil {
-			t.Fatalf("recovery failed on trailing backslash: %v", err)
-		}
-		var input WriteFileInput
-		_ = json.Unmarshal(resp.Args, &input)
-		if input.Content != "line\n" {
-			t.Errorf("content = %q, want %q", input.Content, "line\n")
-		}
-	})
-
-	t.Run("missing content field is an error", func(t *testing.T) {
-		if _, err := recoverTruncatedWriteFile(`{"type":"tool_call","name":"write_file","args":{"path":"a.txt"`); err == nil {
-			t.Error("recovered a write_file with no content field")
-		}
-	})
-
-	t.Run("missing path is an error", func(t *testing.T) {
-		if _, err := recoverTruncatedWriteFile(`{"type":"tool_call","name":"write_file","args":{"content":"body only`); err == nil {
-			t.Error("recovered a write_file with no destination path")
-		}
-	})
-}
-
 // Tests for buildResponseFormat — the schema-constrained sampling path
 // (#33). These tests pin the response_format payload shape that goes
 // over the wire to llama-server, so a regression that silently flips

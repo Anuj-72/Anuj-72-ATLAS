@@ -1622,6 +1622,8 @@ func TestEveryNonCompletedTerminalIsHonest(t *testing.T) {
 		{"work_deadline", TerminalTimedOut, "Stopped: the session ran out of time before the work finished."},
 		{"cancelled", TerminalIncomplete, "Stopped: the run was cancelled before the work finished."},
 		{"unclassified_producer", TerminalIncomplete, ""},
+		{"clarification_requested", TerminalIncomplete, ""},
+		{"investigation_handed_back", TerminalIncomplete, ""},
 	}
 	if len(producers) < 12 {
 		t.Fatalf("only %d producers covered; there are 12", len(producers))
