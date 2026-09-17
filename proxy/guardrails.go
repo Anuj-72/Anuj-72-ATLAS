@@ -1619,7 +1619,7 @@ func investigationScopeUnmet(ctx *AgentContext, userMessage, claimText string,
 		return read, nil, false
 	}
 	for _, name := range read {
-		if strings.Contains(claimText, name) {
+		if strings.Contains(claimText, name) || answerNamesSymbolFrom(ctx, name, claimText) {
 			cited = append(cited, name)
 		}
 	}
@@ -1643,6 +1643,65 @@ func bodiesSeenInRun(ctx *AgentContext) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// answerNamesSymbolFrom reports whether the answer accounts for a file by
+// naming something defined in it.
+//
+// Measured (stabilization cycle 5, audit of this guard): an answer that traced
+// the fault correctly through read_key and write_key, naming one file, was
+// sent back as a partial investigation. Explaining a relationship through the
+// functions involved is how such an answer is normally written, and the
+// symbols come from the bytes THIS run read — not from any task knowledge.
+//
+// It makes the guard more permissive, which is the intended direction: the
+// guard is a floor against answering for one file out of several, not a test
+// of whether an answer is correct.
+func answerNamesSymbolFrom(ctx *AgentContext, base, claimText string) bool {
+	ctx.mu.Lock()
+	var source, path string
+	for p, content := range ctx.FilesRead {
+		if filepath.Base(p) == base {
+			source, path = content, p
+			break
+		}
+	}
+	ctx.mu.Unlock()
+	if source == "" {
+		return false
+	}
+	for _, sym := range outlineByRegex(path, source) {
+		// Short names ("get", "id") appear in ordinary prose; requiring four
+		// characters keeps the match to something the file actually declares.
+		// Whole-word only: "price" must not be credited to the word "pricing".
+		if len(sym.Name) >= 4 && mentionsWord(claimText, sym.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsWord reports whether text contains name as a whole identifier —
+// neither a prefix of a longer word nor a suffix of one.
+func mentionsWord(text, name string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], name)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(name)
+		beforeOK := start == 0 || !isIdentRune(rune(text[start-1]))
+		afterOK := end == len(text) || !isIdentRune(rune(text[end]))
+		if beforeOK && afterOK {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+func isIdentRune(r rune) bool {
+	return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 // investigationScopeMessage asks for the coverage the request asked for. It

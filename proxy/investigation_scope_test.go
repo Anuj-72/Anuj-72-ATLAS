@@ -191,15 +191,23 @@ func TestTheCapturedSAnswerIsCaughtByTheRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	// The frozen v3.1 fixture, byte for byte, so the symbols are the real ones.
 	for _, name := range []string{"cache.py", "catalog.py", "keys.py", "orders.py", "pricing.py"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x = 1\n"), 0o644); err != nil {
+		body, err := os.ReadFile(filepath.Join("testdata", "s_fixture", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	ctx := NewAgentContext(dir, Tier1Simple)
 	// What that run actually opened: three of the five modules.
 	for _, name := range []string{"cache.py", "pricing.py", "keys.py"} {
-		ctx.RecordBodySeen(filepath.Join(dir, name))
+		full := filepath.Join(dir, name)
+		body, _ := os.ReadFile(full)
+		ctx.RecordFileRead(full, string(body))
+		ctx.RecordBodySeen(full)
 	}
 	read, cited, unmet := investigationScopeUnmet(ctx, spanRequest, string(answer), true, 4)
 	if !unmet {
@@ -207,5 +215,39 @@ func TestTheCapturedSAnswerIsCaughtByTheRule(t *testing.T) {
 	}
 	if len(cited) != 1 || cited[0] != "keys.py" {
 		t.Errorf("cited = %v, want [keys.py] — the one file that answer accounts for", cited)
+	}
+}
+
+// --- audit of the guard's limits (stabilization cycle 5) --------------------
+
+// What the guard cannot do: it counts files the answer accounts for, not
+// whether the answer is right. An answer that names every file the run read
+// and states no relationship between them passes it. Recorded, not fixed by
+// counting more: correctness is not decidable from the workspace.
+func TestNamingTheFilesWithoutTheRelationshipStillPasses(t *testing.T) {
+	padded := spanText("I looked at cache.py, keys.py and pricing.py. They are all part of the pricing path. " +
+		"Something in there is causing the misses.")
+	run := integrityLoop(t, spanRequest, spanWorld(t), append(spanReadThree(), padded), nil)
+	if run.told("The request asks about how several files behave together") {
+		t.Error("precondition changed: this answer is no longer passed by the guard")
+	}
+	if run.terminal["status"] != "completed" {
+		t.Errorf("terminal %s / %s", run.terminal["status"], run.terminal["reason"])
+	}
+}
+
+// The direction that matters for delivery: an answer that explains the
+// relationship through the symbols it read, naming one file, must not be sent
+// back as a partial investigation.
+func TestAnAnswerThatExplainsViaSymbolsIsNotBounced(t *testing.T) {
+	bySymbols := spanText("The price lookup calls read_key to build the cache key, but the value was stored " +
+		"under write_key — read_key uses the customer tier where write_key used the id, so get() never finds " +
+		"what put() wrote, and every lookup in keys.py misses.")
+	run := integrityLoop(t, spanRequest, spanWorld(t), append(spanReadThree(), bySymbols), nil)
+	if run.told("The request asks about how several files behave together") {
+		t.Error("an answer that explains the relationship through its symbols was bounced")
+	}
+	if run.terminal["status"] != "completed" {
+		t.Errorf("terminal %s / %s, want completed", run.terminal["status"], run.terminal["reason"])
 	}
 }
