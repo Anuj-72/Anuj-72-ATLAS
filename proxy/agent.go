@@ -141,6 +141,33 @@ const maxGateBounces = 3
 // but an unbounded retry is its own hang.
 const maxContentLoopRecoveries = 2
 
+// contentLoopRecoveryAllowance and contentLoopCountUnproductive expose the two
+// halves of that bound separately, so an experiment can change ONE of them.
+// Defaults reproduce the shipped behaviour exactly: allowance 2, every
+// recovery charged.
+func contentLoopRecoveryAllowance() int {
+	if v := envOr("ATLAS_CONTENT_LOOP_RECOVERIES", ""); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return maxContentLoopRecoveries
+}
+
+// contentLoopCountUnproductive reports whether the allowance counts only
+// CONSECUTIVE recoveries that led to nothing landing on disk.
+//
+// Measured (stabilization cycle 4, flask_pause, both repetitions, identical to
+// the token): cut at turn 1, recovery 1, cut at turn 2, recovery 2, then a
+// valid replace_lines at turn 3 that landed, then a third cut at turn 4 which
+// hit the allowance and ended the run with the feature half applied — at 271 s
+// of a 570 s work budget, with the prompt at 7,270 tokens of an 18,432-token
+// conversation budget. The counter had spent both charges before the run made
+// its only productive edit, and that edit did not give any of them back.
+func contentLoopCountUnproductive() bool {
+	return envOr("ATLAS_CONTENT_LOOP_COUNT", "all") == "unproductive"
+}
+
 // runState is the per-run evidence the completion-honesty gates decide
 // on, plus their bounce budgets. One struct so the gates see the
 // same facts on the done and text exits instead of two hand-copied
@@ -243,6 +270,12 @@ type runState struct {
 	// repetition cut with a corrective instead of ending. Bounded, so a
 	// model that will not stop repeating still terminates.
 	contentLoopRecoveries int
+	// productiveChanges counts successful writes/edits; recoveriesAtLastCharge
+	// remembers the count when the allowance was last charged, so a recovery
+	// that was followed by work landing can give its charge back under
+	// ATLAS_CONTENT_LOOP_COUNT=unproductive.
+	productiveChanges      int
+	productiveAtLastCharge int
 	// Phase 4B: how many times a raw @fenced write for a canonical path has
 	// met the run-first demand, and whether that path's one recovery has been
 	// spent. Both are session-local, bounded by the number of paths the run
@@ -1193,11 +1226,23 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// corrective that names this exact failure sat unused in
 				// classifyParseFailure below. Answer the loop and keep going,
 				// bounded, before considering the partial reply an outcome.
-				if st.contentLoopRecoveries < maxContentLoopRecoveries {
+				// Under the unproductive-only accounting, work that landed
+				// since the last charge clears the count: the run is making
+				// progress between cuts, which is not the runaway this bound
+				// exists to stop.
+				if contentLoopCountUnproductive() && st.productiveChanges > st.productiveAtLastCharge {
+					if st.contentLoopRecoveries > 0 {
+						log.Printf("[agent] content-loop allowance reset at turn %d — %d change(s) landed since the last one",
+							turn, st.productiveChanges-st.productiveAtLastCharge)
+					}
+					st.contentLoopRecoveries = 0
+				}
+				if st.contentLoopRecoveries < contentLoopRecoveryAllowance() {
 					st.contentLoopRecoveries++
+					st.productiveAtLastCharge = st.productiveChanges
 					_, corrective := parseFailureFeedback(ctx, response, ctx.LastStreamCut)
 					log.Printf("[agent] content loop at turn %d — correcting and continuing (%d/%d)",
-						turn, st.contentLoopRecoveries, maxContentLoopRecoveries)
+						turn, st.contentLoopRecoveries, contentLoopRecoveryAllowance())
 					ctx.Stream("agent_loop_recovery", map[string]interface{}{
 						"turn": turn, "attempt": st.contentLoopRecoveries,
 						"reason": "the model began repeating itself; the stream was cut and it was told why",
@@ -2401,6 +2446,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				parsed.Name == "insert_after" || parsed.Name == "replace_lines" ||
 				parsed.Name == "move_file") {
 				st.madeProductiveChange = true
+				st.productiveChanges++
 				// A write AFTER a successful verification un-verifies the
 				// run: what was checked is no longer what is on disk. Three
 				// novel-benchmark sessions ran a working version, rewrote
