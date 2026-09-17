@@ -2690,8 +2690,16 @@ func editFileTool() *ToolDef {
 				return nil, errNoMutation(fmt.Errorf("file modified since last read — read it again before editing: %s", input.Path))
 			}
 
-			// Find old_str with quote normalization
+			// Find old_str. Exact bytes first; a match that needed quote-style
+			// or whitespace tolerance is allowed but reported, so the model
+			// knows which text of the file its new_str replaced.
 			actualOldStr := findActualString(content, input.OldStr)
+			matchNote := ""
+			if actualOldStr != "" && actualOldStr != input.OldStr {
+				matchNote = fmt.Sprintf("old_str matched %s only after treating curly and straight quotes as the "+
+					"same; the file's own text there was replaced by new_str exactly as sent.",
+					lineSpanOf(content, actualOldStr))
+			}
 			// An old_str that matches only after decoding HTML entities is NOT
 			// accepted by decoding new_str to match (GH #39's old shortcut):
 			// the replacement may hold entities on purpose (&amp; in markup,
@@ -2700,28 +2708,22 @@ func editFileTool() *ToolDef {
 			// entities and the retry.
 			if actualOldStr == "" {
 				// read_file prints "12<tab>" before each line for reference
-				// and the model pastes back what it was shown. The prefix is
-				// ours, so it can come off here. Only a stripped form that
-				// then matches the file is accepted, which makes a wrong
-				// strip impossible.
-				//
-				// The rejection below states this exactly and names the
-				// alternative tool. Watched on executor_server.py
-				// (2026-08-03): the model got that rejection on turn 2 and
-				// sent the same prefixed block again on turn 6. Instructions
-				// do not transfer; mechanisms do (ADR 0008).
+				// and the model pastes back what it was shown. The edit used
+				// to strip the prefix from old_str and new_str and apply the
+				// result, reporting nothing: an unannounced rewrite of both
+				// arguments (stabilization cycle 2, smallrung_toml rep 2).
+				// old_str and new_str are applied exactly as sent; text that
+				// really begins "12<tab>" (tab-separated data) still edits,
+				// because it matched above. When only the prefix-free form
+				// matches, nothing is changed and the refusal gives the exact
+				// replace_lines call that makes this change without
+				// reproducing the text: the lines where it matched, their
+				// real contents, and a note if new_str carries the prefix too.
 				if stripped := stripLineNumberPrefixes(input.OldStr); stripped != input.OldStr {
 					if maybeMatch := findActualString(content, stripped); maybeMatch != "" {
-						log.Printf("[edit_file] old_str carried read_file's line-number prefix on %s — stripped and matched (saved a stuck-loop turn)", input.Path)
-						input.OldStr = stripped
-						// The same paste habit puts the prefix on new_str, and
-						// writing that would put "12<tab>" into the file. Only
-						// strip when every non-blank line carries one, so a
-						// partially-prefixed replacement is left alone.
-						if allLinesLineNumbered(input.NewStr) {
-							input.NewStr = stripLineNumberPrefixes(input.NewStr)
-						}
-						actualOldStr = maybeMatch
+						log.Printf("[edit_file] old_str on %s matches only without read_file's line-number prefixes — refused", input.Path)
+						return nil, errNoMutation(fmt.Errorf("%s", prefixedEditRefusal(input.Path, content, maybeMatch,
+							input.OldStr, input.NewStr)))
 					}
 				}
 			}
@@ -2740,6 +2742,8 @@ func editFileTool() *ToolDef {
 				if fuzzy, ok := findFuzzyLineMatch(content, input.OldStr); ok {
 					log.Printf("[edit_file] exact old_str missed on %s; unique whitespace-tolerant match found — proceeding (small-model indentation drift)", input.Path)
 					actualOldStr = fuzzy
+					matchNote = fmt.Sprintf("old_str matched %s only after ignoring leading and trailing whitespace "+
+						"on each line; those lines were replaced by new_str exactly as sent.", lineSpanOf(content, fuzzy))
 				}
 			}
 			if actualOldStr == "" {
@@ -2870,6 +2874,11 @@ func editFileTool() *ToolDef {
 				log.Printf("[edit_file] removed a whole-content fence wrapper from new_str of %s", input.Path)
 				input.NewStr = cleanedNew
 				defer func() { noteContentChange(res, wholeFileWrapperNote) }()
+			}
+
+			if matchNote != "" {
+				note := matchNote
+				defer func() { noteContentChange(res, note) }()
 			}
 
 			var newContent string
@@ -6387,4 +6396,58 @@ func selectorGuidanceOrOutline(path, source string) string {
 		return g
 	}
 	return "run outline_file on " + filepath.Base(path) + " to see what a selector can name"
+}
+
+// lineSpanOf names the lines of content where text first occurs, as
+// "line N" or "lines N-M".
+func lineSpanOf(content, text string) string {
+	i := strings.Index(content, text)
+	if i < 0 {
+		return "the file"
+	}
+	first := strings.Count(content[:i], "\n") + 1
+	last := first + strings.Count(strings.TrimSuffix(text, "\n"), "\n")
+	if strings.HasPrefix(text, "\n") {
+		first++
+	}
+	if last <= first {
+		return fmt.Sprintf("line %d", first)
+	}
+	return fmt.Sprintf("lines %d-%d", first, last)
+}
+
+// prefixedEditRefusal explains an edit_file whose old_str matches the file only
+// once read_file's "N<tab>" display prefixes are removed, and gives a
+// replace_lines call that makes the change without reproducing the text. It
+// computes, never applies: nothing in it is executed.
+func prefixedEditRefusal(path, content, match, oldStr, newStr string) string {
+	i := strings.Index(content, match)
+	lines := strings.Split(content, "\n")
+	body := strings.Trim(match, "\n")
+	first := strings.Count(content[:i], "\n") + 1
+	if strings.HasPrefix(match, "\n") {
+		first++
+	}
+	last := first + strings.Count(body, "\n")
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "edit_file was NOT applied — %s is unchanged. Your old_str carries read_file's line-number "+
+		"prefix (\"12<tab>\") on %d line(s); that prefix is display only and is not in the file, and edits apply "+
+		"old_str and new_str exactly as sent.", path, lineNumberPrefixedLines(oldStr))
+	if n := strings.Count(content, match); n > 1 {
+		fmt.Fprintf(&sb, " Without the prefixes it matches %d places, so it does not identify one; anchor on a line "+
+			"that appears once.", n)
+		return sb.String()
+	}
+	fmt.Fprintf(&sb, " Without the prefixes it matches %s of %s.", lineSpanOf(content, match), path)
+	if m := lineNumberPrefixedLines(newStr); m > 0 {
+		fmt.Fprintf(&sb, " Your new_str also has the prefix on %d line(s), and it would be written into the file "+
+			"literally.", m)
+	}
+	if first >= 1 && last <= len(lines) {
+		fmt.Fprintf(&sb, " To make this change, either resend edit_file with the prefixes removed from old_str and "+
+			"new_str, or call replace_lines with path %q, start_line %d, end_line %d, expected_first_line %q, "+
+			"expected_last_line %q, and content set to the replacement lines without prefixes.",
+			path, first, last, strings.TrimSpace(lines[first-1]), strings.TrimSpace(lines[last-1]))
+	}
+	return sb.String()
 }
