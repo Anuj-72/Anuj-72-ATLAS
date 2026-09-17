@@ -3504,10 +3504,29 @@ const restatementMaxBytes = 24000
 // after a read_file, where restating would only duplicate it).
 // ATLAS_RESTATE_LAST_READ=0 disables.
 func appendLastReadRestatement(ctx *AgentContext, wire []map[string]string) []map[string]string {
+	return appendLastReadRestatementFor(ctx, wire, "")
+}
+
+// appendLastReadRestatementFor is appendLastReadRestatement with a target: when
+// onlyPath is set, the last read is restated only if it IS that file.
+//
+// Measured (stabilization cycle 4, probe M, 98 generations on 49 captured
+// requests): the file-content sub-call asks for one file while the context
+// ends with "Current contents of" a DIFFERENT file, and in 2 of 49 cases the
+// model returned a near copy of that other file instead of the file it was
+// asked for. Dropping that message removed both, with no loss of usable
+// content (44/49 in each arm). The target's own restatement is kept: it is the
+// file being rewritten.
+func appendLastReadRestatementFor(ctx *AgentContext, wire []map[string]string, onlyPath string) []map[string]string {
 	if ctx == nil || envOr("ATLAS_RESTATE_LAST_READ", "1") == "0" {
 		return wire
 	}
 	path, content := ctx.LastRead()
+	if onlyPath != "" && path != "" && filepath.Clean(path) != filepath.Clean(resolveAgentPath(ctx, onlyPath)) {
+		log.Printf("[agent] not restating %s in the sub-call for %s — a different file",
+			logPath(path), logPath(onlyPath))
+		return wire
+	}
 	if path == "" || content == "" || len(content) > restatementMaxBytes {
 		return wire
 	}
@@ -3554,11 +3573,19 @@ func appendLastReadRestatement(ctx *AgentContext, wire []map[string]string) []ma
 }
 
 func callLLMOnceWithGrammar(ctx *AgentContext, messages []AgentMessage, temperature float64, grammar string) (string, int, error) {
+	return callLLMOnceRestating(ctx, messages, temperature, grammar, "")
+}
+
+// callLLMOnceRestating is callLLMOnceWithGrammar with restateOnly: the caller
+// names the file this request is about, and no other file's contents are
+// appended to it (see appendLastReadRestatementFor).
+func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperature float64,
+	grammar, restateOnly string) (string, int, error) {
 	// Stale from the previous turn otherwise, which would blame a clean
 	// parse failure on a cut that happened earlier.
 	ctx.LastStreamCut = ""
 	wireMessages := toWireMessages(messages)
-	wireMessages = appendLastReadRestatement(ctx, wireMessages)
+	wireMessages = appendLastReadRestatementFor(ctx, wireMessages, restateOnly)
 
 	llamaURL := envOr("ATLAS_LLAMA_URL", ctx.InferenceURL)
 
@@ -5674,7 +5701,18 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 			break
 		}
 		attemptStart := time.Now()
-		reply, tokens, err := callLLMOnceWithGrammar(ctx, msgs, 0.2, rawEmissionSentinel)
+		// Attempt 0 constrains decoding to the contract the note describes:
+		// one fenced block with the requested tag. Probe M (stabilization
+		// cycle 4): 44 of 49 captured sub-calls returned clean usable content
+		// that way, against 19 of 49 as free text, with no empty replies at
+		// all (27 of 49 as free text) and a median of 12 s against 60 s.
+		// A later attempt drops the grammar, so a server that refuses it
+		// still gets the free-text request this channel has always sent.
+		grammar := fenceBlockGrammar(tag)
+		if attempt > 0 {
+			grammar = rawEmissionSentinel
+		}
+		reply, tokens, err := callLLMOnceRestating(ctx, msgs, 0.2, grammar, path)
 		elapsed := time.Since(attemptStart)
 		// Every attempt is a real generation and is accounted whether or
 		// not it yielded a usable block — an unaccounted sub-call made the

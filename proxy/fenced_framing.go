@@ -184,3 +184,21 @@ func isFencedSentinel(content string) bool {
 	rest := strings.TrimLeft(t[len("@fenced"):], " \t")
 	return rest == "" || strings.HasPrefix(rest, "\n") || strings.HasPrefix(rest, "\r\n")
 }
+
+// fenceBlockGrammar restricts a reply to exactly what the sub-call asks for:
+// an opening fence with the requested tag, any number of lines that cannot
+// close the fence early, and the closing fence. It is a GBNF grammar, the
+// same llama-server interface the main loop already uses, and says nothing
+// about any model or chat template.
+func fenceBlockGrammar(tag string) string {
+	safe := make([]rune, 0, len(tag))
+	for _, r := range tag {
+		if r == '-' || r == '+' || r == '#' || r == '.' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			safe = append(safe, r)
+		}
+	}
+	return fmt.Sprintf("root ::= \"```%s\\n\" line* \"```\"\n"+
+		"line ::= ( [^`\\n] [^\\n]* | \"`\" ( [^`\\n] [^\\n]* )? | \"``\" ( [^`\\n] [^\\n]* )? )? \"\\n\"\n",
+		string(safe))
+}
