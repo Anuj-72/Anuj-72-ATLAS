@@ -29,6 +29,35 @@ import (
 // and the verified workspace only, and names supported ways to make the
 // change. It never authorises execution and never supplies missing content.
 
+// attemptEcho is the model's own unparseable output, put back into the
+// conversation as the assistant turn it was, so the next turn does not start
+// from the same prefix.
+//
+// Measured (stabilization cycle 3, probes K and L, one captured context,
+// greedy decoding). The candidate dropped the attempt and appended advice: the
+// conversation up to that advice was byte-identical to the prefix that had
+// produced the cut call, and 9 of 10 generations regenerated a call long
+// enough to be cut again. With the attempt present as an assistant turn and
+// the same grounded refusal after it, 10 of 10 generations made a valid small
+// edit. The baseline reached that state only by EXECUTING the reconstructed
+// call first, which is the thing that must not happen.
+//
+// Only bytes that arrived are echoed. A long attempt is elided, and the
+// elision says so.
+const cutAttemptKeepRunes = 400
+
+func attemptEcho(raw string, cut bool) string {
+	r := []rune(strings.TrimRight(raw, "\n"))
+	if len(r) <= cutAttemptKeepRunes {
+		return string(r)
+	}
+	tail := "\n… [the rest of this reply is not repeated here; nothing was executed]"
+	if cut {
+		tail = "\n… [cut here — the rest of this call never arrived and nothing was executed]"
+	}
+	return string(r[:cutAttemptKeepRunes]) + tail
+}
+
 // recoveredCall holds the fields of a cut tool call that arrived complete.
 type recoveredCall struct {
 	Tool     string

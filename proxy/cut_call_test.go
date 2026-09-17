@@ -237,3 +237,137 @@ func TestPrintTheCapturedFlaskCutRefusal(t *testing.T) {
 	}
 	t.Log(feedback)
 }
+
+// The cut attempt goes back into the conversation, so the retry does not
+// resume from the prefix that produced it.
+//
+// Probe L (stabilization cycle 3): with the attempt present and the same
+// grounded refusal after it, 10 of 10 generations from the captured context
+// made a valid small edit; with the refusal alone, 1 of 10.
+func TestTheCutAttemptIsPutBackIntoTheConversation(t *testing.T) {
+	t.Run("echo carries only what arrived", func(t *testing.T) {
+		short := `{"type":"tool_call","name":"write_file"`
+		if got := attemptEcho(short+"\n", true); got != short {
+			t.Errorf("a short attempt was changed: %q", got)
+		}
+		long := strings.Repeat("x", cutAttemptKeepRunes+50)
+		got := attemptEcho(long, true)
+		if !strings.HasPrefix(long, string([]rune(got)[:cutAttemptKeepRunes])) {
+			t.Error("the echo is not a prefix of what arrived")
+		}
+		if !strings.Contains(got, "cut here") || !strings.Contains(got, "nothing was executed") {
+			t.Errorf("the elision is not stated: %q", got[len(got)-90:])
+		}
+		if n := len([]rune(attemptEcho(long, false))); n <= cutAttemptKeepRunes {
+			t.Error("an elided reply lost its marker")
+		}
+		if strings.Contains(attemptEcho(long, false), "cut here") {
+			t.Error("a reply that was not cut is described as cut")
+		}
+	})
+
+	t.Run("through the loop, with the captured flask cut", func(t *testing.T) {
+		raw, err := os.ReadFile("testdata/flask_cut_response.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var captured struct{ Deltas []string }
+		if err := json.Unmarshal(raw, &captured); err != nil {
+			t.Fatal(err)
+		}
+		app, err := os.ReadFile("../scripts/fixtures/snake_app.py")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "app.py"), app, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var mu sync.Mutex
+		var prompts []string
+		turn := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/syntax-check"):
+				json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+				return
+			case strings.HasSuffix(r.URL.Path, "/execute"):
+				var in struct{ Code string }
+				json.NewDecoder(r.Body).Decode(&in)
+				out := ""
+				if strings.Contains(in.Code, ".atlas-mount-probe") {
+					b, _ := os.ReadFile(filepath.Join(dir, ".atlas-mount-probe"))
+					out = string(b)
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": out, "exit_code": 0})
+				return
+			case strings.HasPrefix(r.URL.Path, "/v3/"), strings.HasPrefix(r.URL.Path, "/internal/"):
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			case !strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+				http.NotFound(w, r)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			k := turn
+			turn++
+			prompts = append(prompts, string(body))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			send := func(s string) {
+				d, _ := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{{"delta": map[string]string{"content": s}}}})
+				fmt.Fprintf(w, "data: %s\n\n", d)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			if k == 0 {
+				for _, d := range captured.Deltas {
+					send(d)
+				}
+			} else {
+				send(`{"type":"done","summary":"stopping here"}`)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		defer srv.Close()
+
+		ctx := NewAgentContext(dir, Tier2Medium)
+		ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+		ctx.PermissionMode = PermissionYolo
+		ctx.TrustMode = trustFullyTrusted
+		ctx.VerifyOnHost = true
+		if err := runAgentLoop(ctx, "Add a pause toggle to the snake game."); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(prompts) < 2 {
+			t.Fatalf("the loop stopped after %d requests", len(prompts))
+		}
+		var req struct {
+			Messages []struct{ Role, Content string } `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(prompts[1]), &req); err != nil {
+			t.Fatal(err)
+		}
+		last := req.Messages[len(req.Messages)-2:]
+		if last[0].Role != "assistant" {
+			t.Fatalf("the turn before the refusal is %q, not the attempt", last[0].Role)
+		}
+		sent := strings.Join(captured.Deltas, "")
+		if !strings.HasPrefix(sent, string([]rune(last[0].Content)[:cutAttemptKeepRunes])) {
+			t.Error("the echoed attempt is not what the model sent")
+		}
+		if !strings.Contains(last[0].Content, "cut here") {
+			t.Error("the echoed attempt does not say it was cut")
+		}
+		if last[1].Role != "user" || !strings.Contains(last[1].Content, "app.py is unchanged") {
+			t.Errorf("the grounded refusal does not follow the attempt: %q", last[1].Content)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "app.py")); string(got) != string(app) {
+			t.Error("app.py changed")
+		}
+	})
+}

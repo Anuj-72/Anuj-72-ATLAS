@@ -1183,9 +1183,9 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						"turn": turn, "attempt": st.contentLoopRecoveries,
 						"reason": "the model began repeating itself; the stream was cut and it was told why",
 					})
-					ctx.Messages = append(ctx.Messages, AgentMessage{
-						Role: "user", Content: corrective,
-					})
+					ctx.Messages = append(ctx.Messages,
+						AgentMessage{Role: "assistant", Content: attemptEcho(response, true)},
+						AgentMessage{Role: "user", Content: corrective})
 					continue
 				}
 				if salvaged, ok := recoverTruncatedText(response); ok {
@@ -1220,10 +1220,12 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				"error":    "failed to parse model response",
 				"category": category,
 			})
-			ctx.Messages = append(ctx.Messages, AgentMessage{
-				Role:    "user",
-				Content: feedback,
-			})
+			// The attempt goes back in as the assistant turn it was, before
+			// the feedback, so the retry does not resume from the prefix that
+			// produced it (see attemptEcho).
+			ctx.Messages = append(ctx.Messages,
+				AgentMessage{Role: "assistant", Content: attemptEcho(response, ctx.LastStreamCut != "")},
+				AgentMessage{Role: "user", Content: feedback})
 			// Cap parse failures the same way we cap tool failures.
 			// Five identical parse errors in a row is a stuck loop;
 			// bailing keeps us from burning 6 more LLM round-trips.
