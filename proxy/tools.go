@@ -5513,6 +5513,10 @@ func runBackgroundTool() *ToolDef {
 			}
 			if tail.Running {
 				ctx.BackgroundJobs[jobID] = input.Command
+				if ctx.BackgroundJobStarted == nil {
+					ctx.BackgroundJobStarted = map[string]time.Time{}
+				}
+				ctx.BackgroundJobStarted[jobID] = time.Now()
 			}
 			outBytes, _ := json.Marshal(out)
 			// A job that has already exited non-zero did not start. Reporting

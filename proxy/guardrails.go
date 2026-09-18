@@ -899,6 +899,81 @@ func commandNamesPath(command, path string) bool {
 	return false
 }
 
+// coverageFromLiveServer credits a probe with the files whose code is actually
+// answering it.
+//
+// The contradiction this resolves, measured in the cycle-6 regression
+// (flask_pause rep 2, R3): ATLAS tells a run to start a server with
+// run_background and probe it with curl — and then asks for verification
+// evidence that NAMES the deliverable. A probe names no file, so the run
+// probed a live app, was credited with nothing, and finished
+// verification_demanded_unmet. No command can both start a blocking server and
+// return, so the obligation was unreachable by the route ATLAS prescribes.
+//
+// A probe is credited with the files named by a background job that is still
+// running AND was started after those files were last written: that process is
+// running the bytes on disk, and it answered. A job that predates the last
+// edit is serving older code and is credited with nothing — which is the same
+// rule the artifact gate applies to files that change after a verification.
+func coverageFromLiveServer(ctx *AgentContext, command string) map[string]string {
+	covered := map[string]string{}
+	if ctx == nil || len(ctx.BackgroundJobs) == 0 || !isHTTPProbe(command) {
+		return covered
+	}
+	for id, jobCmd := range ctx.BackgroundJobs {
+		started, ok := ctx.BackgroundJobStarted[id]
+		if !ok {
+			continue
+		}
+		for _, p := range changedPathsForCoverage(ctx) {
+			if _, already := covered[p]; already || !commandNamesPath(jobCmd, p) {
+				continue
+			}
+			info, err := os.Stat(p)
+			if err != nil || info.ModTime().After(started) {
+				continue // the file changed after this process started
+			}
+			if h := fileSHA256(ctx, p); h != "" {
+				covered[p] = h
+			}
+		}
+	}
+	return covered
+}
+
+// isHTTPProbe matches a request made against a local service — the shape the
+// verification rejection prescribes for a server.
+func isHTTPProbe(command string) bool {
+	c := strings.ToLower(strings.TrimSpace(command))
+	if !strings.Contains(c, "curl") && !strings.Contains(c, "wget") && !strings.Contains(c, "http") {
+		return false
+	}
+	return strings.Contains(c, "localhost") || strings.Contains(c, "127.0.0.1") || strings.Contains(c, "0.0.0.0")
+}
+
+// staleServingJob names a running job that was started before a file the run
+// has since changed, with that file: probing it would exercise older code.
+func staleServingJob(ctx *AgentContext) (jobID, path string) {
+	if ctx == nil {
+		return "", ""
+	}
+	for id, jobCmd := range ctx.BackgroundJobs {
+		started, ok := ctx.BackgroundJobStarted[id]
+		if !ok {
+			continue
+		}
+		for _, p := range changedPathsForCoverage(ctx) {
+			if !commandNamesPath(jobCmd, p) {
+				continue
+			}
+			if info, err := os.Stat(p); err == nil && info.ModTime().After(started) {
+				return id, filepath.Base(p)
+			}
+		}
+	}
+	return "", ""
+}
+
 // coverageForGreenCommand binds a green run to the files it exercised.
 //
 // Direct naming is the floor: a command that typed a path ran that path. But
@@ -918,7 +993,7 @@ func commandNamesPath(command, path string) bool {
 // is correct; that was never this gate's claim. Code that nothing which ran
 // refers to stays uncovered, and a red run still records nothing at all.
 func coverageForGreenCommand(ctx *AgentContext, command string) map[string]string {
-	covered := map[string]string{}
+	covered := coverageFromLiveServer(ctx, command)
 	candidates := changedPathsForCoverage(ctx)
 	var entries []string
 	for _, p := range candidates {
@@ -2270,13 +2345,13 @@ func freshRewriteAdvice(redStreak int) string {
 // verificationRejectionWithStreak is verificationRejection plus the red-run
 // streak that decides between edit-the-fix and start-over advice.
 func verificationRejectionWithStreak(sawFailedVerification, serverBlocked bool, bgJobID string, redStreak int) string {
-	return verificationRejectionFor(sawFailedVerification, serverBlocked, bgJobID, redStreak, "")
+	return verificationRejectionFor(sawFailedVerification, serverBlocked, bgJobID, redStreak, "", "", "")
 }
 
 // verificationRejectionFor is the rejection with one more fact when the run has
 // one: the probe it already made that could not count, and why.
 func verificationRejectionFor(sawFailedVerification, serverBlocked bool, bgJobID string,
-	redStreak int, headOnlyProbe string) string {
+	redStreak int, headOnlyProbe, staleJob, staleFile string) string {
 	base := ""
 	if !serverBlocked && sawFailedVerification && redStreak > rewriteThreshold {
 		base = "Cannot declare `done` — " + freshRewriteAdvice(redStreak)
@@ -2289,6 +2364,11 @@ func verificationRejectionFor(sawFailedVerification, serverBlocked bool, bgJobID
 	if !serverBlocked && bgJobID != "" {
 		base += fmt.Sprintf("\n\nBackground job %s is running right now — probe it and read what comes back "+
 			"(the body, not just the headers). Verify it before stopping it.", bgJobID)
+	}
+	if staleJob != "" && staleFile != "" {
+		base += fmt.Sprintf("\n\nNote: job %s has been running since before your last change to %s, so it is "+
+			"still serving the older code — probing it would not show your change. Stop it and start it again "+
+			"first.", staleJob, staleFile)
 	}
 	return base
 }

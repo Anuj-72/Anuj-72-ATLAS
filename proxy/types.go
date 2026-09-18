@@ -1080,6 +1080,10 @@ type AgentContext struct {
 	// Tracked so the run_command failure can say which of the model's own
 	// jobs is holding the port.
 	BackgroundJobs map[string]string
+	// BackgroundJobStarted records when each job was started, so evidence can
+	// tell a process that predates the last edit from one that runs the bytes
+	// on disk now.
+	BackgroundJobStarted map[string]time.Time
 
 	// AssetLintSeen dedupes asset-graph lint findings (gates.go) so
 	// a persistent orphan is mentioned once, not after every write.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A background job that already exited did not start.
@@ -57,6 +58,12 @@ func (w *bgWorld) told(phrase string) bool {
 // start does, the way installing a dependency would.
 func startBgWorld(t *testing.T, files map[string]string, script []string,
 	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool)) *bgWorld {
+	return startBgWorldWith(t, files, script, jobFor, nil)
+}
+
+func startBgWorldWith(t *testing.T, files map[string]string, script []string,
+	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool),
+	setup func(*AgentContext)) *bgWorld {
 	t.Helper()
 	w := &bgWorld{dir: t.TempDir(), terminal: map[string]string{}}
 	for name, body := range files {
@@ -170,6 +177,9 @@ func startBgWorld(t *testing.T, files map[string]string, script []string,
 		for k, v := range m {
 			w.terminal[k] = fmt.Sprint(v)
 		}
+	}
+	if setup != nil {
+		setup(ctx)
 	}
 	if err := runAgentLoop(ctx, "In app.py, add a pause toggle. Then verify the app still starts."); err != nil {
 		t.Fatal(err)
@@ -424,5 +434,116 @@ func TestAVerifiedRunIsStillToldToStopItsJob(t *testing.T) {
 		func(string, *bgWorld) ([]string, int, bool) { return nil, 0, true })
 	if !w.told("still running") {
 		t.Error("a run that left a job running was never told to stop it")
+	}
+}
+
+// The lifecycle, end to end: start, verify, repair, re-verify, clean up, stop.
+//
+// Reconstructed from the cycle-6 R3 flask_pause rep 2 trace. The run started
+// the app, probed it, then made the edit the task actually needed — the game
+// loop honouring the pause flag — and probed again. Its second probe hit the
+// SAME process, started before that edit, so it exercised the older code; the
+// run ended verification_demanded_unmet with the right bytes on disk. Two
+// existing rules disagreed: the gate prescribes "start it with run_background,
+// probe it with curl", while the work contract wants evidence that NAMES the
+// deliverable, which no probe does.
+//
+// A probe is now credited with the files a still-running job was started from,
+// and only when that job started AFTER those files were last written. A job
+// that predates the change is named as stale instead.
+
+func serverWorld(t *testing.T, script []string) *bgWorld {
+	t.Helper()
+	return startBgWorldWith(t, map[string]string{"app.py": importsMissing, "requirements.txt": "flask\n"},
+		script, func(cmd string, w *bgWorld) ([]string, int, bool) { return nil, 0, true },
+		func(ctx *AgentContext) { contractWork(t, ctx) })
+}
+
+// contractWork is the task contract the reliability runner sends: {"task_mode":
+// "work"} and nothing else.
+func contractWork(t *testing.T, ctx *AgentContext) {
+	t.Helper()
+	tc, err := validateTaskContract(&TaskContract{TaskMode: TaskModeWork}, ctx.WorkingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx.TaskContract = tc
+}
+
+// A probe against a server started after the last edit finishes the task: the
+// run verifies, is told to stop its job, stops it, and completes.
+func TestAProbeAgainstCurrentCodeFinishesTheTask(t *testing.T) {
+	w := serverWorld(t, []string{
+		toolCall("read_file", map[string]interface{}{"path": "app.py"}),
+		toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause\n"}),
+		toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+		toolCall("stop_background", map[string]interface{}{"job_id": "job1"}),
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+	})
+	if w.told("has been running since before your last change") {
+		t.Error("a server started after the edit was called stale")
+	}
+	if w.terminal["reason"] == "verification_demanded_unmet" {
+		t.Errorf("a verified, cleaned-up run still reported %v", w.terminal)
+	}
+}
+
+// A probe against a server that predates the last edit does not finish it: the
+// run is told the job is stale and why, and completion is still refused.
+func TestAProbeAgainstStaleCodeDoesNotFinishTheTask(t *testing.T) {
+	w := serverWorld(t, []string{
+		toolCall("read_file", map[string]interface{}{"path": "app.py"}),
+		toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		// the edit the task actually needed, made after the server started
+		toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause honoured\n"}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		`{"type":"done","summary":"the pause toggle works"}`,
+		`{"type":"done","summary":"the pause toggle works"}`,
+		`{"type":"done","summary":"the pause toggle works"}`,
+		`{"type":"done","summary":"the pause toggle works"}`,
+	})
+	if !w.told("has been running since before your last change") {
+		t.Error("the run was never told its server predates its change")
+	}
+	if !w.told("Stop it and start it again") {
+		t.Error("the run was not told what to do about it")
+	}
+	if w.terminal["status"] == "completed" {
+		t.Errorf("a probe against stale code completed the run: %v", w.terminal)
+	}
+}
+
+// Coverage is credited from the job, not from the probe's text, and only for
+// files that job was started from.
+func TestLiveServerCoverageIsScopedToItsOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"app.py", "other.py"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x = 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.RecordFileRead(filepath.Join(dir, "app.py"), "x = 1\n")
+	ctx.RecordBodySeen(filepath.Join(dir, "app.py"))
+	ctx.BackgroundJobs = map[string]string{"j1": "python app.py"}
+	ctx.BackgroundJobStarted = map[string]time.Time{"j1": time.Now().Add(time.Minute)} // started after the write
+	cov := coverageFromLiveServer(ctx, "curl -s http://127.0.0.1:5001/")
+	for p := range cov {
+		if strings.HasSuffix(p, "other.py") {
+			t.Errorf("a file the job was not started from was credited: %v", cov)
+		}
+	}
+	// A job started BEFORE the file's last write credits nothing.
+	ctx.BackgroundJobStarted = map[string]time.Time{"j1": time.Now().Add(-time.Hour)}
+	if len(coverageFromLiveServer(ctx, "curl -s http://127.0.0.1:5001/")) != 0 {
+		t.Error("a stale job was credited with coverage")
+	}
+	// A command that is not a local probe credits nothing.
+	ctx.BackgroundJobStarted = map[string]time.Time{"j1": time.Now().Add(time.Minute)}
+	if len(coverageFromLiveServer(ctx, "pytest -q")) != 0 {
+		t.Error("a non-probe command was credited with live-server coverage")
 	}
 }

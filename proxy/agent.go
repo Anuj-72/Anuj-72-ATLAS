@@ -339,6 +339,10 @@ type runState struct {
 	// headOnlyProbe is the last successful headers-only probe this run made.
 	// Such a probe is not verification; naming it is how the run learns that.
 	headOnlyProbe string
+	// lastVerifyWasLocalProbe records that the verification this loop holds
+	// came from probing a local service rather than from running the artifact.
+	// Such a probe only speaks for the process that answered it.
+	lastVerifyWasLocalProbe bool
 	// Set when a verification command RAN AND FAILED and none has
 	// succeeded since. Observed session state, not a guess about the
 	// request: once a test has gone red in this loop, declaring done is
@@ -670,8 +674,27 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	if (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop && s.chargeBounce("verification_gate") {
 		log.Printf("[agent] verification gate: bouncing exit at turn %d (trigger=%s, no successful verification command this loop, bounce %d/%d)",
 			s.turn, gateTrigger(s.userWantsVerification, s.sawFailedVerification), s.gateBounces["verification_gate"], maxGateBounces)
+		staleJob, staleFile := staleServingJob(ctx)
+		if staleJob != "" {
+			log.Printf("[agent] job %s predates the last change to %s — probing it would not show it", staleJob, staleFile)
+		}
 		return "verification_gate", verificationRejectionFor(
-			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak, s.headOnlyProbe)
+			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak,
+			s.headOnlyProbe, staleJob, staleFile)
+	}
+	// Verified, but the work contract says the deliverable itself is not
+	// covered — and a job that predates the last change to it explains why.
+	// finalizeCompletion would refuse this exit with
+	// verification_demanded_unmet and no chance to act; the same fact is worth
+	// one bounce, out of the verification gate's own budget, so the run can
+	// restart the process and probe the code it actually wrote. Measured on
+	// flask_pause rep 2 (cycle 6, R3).
+	if s.verifiedThisLoop && s.lastVerifyWasLocalProbe {
+		if staleJob, staleFile := staleServingJob(ctx); staleJob != "" && s.chargeBounce("verification_gate") {
+			log.Printf("[agent] the probe that verified this loop hit job %s, started before the last change to %s (bounce %d/%d)",
+				staleJob, staleFile, s.gateBounces["verification_gate"], maxGateBounces)
+			return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
+		}
 	}
 	// Steps the plan named and no tool call ever satisfied. Same shape as the
 	// verification gate: a fact the run already holds, used at the exit
@@ -2511,6 +2534,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							truncateStr(rc.Command, 60))
 					} else if result.Success {
 						st.verifiedThisLoop = true
+						st.lastVerifyWasLocalProbe = isHTTPProbe(rc.Command)
 						ctx.VerifiedThisRun = true
 						st.sawFailedVerification = false
 						st.redRunStreak = 0
