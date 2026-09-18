@@ -336,6 +336,9 @@ type runState struct {
 	// rewrite, and sessions here were observed re-running a broken program
 	// five times while nibbling at it with edits.
 	redRunStreak int
+	// headOnlyProbe is the last successful headers-only probe this run made.
+	// Such a probe is not verification; naming it is how the run learns that.
+	headOnlyProbe string
 	// Set when a verification command RAN AND FAILED and none has
 	// succeeded since. Observed session state, not a guess about the
 	// request: once a test has gone red in this loop, declaring done is
@@ -654,8 +657,8 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	if (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop && s.chargeBounce("verification_gate") {
 		log.Printf("[agent] verification gate: bouncing exit at turn %d (trigger=%s, no successful verification command this loop, bounce %d/%d)",
 			s.turn, gateTrigger(s.userWantsVerification, s.sawFailedVerification), s.gateBounces["verification_gate"], maxGateBounces)
-		return "verification_gate", verificationRejectionWithStreak(
-			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak)
+		return "verification_gate", verificationRejectionFor(
+			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak, s.headOnlyProbe)
 	}
 	// Steps the plan named and no tool call ever satisfied. Same shape as the
 	// verification gate: a fact the run already holds, used at the exit
@@ -2469,6 +2472,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// gate stops blocking `done`.
 			if parsed.Name == "run_command" {
 				var rc RunCommandInput
+				if json.Unmarshal(parsed.Args, &rc) == nil && result.Success && isHeadOnlyProbe(rc.Command) {
+					log.Printf("[agent] headers-only probe does not verify: %q", truncateStr(rc.Command, 60))
+					st.headOnlyProbe = rc.Command
+				}
 				if json.Unmarshal(parsed.Args, &rc) == nil &&
 					(isVerificationCommand(rc.Command) || contractRequiresCommand(ctx, rc.Command)) {
 					if result.Success && silentRunWhenOutputPromised(ctx, userMessage, rc.Command, result.Data) {

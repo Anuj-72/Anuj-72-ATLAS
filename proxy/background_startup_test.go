@@ -318,3 +318,53 @@ func TestATLASRunsNoInstallOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// A headers-only probe still does not verify — and now the run is told why.
+//
+// Measured (cycle 6, both flask_pause sessions): after installing the missing
+// dependency and starting the app, the run probed it with `curl -I`, got
+// HTTP 200, and the probe was declined in silence because a HEAD response
+// cannot show that the page works. Both sessions repeated the probe and ended
+// verification_demanded_unmet with working code on disk. The safeguard is
+// unchanged; the silence is not.
+func TestAHeadersOnlyProbeIsDeclinedOutLoud(t *testing.T) {
+	if isVerificationCommand("curl -I http://127.0.0.1:5001") {
+		t.Fatal("precondition changed: a HEAD probe now counts as verification")
+	}
+	if !isHeadOnlyProbe("curl -I http://127.0.0.1:5001") || isHeadOnlyProbe("curl http://127.0.0.1:5001/") {
+		t.Fatal("head-only detection is wrong")
+	}
+	w := startBgWorld(t, map[string]string{"app.py": importsMissing, "requirements.txt": "flask\n"},
+		[]string{
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			toolCall("run_command", map[string]interface{}{"command": "pip install -r requirements.txt", "timeout": 120}),
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			toolCall("run_command", map[string]interface{}{"command": "curl -I http://127.0.0.1:5001", "timeout": 10}),
+			`{"type":"done","summary":"the app serves"}`,
+			`{"type":"done","summary":"the app serves"}`,
+			`{"type":"done","summary":"the app serves"}`,
+			`{"type":"done","summary":"the app serves"}`},
+		crashingStart("flask"))
+	if !w.told("asked for headers only") || !w.told("does not count as a") {
+		t.Error("the run was never told why its probe did not count")
+	}
+	if w.terminal["status"] == "completed" {
+		t.Errorf("a headers-only probe opened the gate: %v", w.terminal)
+	}
+}
+
+// A probe that fetches the body still verifies, and the run completes.
+func TestABodyProbeStillVerifies(t *testing.T) {
+	w := startBgWorld(t, map[string]string{"app.py": importsMissing, "requirements.txt": "flask\n"},
+		[]string{
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			toolCall("run_command", map[string]interface{}{"command": "pip install -r requirements.txt", "timeout": 120}),
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+			toolCall("stop_background", map[string]interface{}{"job_id": "job2"}),
+			`{"type":"done","summary":"installed the dependency; the app serves"}`},
+		crashingStart("flask"))
+	if w.told("asked for headers only") {
+		t.Error("a body probe was treated as headers-only")
+	}
+}

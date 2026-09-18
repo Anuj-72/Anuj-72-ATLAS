@@ -1870,6 +1870,28 @@ var verificationCommandRe = regexp.MustCompile(
 // returns false — listing a directory doesn't tell you the code
 // works. Build/test/run/curl returns true: those exercise the code
 // path and a clean exit means something.
+// isHeadOnlyProbe reports a probe that fetches headers and no body. Such a
+// probe is not verification (see isVerificationCommand) — this says so out
+// loud instead of declining in silence.
+//
+// Measured (stabilization cycle 6, both flask_pause sessions): the run
+// installed the missing dependency, started the app, and probed it with
+// `curl -I`, which answered HTTP 200. The probe was declined, nothing said
+// why, the run repeated it, and both sessions ended
+// verification_demanded_unmet with working code on disk.
+func isHeadOnlyProbe(cmd string) bool {
+	c := strings.TrimSpace(cmd)
+	return verificationCommandRe.MatchString(c) && headOnlyProbeRe.MatchString(c)
+}
+
+// headOnlyProbeNote explains the decline in one sentence, without prescribing
+// a command to paste.
+func headOnlyProbeNote(cmd string) string {
+	return fmt.Sprintf("Your probe `%s` asked for headers only. A HEAD response shows the server answered; "+
+		"it cannot show that the page or endpoint does the right thing, so it does not count as a "+
+		"verification. Request the body instead and check what comes back.", truncateStr(strings.TrimSpace(cmd), 60))
+}
+
 func isVerificationCommand(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if !verificationCommandRe.MatchString(c) {
@@ -2248,10 +2270,23 @@ func freshRewriteAdvice(redStreak int) string {
 // verificationRejectionWithStreak is verificationRejection plus the red-run
 // streak that decides between edit-the-fix and start-over advice.
 func verificationRejectionWithStreak(sawFailedVerification, serverBlocked bool, bgJobID string, redStreak int) string {
+	return verificationRejectionFor(sawFailedVerification, serverBlocked, bgJobID, redStreak, "")
+}
+
+// verificationRejectionFor is the rejection with one more fact when the run has
+// one: the probe it already made that could not count, and why.
+func verificationRejectionFor(sawFailedVerification, serverBlocked bool, bgJobID string,
+	redStreak int, headOnlyProbe string) string {
+	base := ""
 	if !serverBlocked && sawFailedVerification && redStreak > rewriteThreshold {
-		return "Cannot declare `done` — " + freshRewriteAdvice(redStreak)
+		base = "Cannot declare `done` — " + freshRewriteAdvice(redStreak)
+	} else {
+		base = verificationRejection(sawFailedVerification, serverBlocked, bgJobID)
 	}
-	return verificationRejection(sawFailedVerification, serverBlocked, bgJobID)
+	if headOnlyProbe != "" {
+		base += "\n\n" + headOnlyProbeNote(headOnlyProbe)
+	}
+	return base
 }
 
 func verificationRejection(sawFailedVerification, serverBlocked bool, bgJobID string) string {
