@@ -23,6 +23,9 @@ from stages.llm_client import chatml_to_messages
 INFERENCE_URL = os.environ.get("ATLAS_INFERENCE_URL", "http://localhost:8080")
 LENS_URL = os.environ.get("ATLAS_LENS_URL", "http://localhost:8099")
 SANDBOX_URL = os.environ.get("ATLAS_SANDBOX_URL", "http://localhost:30820")
+# Where the sandbox mounts the workspace. A caller's absolute path is made
+# relative to this before it is sent; see _sandbox_safe_filename.
+SANDBOX_WORKSPACE_ROOT = os.environ.get("ATLAS_SANDBOX_WORKSPACE", "/workspace")
 
 
 def _max_inflight() -> int:
@@ -730,6 +733,48 @@ class ClientDisconnected(Exception):
 
 # --- Sandbox Adapter (calls sandbox /execute) ---------------------------------
 
+def _sandbox_safe_filename(filename: str) -> Optional[str]:
+    """The relative name the sandbox will accept, or None when none exists.
+
+    The sandbox refuses an absolute path, a backslash-rooted one, or one
+    containing ".." -- _safe_overlay_path raises HTTP 400 -- and this boundary
+    used to forward the caller's spelling unchanged. The proxy relativises at
+    its own sandbox boundary for exactly this reason (proxy/gates.go,
+    workspaceRelativeName); this one did not. The proxy sends V3 a RESOLVED
+    absolute file_path, so the filename reaching here was always absolute, and
+    every candidate came back "syntax verification unavailable: HTTP Error 400:
+    Bad Request" -- a verification that never ran, reported as a candidate that
+    failed. Measured live on an exposed task 2026-09-18: 3 of 3 candidates
+    failed that way, the pipeline proposed nothing, and ~4 minutes of the
+    session's budget bought a result that could not have been otherwise.
+
+    Relativised here, at the one boundary that talks to the sandbox, so every
+    caller is fixed at once. When no safe relative form exists the filename is
+    omitted and the check still runs: that only forgoes the path-scoped checks
+    (the Jinja-template scoping, which keys off a "templates/" segment), which
+    is exactly what happens today for a caller that supplies no filename.
+
+    This never decides anything about the code. It decides whether the sandbox
+    is asked at all, and the sandbox still returns the verdict.
+    """
+    name = (filename or "").strip().replace("\\", "/")
+    if not name:
+        return None
+    root = (SANDBOX_WORKSPACE_ROOT or "").rstrip("/")
+    if name.startswith("/"):
+        # Only a path under the workspace has a relative form that means the
+        # same thing there. Anything else absolute is refused rather than
+        # rebased, which is what the proxy's workspaceRelativeName does when
+        # filepath.Rel escapes the working directory.
+        if not root or not name.startswith(root + "/"):
+            return None
+        name = name[len(root) + 1:]
+    parts = [p for p in name.split("/") if p and p != "."]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    return "/".join(parts)
+
+
 class SandboxAdapter:
     """Calls the sandbox service for code execution.
 
@@ -806,7 +851,7 @@ class SandboxAdapter:
         body = {
             "code": code,
             "language": language,
-            "filename": filename or None,
+            "filename": _sandbox_safe_filename(filename),
         }
         try:
             req = urllib.request.Request(
