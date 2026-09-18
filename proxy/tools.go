@@ -5515,6 +5515,18 @@ func runBackgroundTool() *ToolDef {
 				ctx.BackgroundJobs[jobID] = input.Command
 			}
 			outBytes, _ := json.Marshal(out)
+			// A job that has already exited non-zero did not start. Reporting
+			// that as a success is how the failure got lost: measured on
+			// flask_pause (cycles 3-5), `python app.py` exited 1 inside the
+			// settle window with ModuleNotFoundError in its stderr, the result
+			// came back success=true with no error, and the run went on to
+			// probe a port nothing was listening on -- three times, then gave
+			// up. run_command reports a failing command as a failure; so does
+			// this now.
+			if !tail.Running && tail.ExitCode != nil && *tail.ExitCode != 0 {
+				return &ToolResult{Success: false, Data: outBytes,
+					Error: immediateExitMessage(ctx, input.Command, out)}, nil
+			}
 			return &ToolResult{Success: true, Data: outBytes}, nil
 		},
 	}
@@ -6450,4 +6462,78 @@ func prefixedEditRefusal(path, content, match, oldStr, newStr string) string {
 			path, first, last, strings.TrimSpace(lines[first-1]), strings.TrimSpace(lines[last-1]))
 	}
 	return sb.String()
+}
+
+// missingModulePatterns recognise "this environment does not have X" across the
+// runtimes the sandbox carries. The name is echoed from the program's own
+// output; nothing here installs anything or builds a command from it.
+var missingModulePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`ModuleNotFoundError: No module named '([^']+)'`),
+	regexp.MustCompile(`ImportError: cannot import name '([^']+)'`),
+	regexp.MustCompile(`Error: Cannot find module '([^']+)'`),
+	regexp.MustCompile(`cannot find package "([^"]+)"`),
+	regexp.MustCompile(`LoadError: cannot load such file -- (\S+)`),
+}
+
+// dependencyManifests are the ordinary places a project says what it needs.
+var dependencyManifests = []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py",
+	"package.json", "go.mod", "Gemfile", "Cargo.toml"}
+
+// immediateExitMessage reports a job that exited before it could serve
+// anything, in the words of its own output.
+func immediateExitMessage(ctx *AgentContext, command string, out RunBackgroundOutput) string {
+	var sb strings.Builder
+	code := 0
+	if out.ExitCode != nil {
+		code = *out.ExitCode
+	}
+	fmt.Fprintf(&sb, "`%s` exited immediately with status %d — nothing is running, so there is nothing to probe.",
+		truncateStr(command, 80), code)
+	if tail := strings.TrimSpace(strings.Join(lastLines(out.Stderr, 4), "\n")); tail != "" {
+		fmt.Fprintf(&sb, "\n\nIts last output:\n%s", tail)
+	} else if tail := strings.TrimSpace(strings.Join(lastLines(out.Stdout, 4), "\n")); tail != "" {
+		fmt.Fprintf(&sb, "\n\nIts last output:\n%s", tail)
+	}
+	if missing := missingModuleFrom(out.Stderr); missing != "" {
+		fmt.Fprintf(&sb, "\n\nNothing named %q is importable in this environment.", missing)
+		if declared := declaredDependencyFiles(ctx); len(declared) > 0 {
+			fmt.Fprintf(&sb, " This project declares its dependencies in %s — installing from that file is "+
+				"a supported step here.", strings.Join(declared, " and "))
+		} else {
+			sb.WriteString(" No file in this workspace declares it, so either the code should not import it, " +
+				"or it has to be installed before the program can run. Installing is a supported step here; " +
+				"decide which is right for this task and say what you did.")
+		}
+	}
+	return sb.String()
+}
+
+func missingModuleFrom(lines []string) string {
+	joined := strings.Join(lines, "\n")
+	for _, re := range missingModulePatterns {
+		if m := re.FindStringSubmatch(joined); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+func declaredDependencyFiles(ctx *AgentContext) []string {
+	if ctx == nil || ctx.WorkingDir == "" {
+		return nil
+	}
+	var found []string
+	for _, name := range dependencyManifests {
+		if st, err := os.Stat(filepath.Join(ctx.WorkingDir, name)); err == nil && !st.IsDir() {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
+func lastLines(lines []string, n int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
 }
