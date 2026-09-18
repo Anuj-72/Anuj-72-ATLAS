@@ -1556,9 +1556,9 @@ func writeNewFileWithWarning(path, inputPath, content, synErr string, ctx *Agent
 	out := WriteFileOutput{
 		BytesWritten: len(content),
 		Warning: fmt.Sprintf(
-			"written, but it does not parse (%s). Run it now and read the "+
+			"written, but it does not parse (%s).%s Run it now and read the "+
 				"real traceback, then fix that line and write it again.",
-			truncateStr(synErr, 160)),
+			truncateStr(synErr, 160), offendingLineNote(content, synErr)),
 	}
 	outBytes, _ := json.Marshal(out)
 	res.Data = outBytes
@@ -6576,4 +6576,51 @@ func currentSpanNote(path, content, text string) string {
 		note += "."
 	}
 	return note
+}
+
+// syntaxErrorLineRe finds the line number a parser reported, in the shapes the
+// sandbox checkers produce ("(line 33)", "line 33", "app.py:33:").
+var syntaxErrorLineRe = regexp.MustCompile(`(?:\bline\s+(\d+)|:(\d+):)`)
+
+// offendingLineNote quotes the line a parse failure names.
+//
+// Measured (family P, cycle 9): the warning said `unmatched ')' (line 33)` and
+// the run rewrote the whole file six times over 530 s, each version carrying
+// the same error at the same line, without ever running it. The line it needed
+// to look at was `@app.route('/items', methods=['GET']))` — one paren too
+// many, visible at a glance and never shown. The number alone asks the model
+// to find the line in a file it is reproducing from memory.
+//
+// Information only: nothing is rejected, retried or repaired here, and the
+// write still lands with its warning as before.
+func offendingLineNote(content, synErr string) string {
+	m := syntaxErrorLineRe.FindStringSubmatch(synErr)
+	if m == nil {
+		return ""
+	}
+	num := m[1]
+	if num == "" {
+		num = m[2]
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || n <= 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if n > len(lines) {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(" That line is:\n")
+	for i := n - 1; i <= n+1 && i <= len(lines); i++ {
+		if i < 1 {
+			continue
+		}
+		marker := "  "
+		if i == n {
+			marker = "> "
+		}
+		fmt.Fprintf(&sb, "%s%d\t%s\n", marker, i, truncateStr(lines[i-1], 160))
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }

@@ -3641,14 +3641,19 @@ func requirementShown(ctx *AgentContext, req requestedRequirement) bool {
 // unshownRequirements lists what the request asked for that this run never
 // exercised. Empty when the request names nothing checkable.
 //
-// Scope, deliberately narrow and set by what the evidence can mean: it applies
-// only when the run delivered something executable AND the only behavioural
-// evidence it holds is a probe against a service it started. That is the
-// measured case (family O, cycle 8): an HTTP 200 shows the endpoint that was
-// asked for answered, and says nothing about the other things the request
-// named. A run that executed its deliverable end to end has exercised what
-// that program does, and a run that delivered only declarative artifacts has
-// nothing to execute — neither is second-guessed here.
+// Scope, deliberately narrow: it applies only when the run delivered something
+// executable AND the only behavioural evidence it holds is a probe against a
+// service it started. That is the measured case (family O, cycle 8): an HTTP
+// 200 shows the endpoint that answered, and says nothing about the other
+// things the request named.
+//
+// The exclusions are limits of this check, NOT findings of fulfilment.
+// Executing a deliverable verifies the behaviour that execution exercised and
+// no more: a program can run clean and still ignore half of what was asked. A
+// declarative artifact has nothing to execute and can still violate the
+// request. A sentence whose verb this does not recognise is simply unchecked.
+// In each case the run is left alone because this check has nothing
+// trustworthy to say — never because the requirement was shown.
 func unshownRequirements(ctx *AgentContext, userMessage string) []requestedRequirement {
 	if len(codeDeliverablesFor(ctx, nil)) == 0 || !onlyProbeEvidence(ctx) {
 		return nil
@@ -3713,9 +3718,9 @@ func ranSomethingCurrent(ctx *AgentContext) bool {
 }
 
 // executedADeliverable reports whether a current verification RAN a file this
-// session wrote, rather than probing a service it started. Running the program
-// exercises what the program computes; a request against a server exercises
-// the one endpoint it asked for.
+// session wrote, rather than probing a service it started. Neither establishes
+// that the request was fulfilled: it only decides whether this check has
+// anything trustworthy to say about the run.
 func executedADeliverable(ctx *AgentContext) bool {
 	for _, rec := range ctx.VerificationEvidence {
 		covered, current := evidenceIsCurrent(ctx, rec)
