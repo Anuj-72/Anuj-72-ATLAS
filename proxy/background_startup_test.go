@@ -156,6 +156,7 @@ func startBgWorld(t *testing.T, files map[string]string, script []string,
 	ctx := NewAgentContext(w.dir, Tier2Medium)
 	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
 	ctx.PermissionMode = PermissionYolo
+	ctx.YoloMode = true // as the request boundary sets it for mode=yolo
 	ctx.TrustMode = trustFullyTrusted
 	ctx.StreamFn = func(et string, data interface{}) {
 		if et != "done" {
@@ -366,5 +367,62 @@ func TestABodyProbeStillVerifies(t *testing.T) {
 		crashingStart("flask"))
 	if w.told("asked for headers only") {
 		t.Error("a body probe was treated as headers-only")
+	}
+}
+
+// Verification comes before the demand to stop the server it needs.
+//
+// Measured (cycle 6, flask_pause rep 2): the run installed the dependency,
+// started the app, tried to finish, was told to stop the job, stopped it — and
+// was then bounced three times for having no successful verification, which
+// now required a server that was down. It ended verification_demanded_unmet
+// with a working app on disk.
+func TestVerificationIsAskedForBeforeTheServerIsStopped(t *testing.T) {
+	w := startBgWorld(t, map[string]string{"app.py": importsMissing, "requirements.txt": "flask\n"},
+		[]string{
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			toolCall("run_command", map[string]interface{}{"command": "pip install -r requirements.txt", "timeout": 120}),
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			`{"type":"done","summary":"the app serves"}`, // premature: verification is owed
+			toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+			`{"type":"done","summary":"installed the dependency; the app serves"}`,
+			toolCall("stop_background", map[string]interface{}{"job_id": "job2"}),
+			`{"type":"done","summary":"installed the dependency; the app serves"}`},
+		crashingStart("flask"))
+	if !w.told("is running right now") {
+		t.Error("the run was not pointed at the job it had running")
+	}
+	// The stop demand must not be what it hears while verification is owed.
+	firstStop, firstVerify := -1, -1
+	w.mu.Lock()
+	for i, p := range w.prompts {
+		if firstStop < 0 && strings.Contains(p, "stop_background") && strings.Contains(p, "still running") {
+			firstStop = i
+		}
+		if firstVerify < 0 && strings.Contains(p, "haven't verified the change") {
+			firstVerify = i
+		}
+	}
+	w.mu.Unlock()
+	if firstStop >= 0 && firstVerify >= 0 && firstStop < firstVerify {
+		t.Errorf("the stop was demanded (request %d) before verification (request %d)", firstStop, firstVerify)
+	}
+}
+
+// Once verification has landed, the stop demand still fires: nothing is left
+// running at completion.
+func TestAVerifiedRunIsStillToldToStopItsJob(t *testing.T) {
+	w := startBgWorld(t, map[string]string{"app.py": "print('ok')\n"},
+		[]string{
+			toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause\n"}),
+			toolCall("run_command", map[string]interface{}{"command": "python app.py", "timeout": 30}),
+			toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+			`{"type":"done","summary":"it runs"}`,
+			`{"type":"done","summary":"it runs"}`,
+			`{"type":"done","summary":"it runs"}`,
+			`{"type":"done","summary":"it runs"}`},
+		func(string, *bgWorld) ([]string, int, bool) { return nil, 0, true })
+	if !w.told("still running") {
+		t.Error("a run that left a job running was never told to stop it")
 	}
 }

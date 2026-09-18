@@ -629,7 +629,20 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// told, and asked to stop it. Observed 2026-09-14: a working web app was
 	// reported as unfinished because the server that verified it was left
 	// running.
-	if live := settleBackgroundHazard(ctx); len(live) > 0 && s.chargeBounce("background_gate") {
+	//
+	// Order matters, and it was wrong. Measured (stabilization cycle 6,
+	// flask_pause rep 2): the run installed the missing dependency, started
+	// the app, and tried to finish; this gate demanded the job be stopped; the
+	// run stopped it; and the verification gate below then demanded a
+	// verification that needed the server, which was now down. It bounced
+	// three times and the run ended verification_demanded_unmet with a working
+	// app on disk. While verification is still owed, the running job is the
+	// thing to verify AGAINST, so this gate yields to the one below. Nothing
+	// is weakened: once verification lands, this gate fires, and
+	// finalizeCompletion still refuses completion while a job of the run's own
+	// is live.
+	verificationOwed := (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop
+	if live := settleBackgroundHazard(ctx); len(live) > 0 && !verificationOwed && s.chargeBounce("background_gate") {
 		log.Printf("[agent] background gate: %d job(s) still running at exit (bounce %d/%d)",
 			len(live), s.gateBounces["background_gate"], maxGateBounces)
 		return "background_gate", backgroundStopMessage(ctx, live)

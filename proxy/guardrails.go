@@ -2286,6 +2286,10 @@ func verificationRejectionFor(sawFailedVerification, serverBlocked bool, bgJobID
 	if headOnlyProbe != "" {
 		base += "\n\n" + headOnlyProbeNote(headOnlyProbe)
 	}
+	if !serverBlocked && bgJobID != "" {
+		base += fmt.Sprintf("\n\nBackground job %s is running right now — probe it and read what comes back "+
+			"(the body, not just the headers). Verify it before stopping it.", bgJobID)
+	}
 	return base
 }
 
