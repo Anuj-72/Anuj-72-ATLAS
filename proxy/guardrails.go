@@ -3464,3 +3464,286 @@ func doubledEscapeBody(path, v string) bool {
 	}
 	return true
 }
+
+// --- requested behaviour, and whether this run showed it ---------------------
+//
+// The completion claim is meant to say "ATLAS delivered the requested work and
+// has evidence for that". `deliverables_demonstrated` said something narrower:
+// the files this run wrote exist and pass the syntax contract.
+//
+// Measured (stabilization cycle 8, family O). The request asked for a standup
+// page, entries visible together, still there tomorrow, and "i want to be able
+// to look back at yesterdays". The run wrote three files, started the server,
+// posted an entry and listed it — real behavioural evidence for posting and
+// listing — and nothing in the session ever exercised looking back at an
+// earlier day. It finished `completed / deliverables_demonstrated` in 245 s,
+// and the clean room found no way to retrieve a past day at all.
+//
+// What follows relates the user's own sentences to what the run exercised. It
+// is fallible in both directions by construction: a requirement phrased
+// without a verb this recognises is not checked, and a sentence that is not a
+// requirement can be picked up. So it never concludes that a behaviour is
+// BROKEN — only that this run did not show it — and it never invents evidence.
+// The plan plays no part: a generated plan cannot remove a requirement the
+// user stated, and cannot add one.
+
+// requirementVerbs are the ordinary words for something a run could exercise.
+// Deliberately small: a sentence without one of these is left unchecked rather
+// than guessed at.
+var requirementVerbs = map[string]bool{
+	"add": true, "post": true, "posts": true, "save": true, "store": true, "load": true,
+	"list": true, "show": true, "display": true, "see": true, "view": true, "look": true,
+	"search": true, "filter": true, "sort": true, "print": true, "prints": true, "return": true,
+	"returns": true, "run": true, "runs": true, "start": true, "starts": true, "track": true,
+	"check": true, "checks": true, "retrieve": true, "support": true, "supports": true,
+	"handle": true, "handles": true, "send": true, "fetch": true, "read": true, "reads": true,
+	"write": true, "writes": true, "create": true, "delete": true, "remove": true, "update": true,
+	"refuse": true, "prevent": true, "pause": true, "resume": true, "toggle": true,
+}
+
+// requirementStopWords are words too common to distinguish one requirement from
+// another; a sentence whose only content is these is not checkable.
+var requirementStopWords = map[string]bool{
+	"that": true, "this": true, "with": true, "from": true, "into": true, "have": true,
+	"want": true, "like": true, "need": true, "should": true, "would": true, "could": true,
+	"please": true, "then": true, "when": true, "what": true, "they": true, "them": true,
+	"their": true, "there": true, "here": true, "just": true, "also": true, "keep": true,
+	"make": true, "some": true, "each": true, "every": true, "still": true, "able": true,
+	"code": true, "file": true, "files": true, "small": true, "simple": true, "little": true,
+	"thing": true, "work": true, "works": true, "working": true, "dont": true, "does": true,
+}
+
+// requestedRequirement is one sentence of the user's request that names
+// something a run could exercise.
+type requestedRequirement struct {
+	Text   string   // the user's own words, for the summary
+	Tokens []string // distinctive content words to look for in the evidence
+	// RunIsEnough marks a sentence that asks only for the artifact to be run
+	// or checked; running it is the evidence it asks for.
+	RunIsEnough bool
+}
+
+// requestedRequirements splits the request into sentences and keeps those that
+// ask for something exercisable. The user's message is the only source.
+func requestedRequirements(userMessage string) []requestedRequirement {
+	var out []requestedRequirement
+	for _, sentence := range splitRequestSentences(userMessage) {
+		words := strings.FieldsFunc(strings.ToLower(sentence), func(r rune) bool {
+			return !(r == '_' || r == '.' || r == '/' || r == '-' ||
+				(r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+		})
+		hasVerb, runOnly, otherVerb := false, false, false
+		var tokens []string
+		for _, w := range words {
+			w = strings.Trim(w, ".-/")
+			if requirementVerbs[w] {
+				hasVerb = true
+				if executionVerbs[w] {
+					runOnly = true
+				} else {
+					otherVerb = true
+				}
+			}
+			if len(w) >= 4 && !requirementStopWords[w] && !requirementVerbs[w] {
+				tokens = append(tokens, w)
+			}
+		}
+		if !hasVerb || len(tokens) == 0 {
+			continue // not checkable: left alone rather than guessed at
+		}
+		if len(tokens) > 8 {
+			tokens = tokens[:8]
+		}
+		out = append(out, requestedRequirement{Text: strings.TrimSpace(sentence), Tokens: tokens,
+			RunIsEnough: runOnly && !otherVerb})
+		if len(out) == 6 {
+			break
+		}
+	}
+	return out
+}
+
+func splitRequestSentences(msg string) []string {
+	// A '.' only ends a sentence when it is not inside a word: splitting on
+	// every dot shredded "solve.py" into "Write solve" and "py that reads
+	// input", which then matched nothing and read as two requirements.
+	runes := []rune(msg)
+	var out []string
+	var cur strings.Builder
+	flush := func() {
+		if p := strings.TrimSpace(cur.String()); len(p) > 8 {
+			out = append(out, p)
+		}
+		cur.Reset()
+	}
+	for i, r := range runes {
+		switch r {
+		case '!', '?', '\n', ';', ':':
+			flush()
+			continue
+		case '.':
+			prev, next := ' ', ' '
+			if i > 0 {
+				prev = runes[i-1]
+			}
+			if i+1 < len(runes) {
+				next = runes[i+1]
+			}
+			inWord := isIdentRune(prev) && isIdentRune(next)
+			if !inWord {
+				flush()
+				continue
+			}
+		}
+		cur.WriteRune(r)
+	}
+	flush()
+	return out
+}
+
+// executionVerbs name a requirement that RUNNING the artifact satisfies:
+// "then run it and confirm the answer" is shown by having run it, and asking
+// for more would be an obligation the request never made.
+var executionVerbs = map[string]bool{
+	"run": true, "runs": true, "start": true, "starts": true, "print": true, "prints": true,
+	"check": true, "checks": true, "confirm": true, "verify": true, "execute": true,
+}
+
+// requirementShown reports whether this run holds current evidence that
+// exercised the requirement: a verification whose command mentions one of its
+// words, which covered a file the requirement names, or — for a requirement
+// that just asks for the thing to be run — any current evidence that ran a
+// file this session wrote.
+func requirementShown(ctx *AgentContext, req requestedRequirement) bool {
+	if req.RunIsEnough && ranSomethingCurrent(ctx) {
+		return true
+	}
+	for _, rec := range ctx.VerificationEvidence {
+		covered, current := evidenceIsCurrent(ctx, rec)
+		if !current {
+			continue // the bytes moved since; that evidence is spent
+		}
+		cmd := strings.ToLower(rec.Command)
+		for _, tok := range req.Tokens {
+			if mentionsWord(cmd, tok) {
+				return true
+			}
+			for p := range covered {
+				if strings.EqualFold(filepath.Base(p), tok) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// unshownRequirements lists what the request asked for that this run never
+// exercised. Empty when the request names nothing checkable.
+//
+// Scope, deliberately narrow and set by what the evidence can mean: it applies
+// only when the run delivered something executable AND the only behavioural
+// evidence it holds is a probe against a service it started. That is the
+// measured case (family O, cycle 8): an HTTP 200 shows the endpoint that was
+// asked for answered, and says nothing about the other things the request
+// named. A run that executed its deliverable end to end has exercised what
+// that program does, and a run that delivered only declarative artifacts has
+// nothing to execute — neither is second-guessed here.
+func unshownRequirements(ctx *AgentContext, userMessage string) []requestedRequirement {
+	if len(codeDeliverablesFor(ctx, nil)) == 0 || !onlyProbeEvidence(ctx) {
+		return nil
+	}
+	var out []requestedRequirement
+	for _, req := range requestedRequirements(userMessage) {
+		if !requirementShown(ctx, req) {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// unshownRequirementMessage asks for the missing evidence, in the user's own
+// words, and says plainly that the behaviour may well work.
+func unshownRequirementMessage(reqs []requestedRequirement) string {
+	var sb strings.Builder
+	sb.WriteString("Before finishing: nothing in this run exercised part of what was asked — ")
+	for i, r := range reqs {
+		if i > 0 {
+			sb.WriteString("; ")
+		}
+		fmt.Fprintf(&sb, "%q", truncateStr(r.Text, 90))
+		if i == 1 {
+			break
+		}
+	}
+	sb.WriteString(". It may already work; this run has not shown it. Exercise it now — run it, " +
+		"request it, or call it — and read what comes back. If it turns out not to be implemented, " +
+		"implement it. If it genuinely cannot be exercised here, say so in your summary instead.")
+	return sb.String()
+}
+
+// unshownRequirementSummary scopes the claim: what was delivered, and what was
+// not shown, in the user's words. It never says the behaviour is broken.
+func unshownRequirementSummary(reqs []requestedRequirement) string {
+	var sb strings.Builder
+	sb.WriteString("Delivered, and the work that was checked is on disk. Not shown by this run: ")
+	for i, r := range reqs {
+		if i > 0 {
+			sb.WriteString("; ")
+		}
+		fmt.Fprintf(&sb, "%q", truncateStr(r.Text, 90))
+		if i == 1 {
+			break
+		}
+	}
+	sb.WriteString(". Nothing here establishes that those work or that they do not — they were " +
+		"never exercised, so treat them as unverified.")
+	return sb.String()
+}
+
+// ranSomethingCurrent reports whether any evidence this run holds still
+// describes the bytes on disk.
+func ranSomethingCurrent(ctx *AgentContext) bool {
+	for _, rec := range ctx.VerificationEvidence {
+		if _, current := evidenceIsCurrent(ctx, rec); current {
+			return true
+		}
+	}
+	return false
+}
+
+// executedADeliverable reports whether a current verification RAN a file this
+// session wrote, rather than probing a service it started. Running the program
+// exercises what the program computes; a request against a server exercises
+// the one endpoint it asked for.
+func executedADeliverable(ctx *AgentContext) bool {
+	for _, rec := range ctx.VerificationEvidence {
+		covered, current := evidenceIsCurrent(ctx, rec)
+		if !current || isHTTPProbe(rec.Command) {
+			continue
+		}
+		for p := range covered {
+			if executionAttempt(rec.Command, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// onlyProbeEvidence reports that every current verification this run holds is a
+// request against a service it started: startup evidence, not evidence about
+// what the rest of the request asked for.
+func onlyProbeEvidence(ctx *AgentContext) bool {
+	probes := 0
+	for _, rec := range ctx.VerificationEvidence {
+		if _, current := evidenceIsCurrent(ctx, rec); !current {
+			continue
+		}
+		if !isHTTPProbe(rec.Command) {
+			return false
+		}
+		probes++
+	}
+	return probes > 0
+}

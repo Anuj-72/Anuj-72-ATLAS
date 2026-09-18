@@ -64,6 +64,14 @@ func startBgWorld(t *testing.T, files map[string]string, script []string,
 func startBgWorldWith(t *testing.T, files map[string]string, script []string,
 	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool),
 	setup func(*AgentContext)) *bgWorld {
+	return startBgWorldReq(t, "In app.py, add a pause toggle. Then verify the app still starts.",
+		files, script, jobFor, setup)
+}
+
+// startBgWorldReq is startBgWorldWith with the user's request supplied.
+func startBgWorldReq(t *testing.T, request string, files map[string]string, script []string,
+	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool),
+	setup func(*AgentContext)) *bgWorld {
 	t.Helper()
 	w := &bgWorld{dir: t.TempDir(), terminal: map[string]string{}}
 	for name, body := range files {
@@ -98,6 +106,15 @@ func startBgWorldWith(t *testing.T, files map[string]string, script []string,
 				running bool
 			}{stderr, exit, running}
 			json.NewEncoder(rw).Encode(map[string]interface{}{"job_id": id, "pid": 100 + len(jobs)})
+			return
+		case strings.Contains(r.URL.Path, "/jobs/") && strings.HasSuffix(r.URL.Path, "/stop"):
+			id := strings.Split(strings.TrimPrefix(r.URL.Path, "/jobs/"), "/")[0]
+			if j, ok := jobs[id]; ok {
+				j.running = false
+				j.exit = -15
+				jobs[id] = j
+			}
+			json.NewEncoder(rw).Encode(map[string]interface{}{"job_id": id, "killed": true, "exit_code": -15})
 			return
 		case strings.Contains(r.URL.Path, "/jobs/") && strings.HasSuffix(r.URL.Path, "/output"):
 			id := strings.Split(strings.TrimPrefix(r.URL.Path, "/jobs/"), "/")[0]
@@ -181,7 +198,7 @@ func startBgWorldWith(t *testing.T, files map[string]string, script []string,
 	if setup != nil {
 		setup(ctx)
 	}
-	if err := runAgentLoop(ctx, "In app.py, add a pause toggle. Then verify the app still starts."); err != nil {
+	if err := runAgentLoop(ctx, request); err != nil {
 		t.Fatal(err)
 	}
 	return w

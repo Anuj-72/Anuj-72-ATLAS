@@ -696,6 +696,17 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 			return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
 		}
 	}
+	// Asked for, and never exercised. The run gets one chance to produce the
+	// evidence, out of the verification gate's own budget, with the request's
+	// own words — not a generic "try again". A generated plan is not consulted:
+	// it can neither remove a requirement the user stated nor add one.
+	if s.madeProductiveChange {
+		if unshown := unshownRequirements(ctx, userMessage); len(unshown) > 0 && s.chargeBounce("verification_gate") {
+			log.Printf("[agent] %d requested behaviour(s) never exercised (bounce %d/%d): %q",
+				len(unshown), s.gateBounces["verification_gate"], maxGateBounces, truncateStr(unshown[0].Text, 60))
+			return "verification_gate", unshownRequirementMessage(unshown)
+		}
+	}
 	// Steps the plan named and no tool call ever satisfied. Same shape as the
 	// verification gate: a fact the run already holds, used at the exit
 	// instead of only being shown mid-run.
@@ -1439,6 +1450,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			summary := modelProseIfAuthorized(status, parsed.Summary)
 			if reason == "unresolved_mutation_debt" {
 				summary = unresolvedDebtSummary(st)
+			}
+			// The user reads what was and was not shown, in their own words.
+			if reason == "requirements_unverified" {
+				summary = unshownRequirementSummary(unshownRequirements(ctx, userMessage))
 			}
 			// Past the gates, but the verification gate can be past because
 			// it ran out of bounces rather than because anything verified.
@@ -8595,6 +8610,19 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	// settle it.
 	if hasUnresolvedDebt(st) {
 		return TerminalIncomplete, "unresolved_mutation_debt"
+	}
+	// A completion claim says the requested work was delivered AND that this
+	// run has evidence for it. Where the request named something exercisable
+	// and nothing in the run exercised it, the claim is scoped to what was
+	// shown: not a success, not a failure -- unverified, in the user's words.
+	// Measured on family O (cycle 8), which claimed completed while nothing had
+	// ever looked back at an earlier day.
+	if st.madeProductiveChange {
+		if unshown := unshownRequirements(ctx, userMessage); len(unshown) > 0 {
+			log.Printf("[agent] completion scoped: %d requested behaviour(s) never exercised, first %q",
+				len(unshown), truncateStr(unshown[0].Text, 60))
+			return TerminalIncomplete, "requirements_unverified"
+		}
 	}
 	if completedReason != "" {
 		return TerminalCompleted, completedReason
