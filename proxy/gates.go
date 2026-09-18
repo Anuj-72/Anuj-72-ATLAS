@@ -1688,6 +1688,23 @@ func recordPlanAdherence(ctx *AgentContext, toolName string, args json.RawMessag
 
 	idx := matchPlanStep(ctx.Plan, ctx.PlanStepsSatisfied, toolName, args)
 
+	// A write that landed with an unresolved parse warning has not finished
+	// its step, whatever the tool result says.
+	//
+	// Measured (family P, cycles 9 and 10). `write_file app.py` landed at
+	// t=41 s carrying "does not parse (SyntaxError: unmatched ')')" — a
+	// successful tool call, so s1 ticked over. From that turn on every request
+	// carried "plan progress 4/5 … Done: s1 … Stay on the current step; don't
+	// jump ahead and don't re-explore finished work", while app.py sat broken
+	// and never run. The run spent the rest of its budget elsewhere and
+	// delivered that file unchanged. The step is the work, not the call.
+	if idx >= 0 && success && writeLikePlanAction(toolName) {
+		if path := extractToolTarget(toolName, args); path != "" && currentValidationDetail(ctx, path) != "" {
+			log.Printf("[agent] plan step %q not satisfied: %s is on disk with a failed check",
+				ctx.Plan.Steps[idx].ID, logPath(path))
+			success = false
+		}
+	}
 	// Only successful tool calls count toward step satisfaction.
 	// A failed run_command shouldn't tick off the verify_step.
 	if idx >= 0 && success {
@@ -3823,4 +3840,14 @@ func (c *AgentContext) checkServiceFailureSummary() string {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, c.CheckServiceFailures[k]))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// writeLikePlanAction reports the plan actions that put bytes on disk, the
+// only ones whose step can be left unfinished by a failing check.
+func writeLikePlanAction(tool string) bool {
+	switch tool {
+	case "write_file", "edit_file", "structural_edit", "insert_after", "replace_lines":
+		return true
+	}
+	return false
 }
