@@ -2857,12 +2857,20 @@ func editFileTool() *ToolDef {
 				if ext := strings.ToLower(filepath.Ext(input.Path)); ext == ".py" || ext == ".html" || ext == ".htm" {
 					alt = "`structural_edit` with a selector (e.g. `function:update`) and the new body — it needs no old_str at all, so there is nothing to copy"
 				}
+				// The alternative it is being sent to needs line numbers, and
+				// "the line numbers read_file printed" may be many turns and
+				// several successful edits old. Measured (cycle 7 audit,
+				// family O): refused at turns 11, 14 and 16 against a file
+				// last read at turn 5, alternating with a structural_edit
+				// that changed nothing, until the run stopped on repeated
+				// refusals. Where those bytes sit RIGHT NOW is something this
+				// call already knows, so it is said here.
 				return nil, errNoMutation(fmt.Errorf(
 					"old_str and new_str are identical, so this edit would change nothing. "+
 						"Re-sending it will not help. You are being asked to reproduce a span "+
-						"verbatim AND change it, which is what just failed — use %s. "+
+						"verbatim AND change it, which is what just failed — use %s.%s "+
 						"If you meant to REPLACE the whole file, use write_file with the "+
-						"complete new contents", alt))
+						"complete new contents", alt, currentSpanNote(input.Path, content, actualOldStr)))
 			}
 
 			// Sanitise the replacement string before splicing it in. The
@@ -6540,4 +6548,32 @@ func lastLines(lines []string, n int) []string {
 		return lines
 	}
 	return lines[len(lines)-n:]
+}
+
+// currentSpanNote says where a span sits in the file as it is now, so a retry
+// that needs line numbers can be written without re-reading first. It reports
+// only what the file contains; when the text is not there at all, it says that
+// instead of inventing a location.
+func currentSpanNote(path, content, text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	i := strings.Index(content, text)
+	if i < 0 {
+		return fmt.Sprintf(" That text is not in %s as it stands now, so any line numbers you are holding are "+
+			"stale — read it again before the next edit.", filepath.Base(path))
+	}
+	first := strings.Count(content[:i], "\n") + 1
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	last := first + len(lines) - 1
+	note := fmt.Sprintf(" In %s as it stands now that text is %s", filepath.Base(path),
+		lineSpanOf(content, text))
+	if len(lines) > 0 {
+		note += fmt.Sprintf(", so the replacement call is replace_lines with start_line %d, end_line %d, "+
+			"expected_first_line %q and expected_last_line %q.",
+			first, last, strings.TrimSpace(lines[0]), strings.TrimSpace(lines[len(lines)-1]))
+	} else {
+		note += "."
+	}
+	return note
 }

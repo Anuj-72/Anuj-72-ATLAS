@@ -213,3 +213,62 @@ func TestAPrefixedEditRecoversThroughTheLoop(t *testing.T) {
 		t.Errorf("bytes after recovery: %q", got)
 	}
 }
+
+// A no-op edit is refused with the span's location as it stands now.
+//
+// Measured (cycle 7 refusal audit, family O): edit_file refused at turns 11,
+// 14 and 16 for identical old_str/new_str, against a file last read at turn 5
+// and edited successfully several times since, alternating with a
+// structural_edit that changed nothing, until the run stopped on repeated
+// refusals. The refusal sent the run to `replace_lines` "with the line numbers
+// read_file printed" — numbers that were by then stale. Where those bytes sit
+// is something the call already knows.
+func TestANoOpEditIsRefusedWithTheSpansCurrentLines(t *testing.T) {
+	file := "def area(r):\n    return 3.14 * r * r\n\n\ndef perimeter(r):\n    return 2 * 3.14 * r\n"
+	ctx, path := exactEditWorld(t, "geo.py", file)
+	same := "    return 2 * 3.14 * r"
+	res := exactEditCall(t, ctx, "edit_file", map[string]interface{}{"path": "geo.py",
+		"old_str": same, "new_str": same})
+	if res.Success {
+		t.Fatal("a no-op edit was applied")
+	}
+	for _, want := range []string{"identical", "line 6", "start_line 6, end_line 6",
+		`expected_first_line "return 2 * 3.14 * r"`} {
+		if !strings.Contains(res.Error, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, res.Error)
+		}
+	}
+	// The call it names lands.
+	retry := exactEditCall(t, ctx, "replace_lines", map[string]interface{}{"path": "geo.py",
+		"start_line": 6, "end_line": 6,
+		"expected_first_line": "return 2 * 3.14 * r", "expected_last_line": "return 2 * 3.14 * r",
+		"content": "    return 2 * math.pi * r\n"})
+	if !retry.Success {
+		t.Fatalf("the named replace_lines call failed: %s", retry.Error)
+	}
+	if got := diskBytes(t, path); !strings.Contains(got, "math.pi") {
+		t.Errorf("bytes after the retry: %q", got)
+	}
+}
+
+// Text that is not in the file keeps the existing not-found refusal, which
+// already quotes the closest real line — and no line numbers are invented for
+// a span that is not there.
+func TestANoOpEditOnTextThatIsGoneSaysSo(t *testing.T) {
+	ctx, _ := exactEditWorld(t, "geo.py", "def area(r):\n    return 3.14 * r * r\n")
+	gone := "    return 2 * 3.14 * r"
+	res := exactEditCall(t, ctx, "edit_file", map[string]interface{}{"path": "geo.py",
+		"old_str": gone, "new_str": gone})
+	if res.Success {
+		t.Fatal("an edit against absent text was applied")
+	}
+	if !strings.Contains(res.Error, "string to replace not found") || strings.Contains(res.Error, "start_line") {
+		t.Errorf("refusal should be the not-found one, with no invented range:\n%s", res.Error)
+	}
+	// The note itself, asked directly about text the file does not hold, says
+	// the numbers are stale rather than guessing.
+	note := currentSpanNote("geo.py", "def area(r):\n", "    return 2 * 3.14 * r")
+	if !strings.Contains(note, "not in geo.py as it stands now") || strings.Contains(note, "start_line") {
+		t.Errorf("absent-span note: %s", note)
+	}
+}
