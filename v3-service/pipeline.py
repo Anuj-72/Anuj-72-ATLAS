@@ -36,6 +36,7 @@ import adapters
 import contract
 import scoring
 import symbols
+from runtime_verification import PythonImportComparison
 
 BASE_TEMPERATURE = 0.6
 DIVERSITY_TEMPERATURE = 0.8
@@ -69,7 +70,7 @@ for _phase, _stages in {
     "sandbox": ("sandbox_test", "sandbox_pass", "sandbox_fail",
                 "sandbox_done", "smoke_check", "interactive_lint",
                 "self_test_verify", "build_verify",
-                "build_verify_unavailable"),
+                "build_verify_unavailable", "runtime_compare"),
     "veto": ("lens_veto", "structural_veto", "call_graph_veto"),
     "selection": ("selected", "consensus", "consensus_ranking"),
     "repair_pr_cot": ("phase3", "call_chain_context", "pr_cot",
@@ -1656,9 +1657,9 @@ class V3PipelineService:
                 ephemeral candidate overlay after syntax/self-tests pass.
             working_dir: Container workspace root used by the sandbox overlay.
             baseline_code: The incumbent's EXACT bytes, as the request sent
-                them, before prompt construction. Read only by the
-                diagnostic pool capture; with capture off nothing touches
-                it, and it never enters a live list or decision.
+                them, before prompt construction. Kept outside the generated
+                pool. Interactive Python replacements are compared against
+                its observed import viability in the sandbox.
 
         Writes one pipeline-summary telemetry line per task (fail-soft;
         see _write_pipeline_summary) around the actual pipeline body.
@@ -1922,11 +1923,26 @@ class V3PipelineService:
         # first caller, after the self-test generation below).
         _has_trusted_oracle = _trusted_oracle(self_tests)
 
+        import_comparison = None
+        if task_type == "interactive" and smoke_language == "python" and baseline_code and file_path:
+            import_comparison = PythonImportComparison(
+                sandbox, baseline_code, file_path, working_dir,
+                remaining_ms=lambda: _remaining_budget_ms(start), check_cancel=check_client)
+
         def verified_sandbox(code, extra_test=""):
             """Sandbox + verification. Algorithmic tasks: I/O self-tests; interactive: compile smoke."""
             verification_evidence: List[Dict[str, Any]] = []
 
             def verify_build_if_requested(out="", err=""):
+                if import_comparison is not None:
+                    admitted, diagnostic, runtime_evidence = import_comparison.check(code)
+                    verification_evidence.append(runtime_evidence)
+                    emit("runtime_compare", runtime_evidence["status"],
+                         status=runtime_evidence["status"], admitted=admitted,
+                         reason=runtime_evidence.get("reason", ""),
+                         candidate_hash=runtime_evidence["candidate_hash"])
+                    if not admitted:
+                        return False, out, diagnostic, verification_evidence
                 ok, build_out, build_err, evidence = scoring.verify_build_command(
                     code=code,
                     sandbox=sandbox,
@@ -2414,7 +2430,8 @@ class V3PipelineService:
                     "energy": probe_energy_raw, "energy_norm": probe_energy_norm,
                     "energy_calibrated": probe_cx_calibrated,
                     "lens_failure": probe_scores.get("failure"),
-                    "passed": probe_passed, "stdout": "", "stderr": "",
+                    "passed": probe_passed, "stdout": probe_stdout, "stderr": probe_stderr,
+                    "verification_evidence": probe_evidence,
                 })
 
             remaining_k = max(0, k - len(candidates))
@@ -2954,32 +2971,20 @@ class V3PipelineService:
             check_client()
             if out_of_budget():
                 return finish_with_best("budget spent before the repair phase")
-            # This phase is reached only when NO candidate passed. For an
-            # interactive task the only verification signal is "does it
-            # compile" (no behavioural oracle: a Flask/pygame/curses program
-            # can't be run to completion in the sandbox), so the sole compiling
-            # code at this point is the model's baseline. Repair would spend the
-            # budget trying to fix non-compiling candidates back toward that
-            # same compile bar; a repaired-to-compiling candidate is no better
-            # verified than a compiling baseline, and finish_with_best returns
-            # no passing candidate here anyway, so the proxy falls back to this
-            # exact baseline in the end. Two acceptance scenarios (2026-09-15,
-            # trip-splitter and lost-and-found) spent ~50% of the session in
-            # this loop to deliver the baseline, starving the agent loop of the
-            # time it needs to RUN and behaviourally verify the app. Skip repair
-            # when a compiling baseline exists; keep it when the baseline also
-            # fails to compile, since then there is no working fallback to hand
-            # back. Algorithmic tasks are unaffected -- their repair can PROVE
-            # an improvement against self-tests.
+            # Preserve the existing repair-budget rule: if every candidate
+            # failed and the submitted interactive baseline compiles, return
+            # to the outer loop with that baseline rather than spending more
+            # generations. An import comparison rejects observed regressions;
+            # it does not prove requested features or justify relaxing this
+            # rule. A compiling baseline is NOT necessarily a runnable app.
             if task_type == "interactive" and baseline_code:
                 base_ok, _, _ = scoring.smoke_compile_check(
                     baseline_code, sandbox, language=smoke_language, filename=file_path)
                 if base_ok:
                     emit("repair_skip_baseline_ok",
-                         "interactive task and the baseline compiles — repair on "
-                         "compile-only candidates cannot prove an improvement over "
-                         "it; delivering the baseline and returning the budget to "
-                         "the agent loop",
+                         "interactive task and the baseline compiles — no verified "
+                         "replacement; retaining the baseline under the existing "
+                         "repair-budget rule",
                          strategy="repair", task_type=task_type)
                     return finish_with_best(
                         "interactive task: baseline meets the compile bar, repair skipped")
