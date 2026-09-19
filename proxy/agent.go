@@ -2799,6 +2799,27 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// repeat slot is deliberately overwritable, so the specific
 			// edit_file -> structural_edit steer above replaces the generic
 			// repeat warning instead of stacking with it.
+			// The handoff: a write can succeed and install something else.
+			// Decided from the filesystem, once, before anything is said to
+			// the model about what it just did.
+			superseded, wasSuperseded := deliveredDiffersFromSubmitted(ctx, parsed.Name, parsed.Args, result)
+			if wasSuperseded {
+				ctx.Messages = append(ctx.Messages, AgentMessage{
+					Role:    "user",
+					Content: adoptDeliveredContent(ctx, superseded),
+				})
+				// The lens scored the SUBMITTED bytes, before execution. They
+				// are not on disk, so "your last write ... do not re-issue it"
+				// is advice about a file that does not exist -- and it was the
+				// instruction both adopting sessions acted on. The score is
+				// still recorded and still counts toward the history; what is
+				// dropped is telling the model to act on it.
+				if pendingLensCorrective != "" {
+					log.Printf("[agent] dropping the lens corrective for %s — it scored content the delivery replaced",
+						logPath(superseded.Path))
+					pendingLensCorrective = ""
+				}
+			}
 			st.queueCorrective(pendingLensCorrective)
 			st.queueCorrective(pendingRepeatCorrective)
 			st.queueCorrective(pendingReasoningCorrective)
@@ -2914,14 +2935,40 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// working on a file that had failed verification.
 			if result.Success && result.V3Used && verifiedPhase(result.PhaseSolved) &&
 				(parsed.Name == "write_file" || parsed.Name == "edit_file") {
-				ctx.Messages = append(ctx.Messages, AgentMessage{
-					Role: "user",
-					Content: fmt.Sprintf(
-						"V3 verified this edit passed its %s pipeline (%d candidates, score=%.2f). The fix is on disk and build-checked. If this resolves the user's original request, respond NOW with {\"type\":\"done\",\"summary\":\"<one sentence describing the fix>\"}. Only continue if you have a specific, concrete additional change to make — do not re-read the file to double-check, and do not edit unrelated code.",
+				// Two shapes, because there are two situations. When the
+				// delivered bytes ARE the model's own, the original nudge is
+				// unchanged. When they are not, telling it not to re-read is
+				// telling it not to look at the only copy that matters, and
+				// "respond NOW with done" would have it certify content it has
+				// never seen. Measured: both sessions that adopted a candidate
+				// were sent the second situation's context with the first
+				// situation's instruction.
+				nudge := fmt.Sprintf(
+					"V3 verified this edit passed its %s pipeline (%d candidates, score=%.2f). The fix is on disk and build-checked. If this resolves the user's original request, respond NOW with {\"type\":\"done\",\"summary\":\"<one sentence describing the fix>\"}. Only continue if you have a specific, concrete additional change to make — do not re-read the file to double-check, and do not edit unrelated code.",
+					result.PhaseSolved, result.CandidatesTested, result.WinningScore,
+				)
+				if wasSuperseded {
+					nudge = fmt.Sprintf(
+						"V3 verified this edit passed its %s pipeline (%d candidates, score=%.2f) and delivered ITS OWN version of %s — the bytes on disk are not the ones you sent. That check is a build check, not evidence that the user's request is finished. Read %s and judge it against what was asked before you claim anything is done; if it is short of the request, change it from what is there.",
 						result.PhaseSolved, result.CandidatesTested, result.WinningScore,
-					),
+						superseded.Rel, superseded.Rel,
+					)
+				}
+				ctx.Messages = append(ctx.Messages, AgentMessage{
+					Role:    "user",
+					Content: nudge,
 				})
-				log.Printf("[agent] V3-verified %s on %s — nudging toward done", parsed.Name, safeArgsSummary(parsed.Name, parsed.Args))
+				// Name what landed, not what was proposed. This line used to
+				// print the SUBMITTED args, so a reader of a session where a
+				// candidate replaced them saw the superseded content's hash
+				// and size described as the thing V3 verified.
+				if wasSuperseded {
+					log.Printf("[agent] V3-verified %s delivered its own %s (%dB, not the %dB submitted) — pointing the model at what landed",
+						parsed.Name, logPath(superseded.Path),
+						len(superseded.Delivered), len(superseded.Submitted))
+				} else {
+					log.Printf("[agent] V3-verified %s on %s — nudging toward done", parsed.Name, safeArgsSummary(parsed.Name, parsed.Args))
+				}
 			}
 
 			// Exploration budget: after 4 consecutive read-only calls,
