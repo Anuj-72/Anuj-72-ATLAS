@@ -64,14 +64,6 @@ func startBgWorld(t *testing.T, files map[string]string, script []string,
 func startBgWorldWith(t *testing.T, files map[string]string, script []string,
 	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool),
 	setup func(*AgentContext)) *bgWorld {
-	return startBgWorldReq(t, "In app.py, add a pause toggle. Then verify the app still starts.",
-		files, script, jobFor, setup)
-}
-
-// startBgWorldReq is startBgWorldWith with the user's request supplied.
-func startBgWorldReq(t *testing.T, request string, files map[string]string, script []string,
-	jobFor func(cmd string, w *bgWorld) (stderr []string, exit int, running bool),
-	setup func(*AgentContext)) *bgWorld {
 	t.Helper()
 	w := &bgWorld{dir: t.TempDir(), terminal: map[string]string{}}
 	for name, body := range files {
@@ -198,7 +190,7 @@ func startBgWorldReq(t *testing.T, request string, files map[string]string, scri
 	if setup != nil {
 		setup(ctx)
 	}
-	if err := runAgentLoop(ctx, request); err != nil {
+	if err := runAgentLoop(ctx, "In app.py, add a pause toggle. Then verify the app still starts."); err != nil {
 		t.Fatal(err)
 	}
 	return w

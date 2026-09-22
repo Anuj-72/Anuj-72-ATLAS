@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Removed: the requested-behaviour exit gate and its word lists
+
+A completion exit was bounced, and the terminal set to
+`requirements_unverified`, when a sentence of the request contained a verb
+from a hand-written list and nothing the run executed mentioned one of that
+sentence's words. The lists were grown from the evaluation prompts:
+`pause`, `resume` and `toggle` entered the verb list after the pause task had
+been the measured case for a week, and `confirm` was added quoting the
+benchmark prompt "then run it and confirm the answer", where it let a bare run
+discharge the requirement. A gate whose vocabulary is chosen so the test set
+parses the intended way measures the test set, not the request. The gate,
+both lists, the stop-word list, the summary rewrite and the
+`requirements_unverified` reason are removed; completion is decided by the
+remaining evidence gates exactly as before the gate existed.
+
 ### Removed: the browser probe and the evidence modes that gated it
 
 v3-service carried a verifier for one artifact class — browser JavaScript
