@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### Removed: the browser probe and the evidence modes that gated it
+
+v3-service carried a verifier for one artifact class — browser JavaScript
+with a canvas or a `keydown` listener — whose verdict fields were named for
+one game (`collision_transition`, `food_or_score_transition`), a shadow
+consensus ranking, an enforce-mode override of the lens choice, and a
+bounded dead-oracle consensus. All of it sat behind `ATLAS_EVIDENCE_MODE`
+and `ATLAS_V3_DEAD_ORACLE_CONSENSUS`, which no deployment set, so none of it
+ever ran in production. A verifier for one artifact class is not capability,
+and a criterion named for one game is not a contract; both are removed
+outright rather than left dormant.
+
+**Kept**, because the proxy authorizes V3 delivery on it: the adapter
+registry, contract records, closure eligibility, the evidence envelope and
+`contract.select`. A `.js` file now routes to the JavaScript compile adapter
+(syntax evidence, never closure) and an `.html` file is unsupported
+(unverifiable, never vacuously verified). The live consensus fallback for a
+condemned oracle (`_consensus_winners`) is unchanged. `SandboxAdapter`
+loses the `language` and `timeout` parameters the probe needed: every
+remaining caller ran Python at the default 15 s, which is now fixed.
+
 ### Lens scoring boundary
 
 A candidate longer than llama-server's physical batch (`ATLAS_UBATCH`)

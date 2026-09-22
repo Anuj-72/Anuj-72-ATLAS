@@ -706,8 +706,7 @@ func TestPassedNoLongerAuthorizesDelivery(t *testing.T) {
 // Candidate zero, PR-CoT and refinement winners are deliverable on the same
 // terms as any other: the phase name is not consulted, only the evidence.
 func TestEveryPhaseIsDeliverableOnTheSameTerms(t *testing.T) {
-	for _, phase := range []string{"probe", "phase1", "pr_cot", "refinement",
-		"dead_oracle_consensus", "budget"} {
+	for _, phase := range []string{"probe", "phase1", "pr_cot", "refinement", "budget"} {
 		phase := phase
 		t.Run(phase, func(t *testing.T) {
 			env := envelopeFor(t, authCandidate, nil)

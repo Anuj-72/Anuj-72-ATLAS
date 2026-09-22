@@ -14,10 +14,9 @@ Three declarations used to be derived rather than made:
                 facts nothing compared.
 
 The sealed Stage-A acquisition is what that cost: 100 of 103 candidate
-evaluations ran under `python_compile`, which declares four BROWSER criteria
-it cannot measure, and every one recorded
-`missing_required: ["temporal_progress", "input_causality"]` with
-`capabilities: []`. Closure was unreachable for every Python candidate in the
+evaluations ran under `python_compile`, which declares four browser-behaviour
+criteria it cannot measure, and every one recorded two of them in
+`missing_required` with `capabilities: []`. Closure was unreachable for every Python candidate in the
 run -- not because the corpus lacked an oracle, but because no Python route
 can reach it at all.
 
@@ -38,9 +37,8 @@ import adapters as A
 import obligations as O  # noqa: E402
 import contract as C  # noqa: E402
 
-ALL_EIGHT = [
+ALL_SIX = [
     A.ADAPTER_ALGORITHMIC_IO, A.ADAPTER_CSS_SYNTAX,
-    A.ADAPTER_BROWSER_CANVAS_JS, A.ADAPTER_BROWSER_INLINE_SCRIPT,
     A.ADAPTER_PYTHON_COMPILE, A.ADAPTER_JAVASCRIPT_COMPILE,
     A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, A.ADAPTER_UNSUPPORTED,
 ]
@@ -49,11 +47,11 @@ ALL_EIGHT = [
 # --- every adapter is declared, for all three facts -------------------------
 
 def test_every_adapter_is_registered():
-    assert set(A.ALL_ADAPTERS) == set(ALL_EIGHT), (
+    assert set(A.ALL_ADAPTERS) == set(ALL_SIX), (
         "the registry and the adapter identities disagree")
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_every_adapter_declares_support_explicitly(adapter):
     assert adapter in A.SUPPORT_DECLARATION, (
         f"{adapter} does not declare whether it supports an artifact; "
@@ -61,7 +59,7 @@ def test_every_adapter_declares_support_explicitly(adapter):
     assert A.SUPPORT_DECLARATION[adapter] in A.SUPPORT_KINDS
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_every_declared_capability_has_an_evaluator(adapter):
     caps = set(A._capabilities(adapter))
     evals = set(A.evaluators_for(adapter))
@@ -70,7 +68,7 @@ def test_every_declared_capability_has_an_evaluator(adapter):
         f"{adapter} claims it can measure {missing} with nothing that computes them")
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_no_evaluator_without_a_declared_capability(adapter):
     caps = set(A._capabilities(adapter))
     extra = sorted(set(A.evaluators_for(adapter)) - caps)
@@ -78,7 +76,7 @@ def test_no_evaluator_without_a_declared_capability(adapter):
         f"{adapter} evaluates {extra} without declaring it measurable")
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_requirements_are_declared_not_derived_from_capability(adapter):
     """An obligation is the TASK's. An adapter that reads its own reach and
     calls the result a requirement has decided what the user needed."""
@@ -86,7 +84,7 @@ def test_requirements_are_declared_not_derived_from_capability(adapter):
         f"{adapter} has no declared requirement set")
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_every_requirement_is_measurable_or_registered_unmeasurable(adapter):
     caps = set(A._capabilities(adapter))
     declared = {r["id"] for r in A._requirements(adapter)}
@@ -97,7 +95,7 @@ def test_every_requirement_is_measurable_or_registered_unmeasurable(adapter):
         "reason; a requirement it cannot measure must be declared as such")
 
 
-@pytest.mark.parametrize("adapter", ALL_EIGHT)
+@pytest.mark.parametrize("adapter", ALL_SIX)
 def test_a_criterion_is_never_both_measurable_and_unmeasurable(adapter):
     both = sorted(set(A._capabilities(adapter)) & set(A.unmeasurable_requirements(adapter)))
     assert not both, f"{adapter} declares {both} as both measurable and not"
@@ -109,9 +107,8 @@ def test_no_adapter_demands_a_criterion_it_cannot_measure():
     """The defect the sealed run paid for is gone at the source.
 
     python_compile required four browser criteria it cannot observe, so 100 of
-    103 candidate evaluations carried missing_required
-    ["temporal_progress","input_causality"] and no Python candidate could reach
-    closure by any route. It required them because an adapter used to declare
+    103 candidate evaluations carried two of them in missing_required and no
+    Python candidate could reach closure by any route. It required them because an adapter used to declare
     the TASK's obligations; obligations.py owns that now, so an adapter has
     nothing to over-declare.
     """
@@ -128,17 +125,13 @@ def test_no_adapter_demands_a_criterion_it_cannot_measure():
 def test_the_corrected_obligation_capability_matrix():
     """What each verifier may now speak for, stated once.
 
-    A compile owns structural validity and nothing above it. The browser probe
-    runs the artifact, so it owns the same and no more: behavioural reach is
-    not permission to answer an unrelated command obligation. algorithmic_io
+    A compile owns structural validity and nothing above it. algorithmic_io
     owns declared examples, and select_adapter reaches it only under a trusted
     declared case source. The two unsupported adapters own nothing.
     """
     assert A.obligation_capabilities(A.ADAPTER_PYTHON_COMPILE) == [O.KIND_SYNTACTIC_VALIDITY]
     assert A.obligation_capabilities(A.ADAPTER_JAVASCRIPT_COMPILE) == [O.KIND_SYNTACTIC_VALIDITY]
     assert A.obligation_capabilities(A.ADAPTER_CSS_SYNTAX) == [O.KIND_SYNTACTIC_VALIDITY]
-    assert A.obligation_capabilities(A.ADAPTER_BROWSER_CANVAS_JS) == [O.KIND_SYNTACTIC_VALIDITY]
-    assert A.obligation_capabilities(A.ADAPTER_BROWSER_INLINE_SCRIPT) == [O.KIND_SYNTACTIC_VALIDITY]
     assert A.obligation_capabilities(A.ADAPTER_ALGORITHMIC_IO) == [
         O.KIND_SYNTACTIC_VALIDITY, O.KIND_DECLARED_EXAMPLE]
     assert A.obligation_capabilities(A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED) == []
@@ -164,7 +157,7 @@ def test_a_behavioral_obligation_on_a_syntax_only_adapter_is_never_complete():
     command = O.obligation(kind=O.KIND_DECLARED_COMMAND, subject="pytest -q",
                            baseline_strength=C.BEHAVIORAL)
     rec = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True, probe=None,
+        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
         contract_id="c.v1", contract_version="1", artifact_scope="s",
         evaluation_context_hash="ctx", candidate_content_hash="h",
         task_obligations=[command])
@@ -181,7 +174,7 @@ def test_a_behavioral_obligation_on_a_syntax_only_adapter_is_never_complete():
 def test_an_unsupported_adapter_is_neither_failed_nor_vacuously_complete():
     for adapter in (A.ADAPTER_UNSUPPORTED, A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED):
         rec = A.contract_record(
-            adapter=adapter, accepted=True, probe=None,
+            adapter=adapter, accepted=True,
             contract_id="c.v1", contract_version="1", artifact_scope="s",
             evaluation_context_hash="ctx", candidate_content_hash="h")
         assert rec["supported"] is False
@@ -234,7 +227,7 @@ def test_an_adapter_claiming_a_criterion_both_ways_fails_the_registry():
                 "support": A.SUPPORT_ALWAYS,
                 "capabilities": ["x"],
                 "requirements": ["x"],
-                "evaluators": {"x": lambda accepted, probe: C.UNOBSERVED},
+                "evaluators": {"x": lambda accepted: C.UNOBSERVED},
                 "unmeasurable": ["x"],
             }})
 

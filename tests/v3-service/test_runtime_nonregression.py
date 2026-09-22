@@ -49,7 +49,6 @@ class RuntimeSandbox:
 def make_service(monkeypatch, candidates):
     monkeypatch.setenv("ATLAS_V3_TELEMETRY_DIR", "off")
     monkeypatch.setenv("ATLAS_V3_TIMEOUT", "0")
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "off")
     service, _ = _service(monkeypatch, task_type="interactive", code=BROKEN)
     monkeypatch.setattr(RuntimeSandbox, "calls", [])
     monkeypatch.setattr(RuntimeSandbox, "outcomes", {BROKEN: "NameError: missing_name"})

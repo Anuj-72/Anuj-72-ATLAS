@@ -775,6 +775,10 @@ def _sandbox_safe_filename(filename: str) -> Optional[str]:
     return "/".join(parts)
 
 
+# The sandbox's run cap for one execution, sent with every request.
+_EXECUTE_TIMEOUT_S = 15
+
+
 class SandboxAdapter:
     """Calls the sandbox service for code execution.
 
@@ -794,23 +798,12 @@ class SandboxAdapter:
         self.project_files = project_files or {}
 
     def __call__(self, code: str, test_input: str = "",
-                 language: str = "python",
-                 timeout: int = 15,
                  files: Optional[Dict[str, str]] = None) -> Tuple[bool, str, str]:
-        """Execute `code` in the sandbox.
-
-        `language` defaults to python so every existing call site is
-        unchanged. It exists because the behavioural probe must run
-        JavaScript inside the sandbox rather than as a subprocess of this
-        service, and a hardcoded "python" body meant the probe's request
-        could never be honoured -- it raised TypeError at the call and was
-        silently converted to "inconclusive", so no real browser probe ever
-        produced evidence.
-        """
+        """Execute Python `code` in the sandbox."""
         body = {
             "code": code,
-            "language": language,
-            "timeout": timeout,
+            "language": "python",
+            "timeout": _EXECUTE_TIMEOUT_S,
         }
         if test_input:
             # Empty string keeps the executor default (inherit server
@@ -835,11 +828,9 @@ class SandboxAdapter:
             # check + optional pip install + lint + the 15s run cap) can sum
             # past 30s, and the old 20s read timeout gave up on executions
             # the sandbox would still have completed.
-            # Client read timeout is derived from the requested execution
-            # budget plus bounded overhead, never a fixed value below it: a
-            # probe asking for 60s against a hardcoded 45s client timeout
-            # would have been cut off by its own caller.
-            _client_timeout = max(45, int(timeout) + 30)
+            # Client read timeout is derived from the execution budget plus
+            # bounded overhead, never a fixed value below it.
+            _client_timeout = max(45, _EXECUTE_TIMEOUT_S + 30)
             with urllib.request.urlopen(req, timeout=_client_timeout) as resp:
                 data = json.loads(resp.read())
                 return data.get("success", False), data.get("stdout", ""), data.get("stderr", "")
@@ -949,28 +940,12 @@ import obligations
 # Adapter identities. These are the ids the pipeline records carry, declared
 # here because they name THIS layer's verifiers. test_adapters.py pins them
 # against the retiring module's copies for as long as that module exists.
-ADAPTER_BROWSER_CANVAS_JS = "browser_canvas_js"
-ADAPTER_BROWSER_INLINE_SCRIPT = "browser_inline_script"
 ADAPTER_JAVASCRIPT_COMPILE = "javascript_compile"
 ADAPTER_CSS_SYNTAX = "css_syntax"
 ADAPTER_ALGORITHMIC_IO = "algorithmic_io"
 ADAPTER_PYTHON_COMPILE = "python_compile"
 ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED = "interactive_python_unsupported"
 ADAPTER_UNSUPPORTED = "unsupported"
-
-_BROWSER_ADAPTERS = (ADAPTER_BROWSER_CANVAS_JS, ADAPTER_BROWSER_INLINE_SCRIPT)
-
-# What the browser probe can observe. Opaque ids: nothing above this layer
-# interprets them, and this layer never decides what the TASK required.
-BROWSER_REQUIRED = ["temporal_progress", "input_causality"]
-BROWSER_OPTIONAL = ["collision_transition", "food_or_score_transition"]
-
-# Adapters that answer the same question and cannot observe any of it. They
-# declare the criteria so coverage can report them unmeasurable rather than
-# silently missing.
-_DECLARES_BROWSER_CRITERIA = _BROWSER_ADAPTERS + (
-    ADAPTER_JAVASCRIPT_COMPILE, ADAPTER_PYTHON_COMPILE,
-    ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, ADAPTER_UNSUPPORTED)
 
 # Identity of this producer's grading. It must change whenever the grading
 # changes, or two incomparable measurements would compare equal.
@@ -996,9 +971,9 @@ CRITERION_PARSES = "parses"
 #                 "something computes X" were separate facts nothing compared.
 #
 # The sealed Stage-A acquisition is the bill: 100 of 103 candidate evaluations
-# ran under python_compile, which required four BROWSER criteria it cannot
-# measure, and every record carried missing_required
-# ["temporal_progress","input_causality"] with capabilities []. No Python
+# ran under python_compile, which required four browser-behaviour criteria it
+# cannot measure, and every record carried two of them in missing_required
+# with capabilities []. No Python
 # candidate in that run could reach closure -- not for want of an oracle, but
 # because that route could not reach closure at all.
 #
@@ -1021,8 +996,7 @@ CRITERION_PARSES = "parses"
 
 SUPPORT_ALWAYS = "always"
 SUPPORT_NEVER = "never"
-SUPPORT_PROBE_CONDITIONAL = "probe_conditional"
-SUPPORT_KINDS = (SUPPORT_ALWAYS, SUPPORT_NEVER, SUPPORT_PROBE_CONDITIONAL)
+SUPPORT_KINDS = (SUPPORT_ALWAYS, SUPPORT_NEVER)
 
 
 class AdapterRegistryError(RuntimeError):
@@ -1032,50 +1006,9 @@ class AdapterRegistryError(RuntimeError):
 
 def _eval_on_acceptance(cid):
     """The verifier either accepted the artifact or it did not."""
-    def ev(accepted, probe):
+    def ev(accepted):
         return contract.DEMONSTRATED if accepted else contract.UNOBSERVED
     return ev
-
-
-def _eval_browser_required(cid):
-    def ev(accepted, probe):
-        behavior = probe or {}
-        return contract.DEMONSTRATED if behavior.get(cid) else contract.UNOBSERVED
-    return ev
-
-
-def _eval_browser_optional(cid):
-    """Absence is a real negative only on a run that produced a trace."""
-    def ev(accepted, probe):
-        behavior = probe or {}
-        if behavior.get(cid):
-            return contract.DEMONSTRATED
-        if behavior:
-            return contract.REFUTED
-        return contract.UNOBSERVED
-    return ev
-
-
-def _browser_entry(support):
-    """A probe that loads and runs the artifact.
-
-    It observes the four browser criteria, and at the obligation level it owns
-    exactly one kind: an artifact that loaded and ran is structurally valid.
-    It executes no command the client declared and checks no answer against a
-    reference, so it owns neither declared_command nor declared_example --
-    behavioural reach is not permission to speak for an unrelated obligation.
-    """
-    return {
-        "support": support,
-        "capabilities": list(BROWSER_REQUIRED) + list(BROWSER_OPTIONAL),
-        "requirements": ([(c, True) for c in BROWSER_REQUIRED]
-                         + [(c, False) for c in BROWSER_OPTIONAL]),
-        "evaluators": dict(
-            [(c, _eval_browser_required(c)) for c in BROWSER_REQUIRED]
-            + [(c, _eval_browser_optional(c)) for c in BROWSER_OPTIONAL]),
-        "unmeasurable": [],
-        "obligation_kinds": [obligations.KIND_SYNTACTIC_VALIDITY],
-    }
 
 
 def _unsupported_entry(support):
@@ -1122,8 +1055,6 @@ REGISTRY = {
     ADAPTER_CSS_SYNTAX: _measurable_entry(
         SUPPORT_ALWAYS, [CRITERION_PARSES],
         [obligations.KIND_SYNTACTIC_VALIDITY]),
-    ADAPTER_BROWSER_CANVAS_JS: _browser_entry(SUPPORT_PROBE_CONDITIONAL),
-    ADAPTER_BROWSER_INLINE_SCRIPT: _browser_entry(SUPPORT_PROBE_CONDITIONAL),
     # Compiles the artifact in its own language and reports whether it parsed.
     # It requires nothing of the task and claims nothing above syntax.
     ADAPTER_PYTHON_COMPILE: _measurable_entry(
@@ -1271,20 +1202,18 @@ def _requirements(adapter):
             for cid, req in REGISTRY.get(adapter, {}).get("requirements", [])]
 
 
-def _observations(adapter, accepted, probe):
+def _observations(adapter, accepted):
     """One observation per criterion this adapter can measure.
 
-    A criterion it can measure and did not see is UNOBSERVED, never REFUTED --
-    except an OPTIONAL one on a run that did produce a behaviour trace, where
-    absence is a real negative observation rather than a gap.
+    A criterion it can measure and did not see is UNOBSERVED, never REFUTED.
     """
     observations = {}
     for cid, evaluate in REGISTRY.get(adapter, {}).get("evaluators", {}).items():
-        observations[cid] = contract.observation(evaluate(accepted, probe))
+        observations[cid] = contract.observation(evaluate(accepted))
     return observations
 
 
-def _supported(adapter, probe):
+def _supported(adapter):
     """Whether this adapter could measure this artifact at all. Unsupported is
     unverified, never failed.
 
@@ -1295,39 +1224,27 @@ def _supported(adapter, probe):
     support = SUPPORT_DECLARATION.get(adapter)
     if support == SUPPORT_NEVER:
         return False
-    if support == SUPPORT_PROBE_CONDITIONAL:
-        # No probe trace means the behaviour question went unanswered.
-        return bool(probe) and bool(probe.get("supported", True))
     if support == SUPPORT_ALWAYS:
         return True
     raise AdapterRegistryError(
         f"{adapter!r} has no support declaration; refusing to assume one")
 
 
-def _strength_and_execution(adapter, accepted, supported, probe):
+def _strength_and_execution(adapter, accepted, supported):
     """What this verifier demonstrated, and whether its run completed.
 
     Derived from the observations themselves. An oracle claim is made only
-    where an oracle ran; a probe that executed cleanly but missed a required
-    behaviour demonstrated runtime, not behaviour; and an artifact the adapter
-    cannot support is unverified, never failed.
+    where an oracle ran; a compile that accepted the artifact demonstrated
+    syntax and nothing above it; and an artifact the adapter cannot support
+    is unverified, never failed.
     """
-    behavior = probe or {}
-    if not accepted and not (adapter in _BROWSER_ADAPTERS and behavior):
-        # The verifier demonstrated nothing at all. A browser probe that DID
-        # produce a trace is the exception: its own observations stand even
-        # when the smoke check rejected the candidate.
+    if not accepted:
+        # The verifier demonstrated nothing at all.
         return contract.SYNTAX, contract.EXEC_ERROR, False
     if not supported:
         return contract.SYNTAX, contract.EXEC_SKIPPED, False
     if adapter == ADAPTER_ALGORITHMIC_IO:
         return contract.ORACLE, contract.EXEC_OK, True
-    if adapter in _BROWSER_ADAPTERS:
-        if not behavior or not behavior.get("runtime_clean", True):
-            return contract.SYNTAX, contract.EXEC_OK, True
-        if any(not behavior.get(cid) for cid in BROWSER_REQUIRED):
-            return contract.RUNTIME, contract.EXEC_OK, True
-        return contract.BEHAVIORAL, contract.EXEC_OK, True
     return contract.SYNTAX, contract.EXEC_OK, True
 
 
@@ -1374,14 +1291,14 @@ def _obligation_observations(reachable, accepted):
         for o in reachable}
 
 
-def contract_record(*, adapter, accepted, probe=None, contract_id,
+def contract_record(*, adapter, accepted, contract_id,
                     contract_version, artifact_scope, evaluation_context_hash,
                     candidate_content_hash, minimum_closure_strength=None,
                     task_obligations=None):
     """One finalized contract record, built here and derived by contract.py.
 
-    The caller hands over raw observation inputs -- which verifier ran, whether
-    it accepted the artifact, and the probe trace if there was one. Everything
+    The caller hands over raw observation inputs -- which verifier ran and
+    whether it accepted the artifact. Everything
     else is this layer's declaration or the contract's derivation; no grading
     from elsewhere is translated.
 
@@ -1397,14 +1314,14 @@ def contract_record(*, adapter, accepted, probe=None, contract_id,
     structured claim, which is why the two paths are separate rather than one
     path with an empty list.
     """
-    supported = _supported(adapter, probe)
+    supported = _supported(adapter)
     strength, execution_status, supported = _strength_and_execution(
-        adapter, accepted, supported, probe)
+        adapter, accepted, supported)
 
     if task_obligations is None:
         floor = minimum_closure_strength or closure_floor(adapter)
         requirements = _requirements(adapter)
-        observations = _observations(adapter, accepted, probe)
+        observations = _observations(adapter, accepted)
         capabilities = _capabilities(adapter)
     else:
         # Raises on an unknown kind or strength: an obligation nothing can
@@ -1442,13 +1359,11 @@ def evidence_envelope(result, *, delivered_code, selection=None):
 
 
 # ---------------------------------------------------------------------------
-# Adapter routing and probe mechanics
+# Adapter routing
 # ---------------------------------------------------------------------------
 #
-# Which verifier an artifact gets, and the machinery that verifier needs.
-# Browser-shaped vocabulary lives here and nowhere above: contract.py stays
-# generic, and the pipeline asks this layer rather than knowing about canvases
-# or keydown handlers.
+# Which verifier an artifact gets. contract.py stays generic, and the pipeline
+# asks this layer rather than knowing about artifact classes.
 
 # --------------------------------------------------------------- adapters ---
 #
@@ -1469,7 +1384,6 @@ _INTERACTIVE_PY_RE = re.compile(
     r"import\s+curses|from\s+curses|Flask\s*\(|FastAPI\s*\(|"
     r"QApplication|import\s+PySide|import\s+PyQt)", re.I)
 
-_INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
 
 
 
@@ -1484,212 +1398,11 @@ def select_adapter(file_path: str, code: str, has_io_oracle: bool = False) -> st
             return ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED
         return ADAPTER_ALGORITHMIC_IO if has_io_oracle else ADAPTER_PYTHON_COMPILE
     if ext in (".js", ".mjs"):
-        # A plain Node script or a module of helpers is NOT a canvas game.
-        return ADAPTER_BROWSER_CANVAS_JS if js_is_instrumentable(code) else ADAPTER_JAVASCRIPT_COMPILE
+        return ADAPTER_JAVASCRIPT_COMPILE
     if ext in (".jsx", ".tsx", ".ts"):
         return ADAPTER_UNSUPPORTED          # needs transpilation first
     if ext in (".html", ".htm"):
-        for m in _INLINE_SCRIPT_RE.finditer(code):
-            if js_is_instrumentable(m.group(1)):
-                return ADAPTER_BROWSER_INLINE_SCRIPT
-        return ADAPTER_UNSUPPORTED
+        return ADAPTER_UNSUPPORTED          # nothing here runs a page
     if ext == ".css":
         return ADAPTER_CSS_SYNTAX
     return ADAPTER_UNSUPPORTED
-
-
-def extract_inline_script(html: str) -> str:
-    return "\n".join(m.group(1) for m in _INLINE_SCRIPT_RE.finditer(html or ""))
-
-
-
-# --------------------------------------------------------------- JS probe ---
-
-# Instrumentation only. It never inspects the artifact's identifiers, so it
-# does not care what the author named the snake, the loop, or the score.
-_JS_HARNESS = r"""
-// Fully deterministic instrumentation: a VIRTUAL clock, no wall time.
-//
-// The previous version used real setTimeout across two separate processes,
-// so OS scheduling jitter could give the baseline and keyed runs different
-// frame counts -- and a raw trace diff then read that as "input caused a
-// change". An animation whose key handler does nothing could be scored
-// input-causal. Correctness must not depend on machine load, so nothing here
-// touches real time: callbacks go in a priority queue keyed by (due time,
-// insertion order), both runs advance through identical virtual timestamps,
-// input is injected at an exact virtual instant, and both runs execute the
-// same bounded number of callbacks.
-const MODE = process.argv[3] || 'baseline';
-const INPUT_AT = 300;          // virtual ms
-const MAX_VT   = 6000;         // virtual ms ceiling
-const MAX_CB   = 4000;         // callback ceiling (runaway scheduling)
-
-let __vt = 0, __seq = 0, __cbs = 0;
-const __q = [];
-const __push = (fn, delay) => {
-  const d = Math.max(0, Number(delay) || 0);
-  const id = ++__seq;
-  __q.push({ due: __vt + d, seq: id, fn });
-  return id;
-};
-const __cancel = (id) => { const i = __q.findIndex(t => t.seq === id); if (i >= 0) __q.splice(i, 1); };
-global.setTimeout = (fn, d) => __push(fn, d);
-global.setInterval = (fn, d) => { const self = { id: 0 };
-  const tick = () => { try { fn(); } catch (e) { __err(e); } self.id = __push(tick, d); };
-  self.id = __push(tick, d); return self.id; };
-global.clearTimeout = __cancel; global.clearInterval = __cancel;
-global.requestAnimationFrame = (fn) => __push(() => fn(__vt), 16);
-global.cancelAnimationFrame = __cancel;
-global.Date = class extends Date { constructor(...a){ super(...(a.length?a:[0])); }
-  static now(){ return __vt; } };
-global.performance = { now: () => __vt };
-
-const __ev = { runtime_clean:true, supported:true, error:null, ended:false, textSets:0 };
-const __err = (e) => { __ev.runtime_clean = false; __ev.error = String(e && e.message || e).slice(0,200); };
-const __rects = [];
-let __seed = 12345;
-Math.random = () => { __seed = (__seed * 1103515245 + 12345) & 0x7fffffff; return __seed / 0x7fffffff; };
-
-function __ctx() {
-  return new Proxy({}, { get: (_, p) => {
-    if (typeof p === 'symbol') return undefined;
-    if (['fillStyle','strokeStyle','font','lineWidth','textAlign','textBaseline','globalAlpha'].includes(p)) return '';
-    return (...a) => {
-      // Record any positioned draw, not just rects: path and image games
-      // must not read as inert.
-      if (p === 'fillRect' || p === 'strokeRect' || p === 'rect' || p === 'arc' ||
-          p === 'moveTo' || p === 'lineTo' || p === 'drawImage' || p === 'fillText')
-        __rects.push(p + ':' + a.slice(0,2).map(v => Math.round(Number(v)||0)).join(','));
-    };
-  }, set: () => true });
-}
-const __canvas = { width:400, height:400, getContext:__ctx, addEventListener:(e,f)=>{(__L[e] ||= []).push(f);},
-                   getBoundingClientRect:()=>({left:0,top:0,width:400,height:400}), style:{} };
-const __L = {};
-function __el(id){
-  if (String(id).toLowerCase().includes('canvas')) return __canvas;
-  return new Proxy({ style:{}, classList:{add(){},remove(){},toggle(){}},
-                     addEventListener:(e,f)=>{(__L[e] ||= []).push(f);}, appendChild(){}, focus(){} },
-    { get:(t,p)=> p in t ? t[p] : '',
-      set:(t,p,v)=>{ if((p==='textContent'||p==='innerHTML'||p==='innerText') && t[p] !== undefined && String(t[p]) !== String(v)) __ev.textSets++; t[p]=v; return true; } });
-}
-global.document = { getElementById:__el, querySelector:(s)=>__el(String(s)), querySelectorAll:()=>[],
-                    createElement:()=>__el('x'), body:{appendChild(){},style:{}},
-                    addEventListener:(e,f)=>{(__L[e] ||= []).push(f);} };
-global.window = { addEventListener:(e,f)=>{(__L[e] ||= []).push(f);}, innerWidth:800, innerHeight:600,
-                  document: global.document, location:{ reload:()=>{ __ev.ended = true; }, href:'' } };
-global.location = global.window.location;
-global.alert = () => { __ev.ended = true; };
-process.on('uncaughtException', __err);
-
-const __src = require('fs').readFileSync(process.argv[2], 'utf8');
-try { (0, eval)(__src); } catch (e) { __err(e);
-  console.log(JSON.stringify({ ...__ev, trace:'', early:'' })); process.exit(0); }
-
-const __fire = (k, code) => (__L['keydown']||[]).forEach(f => {
-  try { f({ key:k, code:k, keyCode:code, which:code, preventDefault(){}, stopPropagation(){} }); } catch(e){ __err(e); }
-});
-
-// Deterministic drain: always the same virtual instants, same budget.
-let __early = '';
-let __injected = false, __drove = false;
-while (__q.length && __vt <= MAX_VT && __cbs < MAX_CB) {
-  __q.sort((a,b) => a.due - b.due || a.seq - b.seq);
-  const t = __q.shift();
-  __vt = Math.max(__vt, t.due);
-  if (!__injected && __vt >= INPUT_AT) { __injected = true; if (MODE === 'input') __fire('ArrowUp', 38); }
-  if (__early === '' && __vt >= 900) __early = __rects.slice(0, 60).join('|');
-  if (!__drove && __vt >= 2500) { __drove = true; for (let i=0;i<6;i++) __fire('ArrowRight', 39); }
-  try { t.fn(); } catch (e) { __err(e); }
-  __cbs++;
-}
-console.log(JSON.stringify({ ...__ev, early: __early, trace: __rects.slice(0, 600).join('|'), cbs: __cbs }));
-"""
-
-
-
-def js_probe_source() -> str:
-    return _JS_HARNESS
-
-
-# Artifacts the shim can meaningfully instrument. Anything else reports
-# supported=false — unverified, NOT failed.
-
-def js_probe_source_inline() -> str:
-    """The harness, adapted to run as ONE blob inside the sandbox.
-
-    The sandbox executes a single code string with no argv and no artifact
-    file, so mode and artifact arrive as pre-declared constants instead.
-    """
-    src = _JS_HARNESS
-    src = src.replace("const MODE = process.argv[3] || 'baseline';",
-                      "const MODE = __MODE__;")
-    src = src.replace("const __src = require('fs').readFileSync(process.argv[2], 'utf8');",
-                      "const __src = __ARTIFACT__;")
-    return src
-
-
-
-_CANVAS_RE = re.compile(r"getContext\s*\(|requestAnimationFrame|addEventListener\s*\(\s*['\"]keydown", re.I)
-_NODE_ONLY_RE = re.compile(r"\brequire\s*\(|\bmodule\.exports\b|\bprocess\.(argv|stdin)\b")
-
-
-
-def js_is_instrumentable(code: str) -> bool:
-    if not code or not code.strip():
-        return False
-    if _NODE_ONLY_RE.search(code):
-        return False        # a Node script, not browser code
-    return bool(_CANVAS_RE.search(code))
-
-
-
-def combine_runs(baseline: Optional[Dict], keyed: Optional[Dict]) -> Optional[Dict]:
-    """Turn two controlled runs into behavioural evidence.
-
-    Causality is a DIFFERENCE between an unkeyed and a keyed run from an
-    identical deterministic start. A single run cannot tell "input changed
-    the world" from "a timer moved pixels" — an animation that ignores
-    input passed an earlier single-run version of this check.
-    """
-    if not baseline or not keyed:
-        return None
-    if not baseline.get("runtime_clean", True) or not keyed.get("runtime_clean", True):
-        return {"supported": True, "runtime_clean": False,
-                "error": baseline.get("error") or keyed.get("error"),
-                "temporal_progress": False, "input_causality": False,
-                "collision_transition": False, "food_or_score_transition": False}
-    # Temporal progress is derived from the trace itself, not from a fixed
-    # virtual timestamp: a game that dies in nine callbacks (a snake starting
-    # next to a wall) never reaches a timestamp snapshot, and read as inert.
-    # Splitting the recorded draws in half and comparing is timing-free.
-    trace = baseline.get("trace", "")
-    parts = [x for x in trace.split("|") if x]
-    half = len(parts) // 2
-    first, second = parts[:half], parts[half:2 * half]
-    return {
-        "supported": True,
-        "runtime_clean": True,
-        # Rendering kept changing on its own.
-        "temporal_progress": half > 0 and first != second,
-        # The keyed run diverged from the unkeyed one.
-        "input_causality": bool(baseline.get("trace")) and baseline.get("trace") != keyed.get("trace"),
-        "collision_transition": bool(baseline.get("ended") or keyed.get("ended")),
-        "food_or_score_transition": (baseline.get("textSets", 0) or 0) > 0,
-    }
-
-
-
-def parse_probe_output(stdout: str) -> Optional[Dict]:
-    for line in reversed((stdout or "").splitlines()):
-        line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                continue
-    return None
-
-
-# Required behaviours for an interactive game artifact. Coverage is judged
-# against these; anything absent keeps the pipeline open.

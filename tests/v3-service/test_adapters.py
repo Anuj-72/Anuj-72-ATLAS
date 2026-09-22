@@ -35,19 +35,21 @@ _SCOPE = "static/game.js"
 _CTX = None  # filled below, after contract import
 
 
-def _record(adapter, accepted=True, probe=None):
+def _record(adapter, accepted=True):
     """The production path: raw observation inputs in, contract record out."""
-    return A.contract_record(adapter=adapter, accepted=accepted, probe=probe,
+    return A.contract_record(adapter=adapter, accepted=accepted,
                              contract_id="generate:js", contract_version="1",
                              artifact_scope=_SCOPE,
                              evaluation_context_hash=C.content_hash("ctx"),
                              candidate_content_hash=C.content_hash("bytes"))
 
 
-def test_plain_js_is_not_automatically_a_canvas_game():
+def test_every_js_file_gets_the_javascript_compile_adapter():
+    """No verifier here runs browser code, so a canvas script is a compile
+    like any other script: it may parse, it may never claim behaviour."""
     assert A.select_adapter("util.js", PLAIN_JS_HELPERS) == A.ADAPTER_JAVASCRIPT_COMPILE
     assert A.select_adapter("build.js", NODE_SCRIPT) == A.ADAPTER_JAVASCRIPT_COMPILE
-    assert A.select_adapter("game.js", CANVAS_GAME) == A.ADAPTER_BROWSER_CANVAS_JS
+    assert A.select_adapter("game.js", CANVAS_GAME) == A.ADAPTER_JAVASCRIPT_COMPILE
 
 
 def test_interactive_python_never_gets_complete_evidence_from_compile():
@@ -90,39 +92,11 @@ def test_jsx_and_tsx_are_unsupported_until_transpiled():
         assert A.select_adapter(name, "const A = () => <div/>;") == A.ADAPTER_UNSUPPORTED
 
 
-def test_html_routes_by_whether_it_has_instrumentable_inline_script():
-    assert A.select_adapter("index.html", HTML_INLINE) == A.ADAPTER_BROWSER_INLINE_SCRIPT
+def test_html_is_unsupported_whatever_it_contains():
+    """Nothing here runs a page: a page with an inline script is exactly as
+    unverifiable as a static one, never vacuously verified."""
+    assert A.select_adapter("index.html", HTML_INLINE) == A.ADAPTER_UNSUPPORTED
     assert A.select_adapter("index.html", HTML_STATIC) == A.ADAPTER_UNSUPPORTED
-    assert "getContext" in A.extract_inline_script(HTML_INLINE)
-
-
-def test_browser_probe_that_could_not_run_is_unverified_not_failed():
-    rec = _record(A.ADAPTER_BROWSER_CANVAS_JS, True, None)
-    assert rec["supported"] is False
-    assert rec["evidence_strength"] == C.SYNTAX
-    assert rec["execution_status"] == C.EXEC_SKIPPED, \
-        "the smoke check still passed — unverified, not failed"
-    assert rec["closure_eligible"] is False
-
-
-def test_complete_browser_behaviour_may_close_the_pipeline():
-    full = {"supported": True, "runtime_clean": True, "temporal_progress": True,
-            "input_causality": True, "collision_transition": True,
-            "food_or_score_transition": True}
-    rec = _record(A.ADAPTER_BROWSER_CANVAS_JS, True, full)
-    assert rec["evidence_strength"] == C.BEHAVIORAL
-    assert rec["overall_quality_score"] == 1.0
-    assert rec["closure_eligible"] is True
-
-
-def test_partial_browser_behaviour_may_not():
-    partial = {"supported": True, "runtime_clean": True, "temporal_progress": True,
-               "input_causality": True, "collision_transition": True,
-               "food_or_score_transition": False}
-    rec = _record(A.ADAPTER_BROWSER_CANVAS_JS, True, partial)
-    assert rec["evidence_strength"] == C.BEHAVIORAL
-    assert rec["overall_quality_score"] == 0.75
-    assert rec["closure_eligible"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -132,43 +106,21 @@ def test_partial_browser_behaviour_may_not():
 # adapters.py no longer imports evidence.py: it declares its own capabilities
 # and derives strength from the OBSERVATIONS rather than from that module's
 # graded string. These characterize the swap over the heterogeneous adapter
-# matrix -- every adapter, supported and unsupported, accepted and rejected,
-# with and without a probe trace -- against the retiring implementation.
+# matrix -- every adapter, supported and unsupported, accepted and rejected --
+# against the retiring implementation.
 #
 # The comparison itself is test-only and disappears with evidence.py; the
 # production path never calls it, which the import sentinel proves.
 
 
 
-def _probe(**flags):
-    ev = {"supported": True, "runtime_clean": True,
-          "temporal_progress": False, "input_causality": False,
-          "collision_transition": False, "food_or_score_transition": False}
-    ev.update(flags)
-    return ev
-
-
 def _matrix():
     """Every observation shape the pipeline can hand this layer: (name,
-    adapter, smoke verdict, probe trace)."""
+    adapter, smoke verdict)."""
     cases = []
-    for adapter in (A.ADAPTER_ALGORITHMIC_IO, A.ADAPTER_PYTHON_COMPILE, A.ADAPTER_JAVASCRIPT_COMPILE,
-                    A.ADAPTER_CSS_SYNTAX, A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, A.ADAPTER_UNSUPPORTED):
+    for adapter in A.ALL_ADAPTERS:
         for smoke in (True, False):
-            cases.append((f"{adapter}:smoke={smoke}", adapter, smoke, None))
-    for adapter in (A.ADAPTER_BROWSER_CANVAS_JS, A.ADAPTER_BROWSER_INLINE_SCRIPT):
-        for smoke in (True, False):
-            cases.append((f"{adapter}:no-probe:smoke={smoke}", adapter, smoke, None))
-            for label, ev in (
-                    ("all", _probe(temporal_progress=True, input_causality=True,
-                                   collision_transition=True,
-                                   food_or_score_transition=True)),
-                    ("required-only", _probe(temporal_progress=True,
-                                             input_causality=True)),
-                    ("partial-required", _probe(temporal_progress=True)),
-                    ("dirty-runtime", _probe(runtime_clean=False)),
-                    ("unsupported-probe", _probe(supported=False))):
-                cases.append((f"{adapter}:{label}:smoke={smoke}", adapter, smoke, ev))
+            cases.append((f"{adapter}:smoke={smoke}", adapter, smoke))
     return cases
 
 
@@ -196,33 +148,20 @@ CHARACTERIZED = {
 def test_direct_production_matches_the_characterized_behaviour():
     """Adapter routing, supported/unsupported, execution status and evidence
     strength for every shape the pipeline can produce."""
-    for name, adapter, smoke, probe in _matrix():
-        rec = _record(adapter, smoke, probe)
+    for name, adapter, smoke in _matrix():
+        rec = _record(adapter, smoke)
         assert rec["adapter_id"] == adapter, name
-        if name in CHARACTERIZED:
-            want = CHARACTERIZED[name]
-            got = (rec["evidence_strength"], rec["execution_status"], rec["supported"])
-            assert got == want, f"{name}: {got} != {want}"
-            continue
-        # Browser families, keyed by what the probe demonstrated.
-        if probe is None:
-            assert rec["supported"] is False
-            assert rec["execution_status"] in (C.EXEC_SKIPPED, C.EXEC_ERROR), name
-        elif not probe.get("supported", True):
-            assert rec["supported"] is False, name
-        elif not probe.get("runtime_clean", True):
-            assert rec["evidence_strength"] == C.SYNTAX, name
-        elif all(probe.get(c) for c in A.BROWSER_REQUIRED):
-            assert rec["evidence_strength"] == C.BEHAVIORAL, name
-        else:
-            assert rec["evidence_strength"] == C.RUNTIME, name
+        assert name in CHARACTERIZED, f"{name}: an adapter shape no one characterized"
+        want = CHARACTERIZED[name]
+        got = (rec["evidence_strength"], rec["execution_status"], rec["supported"])
+        assert got == want, f"{name}: {got} != {want}"
 
 
 def test_direct_production_preserves_coverage_and_closure():
     """Criterion observations, required/missing/unmeasurable coverage, quality
     and closure eligibility follow from what the adapter reported."""
-    for name, adapter, smoke, probe in _matrix():
-        rec = _record(adapter, smoke, probe)
+    for name, adapter, smoke in _matrix():
+        rec = _record(adapter, smoke)
         caps = set(A._capabilities(adapter))
         obs = rec["observations"]
 
@@ -236,12 +175,6 @@ def test_direct_production_preserves_coverage_and_closure():
                 assert obs[r["id"]]["status"] == C.NOT_APPLICABLE, name
                 assert r["id"] in rec["missing_required"], name
 
-        behavior = probe or {}
-        for cid in A.BROWSER_REQUIRED:
-            if cid in caps:
-                demonstrated = obs[cid]["status"] == C.DEMONSTRATED
-                assert demonstrated == bool(behavior.get(cid)), f"{name}:{cid}"
-
         # Closure follows contract policy, not the adapter's opinion.
         assert rec["closure_eligible"] == (
             rec["requirements_complete"] and rec["supported"]
@@ -253,8 +186,8 @@ def test_direct_production_preserves_coverage_and_closure():
 
 
 def test_direct_production_carries_identity_and_hashes():
-    for name, adapter, smoke, probe in _matrix():
-        rec = _record(adapter, smoke, probe)
+    for name, adapter, smoke in _matrix():
+        rec = _record(adapter, smoke)
         C.require_identity(rec, name)
         assert rec["contract_id"] == "generate:js"
         assert rec["contract_version"] == "1"
@@ -267,23 +200,16 @@ def test_direct_production_carries_identity_and_hashes():
 def test_adapter_ids_are_the_ones_records_carry():
     """The wire values are part of the contract identity, so they are pinned
     as literals rather than compared against another copy."""
-    assert A.ADAPTER_BROWSER_CANVAS_JS == "browser_canvas_js"
-    assert A.ADAPTER_BROWSER_INLINE_SCRIPT == "browser_inline_script"
     assert A.ADAPTER_JAVASCRIPT_COMPILE == "javascript_compile"
     assert A.ADAPTER_CSS_SYNTAX == "css_syntax"
     assert A.ADAPTER_ALGORITHMIC_IO == "algorithmic_io"
     assert A.ADAPTER_PYTHON_COMPILE == "python_compile"
     assert A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED == "interactive_python_unsupported"
     assert A.ADAPTER_UNSUPPORTED == "unsupported"
-    assert A.BROWSER_REQUIRED == ["temporal_progress", "input_causality"]
-    assert A.BROWSER_OPTIONAL == ["collision_transition", "food_or_score_transition"]
 
 
-def test_probe_mechanics_live_only_here():
-    """The browser probe's machinery has exactly one home."""
+def test_adapter_routing_lives_only_here():
+    """Adapter routing has exactly one home."""
     v3 = Path(__file__).resolve().parents[2] / "v3-service"
-    for fn in ("def select_adapter(", "def js_is_instrumentable(",
-               "def extract_inline_script(", "def js_probe_source_inline(",
-               "def parse_probe_output(", "def combine_runs("):
-        owners = [p.name for p in v3.glob("*.py") if fn in p.read_text()]
-        assert owners == ["adapters.py"], f"{fn.strip()} owners: {owners}"
+    owners = [p.name for p in v3.glob("*.py") if "def select_adapter(" in p.read_text()]
+    assert owners == ["adapters.py"], f"select_adapter owners: {owners}"

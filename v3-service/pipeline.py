@@ -72,7 +72,7 @@ for _phase, _stages in {
                 "self_test_verify", "build_verify",
                 "build_verify_unavailable", "runtime_compare"),
     "veto": ("lens_veto", "structural_veto", "call_graph_veto"),
-    "selection": ("selected", "consensus", "consensus_ranking"),
+    "selection": ("selected", "consensus"),
     "repair_pr_cot": ("phase3", "call_chain_context", "pr_cot",
                       "pr_cot_pass", "pr_cot_failed", "pr_cot_error"),
     "repair_refinement": ("refinement", "refinement_pass",
@@ -544,38 +544,6 @@ class _PoolCapture:
             "influences_live_selection": False,
         })
 
-    def note_consensus(self, record) -> None:
-        """Per-input clusters with their exact members.
-
-        Agreement counts alone cannot say WHICH candidates agreed, so a
-        ranking could never be checked against an independent verdict. The
-        generated expected outputs are not part of this and are not read to
-        build it.
-        """
-        if not self.enabled or not record:
-            return
-        payload = dict(record)
-        payload["type"] = "consensus_clusters"
-        payload["session_id"] = self._session_id
-        self.write(payload)
-
-    def note_shadow_recommendation(self, recommendation,
-                                   incumbent_sha256: str = "") -> None:
-        """The frozen counterfactual, recorded and acted on by nothing.
-
-        The lens preference and the contract selection are already in the
-        selection_summary for this run; this record is the third reading,
-        kept beside them so all three can be compared offline.
-        """
-        if not self.enabled or not recommendation:
-            return
-        payload = dict(recommendation)
-        payload["type"] = "shadow_recommendation"
-        payload["session_id"] = self._session_id
-        payload["incumbent_sha256"] = incumbent_sha256
-        payload["authority"] = "diagnostic_only"
-        self.write(payload)
-
     def note_pool(self, *, phase: str, pool, lens_index=None,
                   evidence_index=None, verified_index=None,
                   status: str = "", reason: str = "", tied: int = 0,
@@ -957,33 +925,6 @@ def _task_input_file(project_files) -> str:
     return ""
 
 
-# ------------------------------------------------------------------ mode ---
-# One valid mode, because two independent flags allowed an invalid one:
-# selection enabled with probing disabled turned on the evidence ranker while
-# collecting no evidence for it to rank.
-MODE_OFF = "off"          # no probing, legacy selection
-MODE_SHADOW = "shadow"    # probing + telemetry, legacy selection
-MODE_ENFORCE = "enforce"  # probing + telemetry + evidence selection
-
-
-def _selection_mode(env: Optional[Dict[str, str]] = None) -> str:
-    # `env is None` means "read the process environment"; an explicitly
-    # supplied empty dict means "this environment has nothing set", and the
-    # two must not collapse via truthiness.
-    import os as _os
-    source = _os.environ if env is None else env
-    raw = str(source.get("ATLAS_EVIDENCE_MODE", MODE_OFF)).strip().lower()
-    return raw if raw in (MODE_OFF, MODE_SHADOW, MODE_ENFORCE) else MODE_OFF
-
-
-def _probing_enabled(mode: str) -> bool:
-    return mode in (MODE_SHADOW, MODE_ENFORCE)
-
-
-def _selection_enabled(mode: str) -> bool:
-    return mode == MODE_ENFORCE
-
-
 # The candidate is staged beside its input rather than spliced into the
 # wrapper, so the bytes that run are the bytes that were generated.
 _CANDIDATE_FILE = "candidate.py"
@@ -1152,37 +1093,21 @@ _CONSENSUS_MARK = "V3_OUT:"
 
 
 
-def _evaluate_candidate(file_path, code, smoke_passed, has_oracle, emit,
-                       sandbox=None, *, task=None):
+def _evaluate_candidate(file_path, code, smoke_passed, has_oracle, emit, *,
+                       task=None):
     """THE canonical contract record for ONE artifact.
 
-    Behavioural adapters actually run here; an unsupported or inconclusive
-    candidate stays available as a fallback but is never represented as
-    behaviourally verified.
+    An unsupported candidate stays available as a fallback but is never
+    represented as verified.
 
     One record, bound to the exact bytes it describes. No parallel strength,
     score or coverage field is kept beside it: a second authoritative copy is
     how two answers about one candidate start to disagree.
     """
     adapter = adapters.select_adapter(file_path, code, has_oracle)
-    probe_ev = None
-    # Behavioural probing costs real budget, so it is opt-in. Leaving it on
-    # while only the DECISION was shadowed changed latency and could consume
-    # enough budget to alter later pipeline behaviour -- that is
-    # decision-shadowing, not passive shadowing.
-    if _probing_enabled(_selection_mode()) and \
-            adapter in (adapters.ADAPTER_BROWSER_CANVAS_JS, adapters.ADAPTER_BROWSER_INLINE_SCRIPT):
-        target = code
-        if adapter == adapters.ADAPTER_BROWSER_INLINE_SCRIPT:
-            target = adapters.extract_inline_script(code)
-        try:
-            probe_ev = run_browser_probe(target, sandbox)
-        except Exception as exc:                      # noqa: BLE001
-            emit("behavior_probe_error", str(exc)[:120])
-            probe_ev = None
     task = task or _task_identity("", "")
     return adapters.contract_record(
-        adapter=adapter, accepted=bool(smoke_passed), probe=probe_ev,
+        adapter=adapter, accepted=bool(smoke_passed),
         contract_id=task["contract_id"], contract_version=task["contract_version"],
         artifact_scope=task["artifact_scope"],
         evaluation_context_hash=task["evaluation_context_hash"],
@@ -1193,16 +1118,16 @@ def _evaluate_candidate(file_path, code, smoke_passed, has_oracle, emit,
 def _ensure_delivered_evidence(result, *, file_path, problem):
     """Every successful exit describes THE BYTES IT RETURNS.
 
-    The pipeline has six ways to return code, and only two of them ran the
+    The pipeline has five ways to return code, and only two of them ran the
     structured evaluation on the artifact they hand back: the probe's early
-    return and phase-one selection. Repair, refinement, the dead-oracle
-    consensus and the budget fallback returned code with no record of it at
+    return and phase-one selection. Repair, refinement and the budget
+    fallback returned code with no record of it at
     all, or with the record of a different candidate, so the envelope either
     went missing or described bytes the caller never received.
 
     This evaluates the delivered bytes through the SAME canonical
-    adapter->contract path every other candidate goes through. No probe is
-    dispatched here -- an artifact whose behaviour was never observed reports
+    adapter->contract path every other candidate goes through. Nothing new
+    runs here -- an artifact whose behaviour was never observed reports
     exactly that -- and the verifier's own accept/reject is the observation
     input, never a claim of complete evidence: `accepted` on an interactive
     artifact still yields syntax-level, unsupported evidence, and only the
@@ -1225,7 +1150,6 @@ def _ensure_delivered_evidence(result, *, file_path, problem):
             adapter=adapters.select_adapter(
                 file_path, code, bool(result.get("has_oracle"))),
             accepted=bool(result.get("passed")),
-            probe=None,
             contract_id=task["contract_id"],
             contract_version=task["contract_version"],
             artifact_scope=task["artifact_scope"],
@@ -1275,54 +1199,6 @@ def _record_closes(record, code):
     except contract.ContractError:
         return False
     return selection.get("verified_winner") is record
-
-
-# Execution budget for ONE probe arm. Kept modest: two arms run per
-# candidate, and the harness is a bounded virtual-clock drain, not a wall
-# clock wait.
-BROWSER_PROBE_TIMEOUT_S = 20
-
-
-def run_browser_probe(code: str, sandbox=None, timeout_s: int = BROWSER_PROBE_TIMEOUT_S):
-    """Run the deterministic harness INSIDE THE ISOLATED SANDBOX.
-
-    This previously shelled out to `node` directly from the V3 service, which
-    executes model-generated JavaScript in the service's own environment --
-    its filesystem, env vars, network and process capabilities. The
-    instrumentability regex is a routing hint, not a containment boundary,
-    and treating it as one was a security defect. The sandbox already runs
-    untrusted candidate code under its own restrictions and supports
-    javascript, so the probe belongs there.
-
-    Returns None for "inconclusive" -- never a behavioural verdict -- when
-    the sandbox is unavailable, times out, or the artifact is not
-    instrumentable.
-    """
-    if sandbox is None or not adapters.js_is_instrumentable(code):
-        return None
-    runs = {}
-    for mode in ("baseline", "input"):
-        # The harness reads its artifact from a file and its mode from argv;
-        # inside the sandbox there is one code blob, so both are inlined.
-        blob = (
-            "const __MODE__ = " + json.dumps(mode) + ";\n"
-            "const __ARTIFACT__ = " + json.dumps(code) + ";\n"
-            + adapters.js_probe_source_inline()
-        )
-        try:
-            ok, stdout, _stderr = sandbox(blob, language="javascript",
-                                          timeout=timeout_s)
-        except TypeError:
-            return None          # adapter without language support
-        except Exception:        # noqa: BLE001
-            return None
-        if not ok:
-            # A failed or timed-out execution can still have emitted
-            # parseable stdout; trusting it would let a crash produce
-            # behavioural evidence.
-            return None
-        runs[mode] = adapters.parse_probe_output(stdout)
-    return adapters.combine_runs(runs.get("baseline"), runs.get("input"))
 
 
 def _make_output_probe(code: str, tc, task_input_file: str = ""):
@@ -1380,142 +1256,6 @@ def _make_output_probe(code: str, tc, task_input_file: str = ""):
             + f"elif _out:\n    print({repr(_CONSENSUS_MARK)}+repr(_out))\n"), files
 
 
-# --- the shadow recommendation ------------------------------------------------
-#
-# Frozen before acquisition so the counterfactual is a rule, not a reading of
-# the results. Diagnostic vocabulary only: it produces no closure, no
-# verified winner, no authorization, no provenance and no delivery, and it is
-# deliberately NOT called replacement_eligible.
-#
-# The consensus it reads includes the incumbent and every retained candidate,
-# and it never consults a generated expected key. A tie stays a tie: candidate
-# order may not break it. A cluster with several non-identical members is
-# reported whole rather than reduced to one.
-SHADOW_RETAIN = "retain_incumbent"
-SHADOW_PREFER = "prefer_candidate"
-SHADOW_TIED = "tied"
-SHADOW_INCOMPARABLE = "incomparable"
-SHADOW_UNMEASURED = "unmeasured"
-
-
-def _shadow_recommendation(incumbent_hash, consensus, contract_selection=None):
-    """Read the frozen rule off an attributable consensus record.
-
-    1. No consensus, or no candidate answered every input -> unmeasured.
-    2. Contract records that cannot be compared -> incomparable.
-    3. More than one winning cluster -> tied.
-    4. The winning cluster holds the incumbent and nothing else -> retain.
-    5. It holds the incumbent and candidates -> they printed the same thing,
-       so there is nothing to gain by replacing -> retain.
-    6. It holds candidates and not the incumbent -> prefer, and the whole
-       cluster is reported as the recommendation's members.
-    """
-    if not consensus or not consensus.get("cases"):
-        return {"recommendation": SHADOW_UNMEASURED, "reason": "no consensus record"}
-    if contract_selection and contract_selection.get("incomparable"):
-        return {"recommendation": SHADOW_INCOMPARABLE,
-                "reason": "contract records are incomparable"}
-    groups = consensus.get("groups") or []
-    if not groups:
-        return {"recommendation": SHADOW_UNMEASURED,
-                "reason": "no candidate answered every input"}
-    top = groups[0]["size"]
-    winners = [g for g in groups if g["size"] == top]
-    if len(winners) > 1:
-        return {"recommendation": SHADOW_TIED,
-                "reason": f"{len(winners)} clusters of size {top}",
-                "tied_members": [g["members"] for g in winners]}
-    members = winners[0]["members"]
-    others = [m for m in members if m != incumbent_hash]
-    if incumbent_hash in members:
-        return {"recommendation": SHADOW_RETAIN,
-                "reason": ("incumbent agrees with the winning cluster"
-                           if others else "incumbent alone in the winning cluster"),
-                "members": members}
-    if not others:
-        return {"recommendation": SHADOW_UNMEASURED, "reason": "empty cluster"}
-    return {"recommendation": SHADOW_PREFER,
-            "reason": "winning cluster excludes the incumbent",
-            "members": others,
-            "multiple_members": len(others) > 1}
-
-
-def _consensus_record(candidates, test_cases, sandbox, task_input_file=""):
-    """What each candidate printed on each generated INPUT, and who agreed.
-
-    The generated expected outputs are never read here — only the inputs are
-    used, so a wrong answer key cannot reach this signal at all. What comes
-    back is correlated ranking evidence: these candidates came from one
-    model, so agreement between them is not independence and may never
-    become closure, a verified winner, or delivery authorization. It is
-    recorded so a future policy can be argued from measurement.
-    """
-    per_case = []
-    outputs = {}
-    for i, tc in enumerate(test_cases):
-        clusters, crashed, timed_out, silent = {}, [], [], []
-        raw_input = getattr(tc, "input_str", "") or ""
-        for c in candidates:
-            digest = contract.content_hash(c.get("code") or "")
-            try:
-                probe_code, probe_files = _make_output_probe(
-                    c["code"], tc, task_input_file)
-                ok, out, err = sandbox(probe_code, files=probe_files)
-            except Exception:                          # noqa: BLE001
-                ok, out, err = False, "", "probe error"
-            marker = ""
-            if ok and _CONSENSUS_MARK in (out or ""):
-                marker = out.split(_CONSENSUS_MARK)[-1].strip()
-            if marker == "CRASH":
-                crashed.append(digest)
-                marker = ""
-            elif not marker:
-                (timed_out if _CAPTURE_TIMEOUT.search(err or "") else
-                 silent).append(digest)
-            else:
-                clusters.setdefault(marker, []).append(digest)
-            outputs.setdefault(digest, []).append(marker)
-        # Cluster ids and output hashes, so a ranking can be checked against
-        # an independent verdict afterwards. Agreement counts alone cannot
-        # say WHICH candidates agreed.
-        ordered = sorted(clusters.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-        rows = [{"cluster_id": f"c{i}-{n}",
-                 "output_sha256": contract.content_hash(k),
-                 "members": v, "size": len(v)}
-                for n, (k, v) in enumerate(ordered)]
-        top = max((r["size"] for r in rows), default=0)
-        winners = [r["cluster_id"] for r in rows if r["size"] == top and top]
-        per_case.append({
-            "input_index": i,
-            "input_sha256": contract.content_hash(raw_input),
-            "input": raw_input[:400],
-            "clusters": rows,
-            "winning_cluster_id": winners[0] if len(winners) == 1 else None,
-            "tied_cluster_ids": winners if len(winners) > 1 else [],
-            "crashed": crashed, "timed_out": timed_out, "no_output": silent,
-        })
-    # A candidate ranks only if it answered every input: partial validity is
-    # not agreement material.
-    signatures = {}
-    for digest, outs in outputs.items():
-        if all(outs):
-            signatures.setdefault(tuple(outs), []).append(digest)
-    groups = sorted(signatures.values(), key=len, reverse=True)
-    agreement = len(groups[0]) if groups else 0
-    tied = [g for g in groups if len(g) == agreement] if groups else []
-    return {
-        "cases": per_case,
-        "candidates": [contract.content_hash(c.get("code") or "")
-                       for c in candidates],
-        "groups": [{"members": g, "size": len(g)} for g in groups],
-        "agreement": agreement,
-        "tied_groups": len(tied),
-        "ranked": [d for g in groups for d in g],
-        "reads_expected_output": False,
-        "authority": "ranking_only",
-    }
-
-
 def _consensus_winners(candidates, test_cases, sandbox, emit,
                        task_input_file=""):
     """CodeT agreement: candidates whose outputs match the largest cluster.
@@ -1560,57 +1300,6 @@ def _consensus_winners(candidates, test_cases, sandbox, emit,
     emit("consensus", f"{len(best)}/{len(candidates)} candidates agree",
          cluster=len(best), clusters=len(sigs))
     return best
-
-
-def _dead_oracle_consensus(problem, task_id, llm, plan_search, probe_code,
-                           test_cases, sandbox, emit, task_input_file, start):
-    """Bounded input-only consensus for the dead-oracle condition.
-
-    When the generated oracle scores uniformly 0/N, the fast return
-    preserves latency at the cost of making consensus — the mechanism built
-    for exactly this condition — unreachable (third-party audit finding).
-    This is the bounded middle: at most two extra candidates, at most four
-    generated inputs, every step gated on the remaining wall-clock, and an
-    immediate unverified return when no cluster forms.
-
-    Feature-flagged (ATLAS_V3_DEAD_ORACLE_CONSENSUS=1) and OFF by default:
-    the unbounded ancestor of this path was the ~300s dead-oracle tax, and
-    this variant has to earn the default in an A/B before it gets it.
-
-    Returns (winning candidate or None, extra tokens spent).
-    """
-    left = _remaining_budget_ms(start)
-    if left is not None and left < 45000:
-        emit("dead_oracle_skip",
-             f"only {round(left)}ms of budget left — not starting")
-        return None, 0
-    tokens = 0
-    cands = []
-    if probe_code:
-        cands.append({"index": 0, "code": probe_code})
-    try:
-        ps = plan_search.generate(problem, task_id, llm, num_plans=2)
-        tokens += ps.total_tokens
-        for code in ps.candidates:
-            if code:
-                cands.append({"index": len(cands), "code": code})
-    except Exception as exc:
-        emit("dead_oracle_generation_failed", str(exc)[:120])
-    left = _remaining_budget_ms(start)
-    if len(cands) < 2 or (left is not None and left < 15000):
-        emit("dead_oracle_skip",
-             f"{len(cands)} candidate(s), {round(left) if left is not None else 'unlimited'}ms left — nothing to compare")
-        return None, tokens
-    # _consensus_winners already enforces the hard rules: a candidate joins
-    # clustering only with a real answer on EVERY case, and a cluster needs
-    # at least two members. "No strong cluster" falls out as [].
-    agreed = _consensus_winners(cands, test_cases[:4], sandbox, emit,
-                                task_input_file)
-    if not agreed:
-        emit("dead_oracle_no_cluster",
-             f"{len(cands)} candidates, no agreement — returning unverified")
-        return None, tokens
-    return agreed[0], tokens
 
 
 class V3PipelineService:
@@ -2123,7 +1812,7 @@ class V3PipelineService:
         # A compile smoke on interactive code demonstrates only that the file
         # parses, and returning on it made candidates_generated=1 with
         # PlanSearch, DivSampling, consensus and ranking never running — the
-        # whole test-time-compute apparatus skipped for any browser artifact.
+        # whole test-time-compute apparatus skipped for any interactive artifact.
         # Strength comes from the VERIFIER THAT RAN. Keying it off the file
         # extension mapped every .py to behavioural completeness, which is
         # wrong for Pygame/Tkinter/Flask — those get a compile smoke and
@@ -2142,17 +1831,15 @@ class V3PipelineService:
         # diagnostic sink is on: with capture off this is not built, not
         # executed and not written, so default behaviour is unchanged. It
         # enters no live list and no live decision.
-        _incumbent_observed = ""
         if capture.enabled and baseline_code:
             try:
                 _inc = _evaluate_candidate(
                     file_path, baseline_code,
                     scoring.smoke_compile_check(
                         baseline_code, sandbox, language=smoke_language, filename=file_path)[0],
-                    _has_oracle, emit, sandbox, task=_task)
+                    _has_oracle, emit, task=_task)
                 capture.note_incumbent(code=baseline_code, record=_inc,
                                        adapter=_inc["adapter_id"])
-                _incumbent_observed = baseline_code
             except Exception as _exc:                  # noqa: BLE001
                 # An incumbent that cannot be evaluated is recorded as
                 # exactly that. Never synthesise a result for it.
@@ -2161,7 +1848,7 @@ class V3PipelineService:
                     evaluation=f"unevaluated: {str(_exc)[:120]}")
 
         probe_result = _evaluate_candidate(
-            file_path, probe_code, probe_passed, _has_oracle, emit, sandbox,
+            file_path, probe_code, probe_passed, _has_oracle, emit,
             task=_task)
         probe_adapter = probe_result["adapter_id"]
         result["evidence_record"] = probe_result
@@ -2179,49 +1866,15 @@ class V3PipelineService:
              f"supported={probe_result['supported']}",
              adapter=probe_adapter, strength=probe_result["evidence_strength"])
 
-        # Early return is a LIVE decision, so it is mode-aware. In shadow the
-        # probe runs and its verdict is recorded, but only the probe-free
-        # judgement may act -- otherwise a behaviourally complete browser
-        # candidate would return early and skip candidate generation, which
-        # is a control-flow change, not observation.
-        #
-        # The judgement itself is contract.select over the candidate's own
-        # record: it closes only when that exact record is the VERIFIED WINNER
+        # Early return is contract.select over the candidate's own record: it
+        # closes only when that exact record is the VERIFIED WINNER
         # under its own rubric. A best record that is not closure-eligible,
         # anything unsupported, failed or incomparable, and any record whose
         # hash does not match these bytes, all leave the pipeline open. The
         # strength floor comes from the contract, so an artifact class whose
         # contract closes on syntax legitimately may, and one that demands an
         # oracle still cannot close on a compile.
-        _mode = _selection_mode()
-        _probe_free = adapters.contract_record(
-            adapter=probe_result["adapter_id"], accepted=bool(probe_passed),
-            probe=None, contract_id=_task["contract_id"],
-            contract_version=_task["contract_version"],
-            artifact_scope=_task["artifact_scope"],
-            evaluation_context_hash=_task["evaluation_context_hash"],
-            candidate_content_hash=contract.content_hash(probe_code))
-        probe_free_early = probe_passed and _record_closes(_probe_free, probe_code)
-        evidence_early = probe_passed and _record_closes(probe_result, probe_code)
-        result["evidence_early_return"] = {
-            "mode": _mode,
-            "probe_free_would_return_early": probe_free_early,
-            "evidence_would_return_early": evidence_early,
-            "agreement": probe_free_early == evidence_early,
-            "adapter": probe_adapter,
-            "strength": probe_result["evidence_strength"],
-            "closure_eligible": probe_result["closure_eligible"],
-            "minimum_closure_strength": adapters.closure_floor(probe_adapter),
-        }
-        emit("evidence_early_return", f"mode={_mode} probe_free={probe_free_early} "
-             f"evidence={evidence_early}", **result["evidence_early_return"])
-
-        if _selection_enabled(_mode):
-            _take_early = evidence_early
-        else:
-            _take_early = probe_free_early
-
-        if _take_early:
+        if probe_passed and _record_closes(probe_result, probe_code):
             emit("probe_pass", "Probe passed — returning early")
             result["passed"] = True
             result["code"] = probe_code
@@ -2249,28 +1902,6 @@ class V3PipelineService:
         # model-generated cases must not skip candidate generation, which is
         # how every session on this path returned nothing at all.
         if _has_oracle and "inconclusive" in (probe_stderr or ""):
-            # Flagged recovery before the fast return: bounded input-only
-            # consensus (see _dead_oracle_consensus). Default off until an
-            # A/B shows the bounded version pays for its latency.
-            if (os.environ.get("ATLAS_V3_DEAD_ORACLE_CONSENSUS", "0") == "1"
-                    and self_tests and self_tests.test_cases):
-                chosen, extra_tokens = _dead_oracle_consensus(
-                    problem, task_id, llm, self.plan_search, probe_code,
-                    self_tests.test_cases, sandbox, emit, task_input_file,
-                    start)
-                result["total_tokens"] += extra_tokens
-                if chosen is not None:
-                    emit("dead_oracle_consensus",
-                         "consensus cluster formed under a dead oracle — "
-                         "returning the agreed candidate")
-                    result["passed"] = True
-                    result["code"] = chosen["code"]
-                    result["phase_solved"] = "dead_oracle_consensus"
-                    result["candidates_generated"] = max(
-                        1, chosen["index"] + 1)
-                    result["total_time_ms"] = (time.time() - start) * 1000
-                    result["events"] = events
-                    return result
             emit("probe_unverifiable",
                  "self-test cannot certify anything (0/N) and the probe "
                  "executes — skipping candidate generation, returning "
@@ -2555,7 +2186,7 @@ class V3PipelineService:
                     # rank_key saw defaults for it.
                     if "contract_record" not in c:
                         c["contract_record"] = _evaluate_candidate(
-                            file_path, c["code"], True, _has_oracle, emit, sandbox,
+                            file_path, c["code"], True, _has_oracle, emit,
                             task=_task)
                     _capture_pool_member(capture, c, probe_code)
                     passing.append(c)
@@ -2573,7 +2204,7 @@ class V3PipelineService:
                 # is how the boolean survived into the candidate path, letting
                 # ATLAS generate alternatives it could not rank.
                 c["contract_record"] = _evaluate_candidate(
-                    file_path, c["code"], passed, _has_oracle, emit, sandbox,
+                    file_path, c["code"], passed, _has_oracle, emit,
                     task=_task)
                 _capture_pool_member(capture, c, probe_code)
                 if passed:
@@ -2588,47 +2219,6 @@ class V3PipelineService:
 
             emit("sandbox_done", f"{len(passing)}/{len(candidates)} passed",
                  passed=len(passing), total=len(candidates))
-
-            # Counterfactual ranking, recorded and acted on by nothing. It
-            # runs the candidates on the generated INPUTS and reports who
-            # agreed; the generated expected outputs never enter it. Off
-            # unless ATLAS_EVIDENCE_MODE turns probing on, because it costs
-            # one sandbox run per candidate per case. Candidate zero is in
-            # this pool like any other candidate and may rank first.
-            if (_probing_enabled(_selection_mode()) and len(passing) >= 2
-                    and self_tests and getattr(self_tests, "test_cases", None)):
-                try:
-                    result["consensus"] = _consensus_record(
-                        passing, self_tests.test_cases, sandbox,
-                        task_input_file)
-                    capture.note_consensus(result["consensus"])
-                    # The comparison the live pool cannot make: the same
-                    # agreement measured over the incumbent AND every
-                    # retained candidate, then the frozen rule read off it.
-                    # Separate pool, separate record, no live effect.
-                    if _incumbent_observed:
-                        _shadow_pool = ([{"index": -1, "code": _incumbent_observed}]
-                                        + list(passing))
-                        _shadow = _consensus_record(
-                            _shadow_pool, self_tests.test_cases, sandbox,
-                            task_input_file)
-                        _shadow["pool"] = "shadow_comparison"
-                        _shadow["incumbent_sha256"] = contract.content_hash(
-                            _incumbent_observed)
-                        capture.note_consensus(_shadow)
-                        capture.note_shadow_recommendation(
-                            _shadow_recommendation(
-                                _shadow["incumbent_sha256"], _shadow,
-                                result.get("contract_selection")),
-                            incumbent_sha256=_shadow["incumbent_sha256"])
-                    emit("consensus_ranking",
-                         f"{result['consensus']['agreement']}/{len(passing)} "
-                         f"agree on every input — ranking evidence only",
-                         agreement=result["consensus"]["agreement"],
-                         groups=len(result["consensus"]["groups"]),
-                         tied_groups=result["consensus"]["tied_groups"])
-                except Exception as exc:               # noqa: BLE001
-                    emit("consensus_ranking", f"unavailable: {str(exc)[:120]}")
 
             # Nothing passed, which for these tasks usually means the answer
             # key was wrong rather than every candidate. Measured across 42
@@ -2859,14 +2449,11 @@ class V3PipelineService:
                 ]
                 selected = select_candidate(ci_list, strategy="lens")
 
-                # Evidence-based ranking. SHADOW BY DEFAULT: it records what it
-                # would have chosen and changes nothing, so uplift can be shown
-                # across task families before it touches a live decision.
-                # ATLAS_EVIDENCE_SELECTION=1 promotes it to the real selector.
-                # Evidence-based selection. SHADOW BY DEFAULT: it records what
-                # it would have chosen and changes nothing, so uplift can be
-                # shown across task families before it touches a live decision.
-                # The choice is contract.select over the candidates' own
+                # Contract selection over the candidates' own records. It does
+                # not choose the delivered bytes -- the lens choice above stands
+                # -- but it is the selection the evidence envelope reports, and
+                # the proxy authorizes a candidate only on a verified winner
+                # from it. The choice is contract.select over the candidates' own
                 # records, under the rubric the BASELINE was measured with --
                 # records that disagree about contract, artifact or context are
                 # incomparable rather than silently ranked, so a foreign
@@ -2925,19 +2512,6 @@ class V3PipelineService:
                         tied=len(picked.get("tied") or []),
                         incomparable=len(picked.get("incomparable") or []),
                         ineligible=len(picked.get("ineligible") or []))
-                    emit("evidence_shadow",
-                         f"lens picked {getattr(selected, 'index', None)}, "
-                         f"contract would pick {(contract_pick or {}).get('index')} "
-                         f"({status})",
-                         **{k: v for k, v in result["evidence_selection"].items()
-                            if k != "candidates"})
-                    # Only a VERIFIED winner may replace the lens choice. A best
-                    # record that is not closure-eligible is diagnostic: turning
-                    # it into the delivered artifact is exactly how a partial
-                    # result becomes a success claim.
-                    if _selection_enabled(_selection_mode()) and verified:
-                        selected = CandidateInfo(verified["index"], verified["code"],
-                                                 verified.get("energy", 0.0), True)
 
                 if selected:
                     winner = _candidate_by_index(passing, selected.index)
@@ -3086,14 +2660,14 @@ class V3PipelineService:
                         # pool members with adapter None and an empty record --
                         # a candidate nothing can say anything about. Same
                         # canonical adapter->contract path as every other
-                        # candidate; no probe is dispatched, so this adds no
-                        # generation and no sandbox run of its own.
+                        # candidate; it adds no generation and no sandbox run
+                        # of its own.
                         capture.note_candidate(
                             role="repair", index=None, code=repair_code,
                             accepted=passed,
                             record=_evaluate_candidate(
                                 file_path, repair_code, passed, _has_oracle,
-                                emit, sandbox, task=_task),
+                                emit, task=_task),
                             phase="repair_pr_cot", lens=repair_lens)
                         if passed:
                             emit("pr_cot_pass", "PR-CoT repair succeeded!",
@@ -3177,7 +2751,7 @@ class V3PipelineService:
                             code=ref_result.winning_code, accepted=passed,
                             record=_evaluate_candidate(
                                 file_path, ref_result.winning_code, passed,
-                                _has_oracle, emit, sandbox, task=_task),
+                                _has_oracle, emit, task=_task),
                             phase="refinement", lens=refinement_lens)
                         if passed:
                             emit("refinement_pass",

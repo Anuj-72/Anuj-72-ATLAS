@@ -193,14 +193,14 @@ the layer that owns it, with no compatibility module, alias or shim left behind:
 
 | Was in `evidence.py` | Now |
 | --- | --- |
-| `select_adapter`, `js_is_instrumentable`, `extract_inline_script`, `js_probe_source_inline`, `js_probe_source`, `parse_probe_output`, `combine_runs`, the JS harness and its regexes | `adapters.py` — adapter routing and probe mechanics |
-| `INTERACTIVE_REQUIRED` / `INTERACTIVE_OPTIONAL`, adapter id constants | `adapters.BROWSER_REQUIRED` / `BROWSER_OPTIONAL`, `adapters.ADAPTER_*` |
+| `select_adapter`, adapter id constants | `adapters.py` — adapter routing (`adapters.ADAPTER_*`) |
+| `js_is_instrumentable`, `extract_inline_script`, `js_probe_source_inline`, `js_probe_source`, `parse_probe_output`, `combine_runs`, the JS harness and its regexes, `INTERACTIVE_REQUIRED` / `INTERACTIVE_OPTIONAL` | **deleted** — the browser probe was a verifier for one artifact class with criteria named for one game; removed with the evidence modes that gated it |
 | `result`, `result_from_adapter`, `grade_interactive` | `adapters.contract_record`, which builds contract records from raw observations |
-| `selection_mode`, `probing_enabled`, `selection_enabled`, `OFF`/`SHADOW`/`ENFORCE` | `pipeline._selection_mode`, `_probing_enabled`, `_selection_enabled`, `MODE_*` — same environment variable, same semantics |
+| `selection_mode`, `probing_enabled`, `selection_enabled`, `OFF`/`SHADOW`/`ENFORCE` | **deleted** — there is one mode: the adapter's own record decides closure, `contract.select` fills the envelope's selection, the lens chooses the delivered bytes |
 | `may_return_early`, `may_return_early_result`, `at_least`, `rank_key`, `STRENGTH_ORDER` and the prototype strength scale | **deleted** — superseded by `contract.select`, `contract.rank_key` and the contract's own strength ordering |
 
 Sentinels in `tests/v3-service/test_contract_genericity.py` prove the file is
 gone, that no Python file imports it, that each moved symbol has exactly one
-definition in exactly one owner, that the superseded policy has no definition
-anywhere, that mode parsing exists only in `pipeline.py`, and that browser
-vocabulary never reaches the generic contract or the pipeline.
+definition in exactly one owner, and that the superseded policy has no
+definition anywhere. `tests/v3-service/test_capability_matrix.py` proves that
+no browser-probe or game-shaped criterion vocabulary survives in the service.

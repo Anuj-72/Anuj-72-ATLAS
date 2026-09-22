@@ -417,39 +417,20 @@ def test_unmeasurable_is_distinct_from_missing():
 
 # --- live record bridging --------------------------------------------------
 
-def test_live_unsupported_record_is_unverified_never_failed():
-    # The probe could not run, so the artifact is unsupported while the smoke
-    # check itself passed.
-    rec = A.contract_record(
-        adapter=A.ADAPTER_BROWSER_CANVAS_JS, accepted=True, probe=None,
-        contract_id="generate:js", contract_version="1",
-        artifact_scope="static/game.js",
-        evaluation_context_hash=C.content_hash("ctx"),
-        candidate_content_hash=C.content_hash(CODE))
-
-    assert rec["supported"] is False
-    assert rec["execution_status"] == C.EXEC_SKIPPED
-    assert rec["closure_eligible"] is False
-    # Unverified, not refuted: nothing was demonstrated and nothing condemned.
-    assert rec["evidence_strength"] == C.SYNTAX
-
-
 def test_oracle_strength_is_claimed_only_where_an_oracle_ran():
     io_rec = A.contract_record(
         adapter=A.ADAPTER_ALGORITHMIC_IO, accepted=True,
         contract_id="c", contract_version="1", artifact_scope="s.py",
         evaluation_context_hash=C.content_hash("ctx"),
         candidate_content_hash=C.content_hash(CODE))
-    probe_rec = A.contract_record(
-        adapter=A.ADAPTER_BROWSER_CANVAS_JS, accepted=True,
-        probe={"supported": True, "runtime_clean": True,
-               **{k: True for k in A.BROWSER_REQUIRED + A.BROWSER_OPTIONAL}},
+    compile_rec = A.contract_record(
+        adapter=A.ADAPTER_JAVASCRIPT_COMPILE, accepted=True,
         contract_id="c", contract_version="1", artifact_scope="s.js",
         evaluation_context_hash=C.content_hash("ctx"),
         candidate_content_hash=C.content_hash(CODE))
 
     assert io_rec["evidence_strength"] == C.ORACLE
-    assert probe_rec["evidence_strength"] == C.BEHAVIORAL
+    assert compile_rec["evidence_strength"] == C.SYNTAX
 
 
 # --- ownership boundaries --------------------------------------------------
@@ -518,15 +499,7 @@ def test_no_compatibility_aliases_or_duplicate_implementations_remain():
     modules = {p.name: p.read_text() for p in V3DIR.glob("*.py")}
     # Each moved symbol has exactly one definition, in its new owner.
     for fn, owner in (("def select_adapter(", "adapters.py"),
-                      ("def js_is_instrumentable(", "adapters.py"),
-                      ("def extract_inline_script(", "adapters.py"),
-                      ("def js_probe_source_inline(", "adapters.py"),
-                      ("def parse_probe_output(", "adapters.py"),
-                      ("def combine_runs(", "adapters.py"),
                       ("def contract_record(", "adapters.py"),
-                      ("def _selection_mode(", "pipeline.py"),
-                      ("def _probing_enabled(", "pipeline.py"),
-                      ("def _selection_enabled(", "pipeline.py"),
                       ("def envelope(", "contract.py"),
                       ("def select(", "contract.py"),
                       ("def _closure(", "contract.py"),
@@ -539,12 +512,6 @@ def test_no_compatibility_aliases_or_duplicate_implementations_remain():
                  "def result_from_adapter(", "STRENGTH_ORDER = [NONE"):
         owners = sorted(n for n, s in modules.items() if dead in s)
         assert owners == [], f"superseded {dead.strip()} survives in {owners}"
-
-
-def test_mode_parsing_lives_only_in_the_pipeline():
-    modules = {p.name: p.read_text() for p in V3DIR.glob("*.py")}
-    owners = sorted(n for n, s in modules.items() if "ATLAS_EVIDENCE_MODE" in s)
-    assert owners == ["pipeline.py"], owners
 
 
 def test_selection_and_closure_live_only_in_the_contract():
@@ -828,8 +795,8 @@ def test_consensus_defines_no_second_strength_scale():
     """One strength vocabulary, in the contract. A ranking signal that grew
     its own scale is how correlated agreement becomes 'behavioural'."""
     pipeline_src = (V3DIR / "pipeline.py").read_text()
-    consensus_block = pipeline_src.split("def _consensus_record(", 1)[1]
-    consensus_block = consensus_block.split("\ndef ", 1)[0]
+    consensus_block = pipeline_src.split("def _consensus_winners(", 1)[1]
+    consensus_block = consensus_block.split("\nclass ", 1)[0].split("\ndef ", 1)[0]
     for forbidden in ("STRENGTH_", "closure_eligible", "verified_winner",
                       "requirements_complete", "evidence_strength"):
         assert forbidden not in consensus_block, forbidden

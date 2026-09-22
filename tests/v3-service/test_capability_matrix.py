@@ -46,10 +46,10 @@ TKINTER = "from tkinter import Tk\nroot=Tk()\nroot.mainloop()"
 CONFIG_JSON = '{"debug": false, "retries": 3}'
 UNSUPPORTED_LANG = "package main\nimport \"fmt\"\nfunc main(){ fmt.Println(1) }"
 
-def _record(adapter, probe=None, accepted=True):
+def _record(adapter, accepted=True):
     """The record the production path builds for a smoke-passing artifact."""
     return A.contract_record(
-        adapter=adapter, accepted=accepted, probe=probe,
+        adapter=adapter, accepted=accepted,
         contract_id="matrix", contract_version="1", artifact_scope="artifact",
         evaluation_context_hash=C.content_hash("ctx"),
         candidate_content_hash=C.content_hash("bytes"))
@@ -62,10 +62,10 @@ MATRIX = [
     ("cli_python",              CLI_PY,           "tool.py",    False, A.ADAPTER_PYTHON_COMPILE,                 False),
     ("algorithmic_io_js",       ALGO_JS,          "solve.js",   False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
     ("node_module",             NODE_MODULE,      "util.js",    False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
-    ("canvas_game",             CANVAS_GAME,      "game.js",    False, A.ADAPTER_BROWSER_CANVAS_JS,              True),
+    ("canvas_game",             CANVAS_GAME,      "game.js",    False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
     ("dom_app_no_canvas",       DOM_APP,          "app.js",     False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
     ("static_html",             STATIC_HTML,      "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
-    ("html_inline_script",      HTML_INLINE,      "index.html", False, A.ADAPTER_BROWSER_INLINE_SCRIPT,          True),
+    ("html_inline_script",      HTML_INLINE,      "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
     ("html_external_script",    HTML_EXTERNAL,    "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
     ("css",                     CSS,              "style.css",  False, A.ADAPTER_CSS_SYNTAX,                     False),
     ("react_jsx",               JSX,              "App.jsx",    False, A.ADAPTER_UNSUPPORTED,                    False),
@@ -89,15 +89,15 @@ def test_no_family_claims_behaviour_it_cannot_demonstrate(
         family, code, path, oracle, expected_adapter, may_claim):
     """The invariant that matters: false behavioral_complete rate is zero.
 
-    Every family gets a smoke pass and NO behavioural probe result. Only the
-    families with a real oracle may reach complete on that basis.
+    Every family gets a smoke pass. Only the families with a real oracle may
+    reach complete on that basis.
     """
     rec = _record(expected_adapter)
     if may_claim and expected_adapter == A.ADAPTER_ALGORITHMIC_IO:
         assert rec["evidence_strength"] == C.ORACLE
         assert rec["closure_eligible"] is True
     else:
-        # Nothing without a probe may claim behavioural strength.
+        # Nothing here may claim behavioural strength.
         assert rec["evidence_strength"] in (C.SYNTAX, C.RUNTIME), family
         # It may still close if its own contract floor is that low -- a
         # stylesheet has no behaviour to demand -- but never otherwise.
@@ -121,27 +121,11 @@ def test_unsupported_is_never_represented_as_failed(
         f"{family}: the smoke check passed, so it is unverified, not failed"
 
 
-def test_the_browser_probe_is_never_dispatched_outside_its_capability():
-    """An adapter must not execute an artifact outside what it declares."""
-    for family, code, path, oracle, adapter, _ in MATRIX:
-        if adapter in (A.ADAPTER_BROWSER_CANVAS_JS, A.ADAPTER_BROWSER_INLINE_SCRIPT):
-            continue
-        target = A.extract_inline_script(code) if path.endswith(".html") else code
-        assert not A.js_is_instrumentable(target), \
-            f"{family} routed to {adapter} but looks instrumentable — routing is inconsistent"
-
-
 def test_the_generic_policy_functions_carry_no_domain_vocabulary():
     """Strength ordering, coverage and ranking must be prompt-agnostic.
 
-    KNOWN LIMITATION, asserted rather than hidden: the required/optional
-    CRITERIA NAMES are still browser-game specific --
-    `collision_transition` and `food_or_score_transition` sit in the shared
-    contract instead of being supplied by the adapter that can measure them.
-    That is the Snake-shaped residue this matrix exists to surface, and it
-    must move into an adapter-declared contract before a second behavioural
-    adapter is written. The policy FUNCTIONS below are clean today; this test
-    fails the moment domain words spread into them.
+    The policy FUNCTIONS below are clean; this test fails the moment domain
+    words spread into them.
     """
     src = Path(C.__file__).read_text()
     for fn in ("def rank_key(", "def _closure(", "def select(", "def build(",
@@ -153,15 +137,18 @@ def test_the_generic_policy_functions_carry_no_domain_vocabulary():
             assert word not in body.lower(), f"'{word}' leaked into {fn}"
 
 
-def test_browser_criteria_are_declared_by_the_adapter_that_measures_them():
-    """The residue this matrix surfaced is resolved: the browser-shaped
-    criterion names are the browser adapter's declaration, not shared policy.
-    They stay opaque strings everywhere above this layer."""
-    assert A.BROWSER_OPTIONAL == ["collision_transition", "food_or_score_transition"]
-    assert A.BROWSER_REQUIRED == ["temporal_progress", "input_causality"]
-    contract_src = Path(C.__file__).read_text()
-    for word in A.BROWSER_REQUIRED + A.BROWSER_OPTIONAL:
-        assert word not in contract_src, f"{word} leaked into the generic contract"
+def test_no_game_shaped_verifier_vocabulary_survives():
+    """The browser probe and its snake-shaped criteria were removed outright.
+    Nothing in the service may name them again: a verifier for one artifact
+    class is not capability, and a criterion named for one game is not a
+    contract."""
+    v3 = Path(A.__file__).resolve().parent
+    for word in ("collision_transition", "food_or_score_transition",
+                 "temporal_progress", "input_causality", "browser_canvas_js",
+                 "browser_inline_script", "run_browser_probe",
+                 "js_is_instrumentable", "ATLAS_EVIDENCE_MODE"):
+        owners = sorted(p.name for p in v3.rglob("*.py") if word in p.read_text())
+        assert owners == [], f"{word} survives in {owners}"
 
 
 def test_multi_file_behaviour_is_not_claimed_from_one_file():

@@ -1,12 +1,11 @@
-"""Shadow must be observational with respect to DECISIONS, not just selection.
+"""Closure is the adapter's own record, and only that.
 
-The defect: phase zero called may_return_early_result on probe evidence, so
-in shadow a behaviourally complete browser candidate returned early and
-skipped candidate generation. That is a live control-flow change.
-
-The probe-free judgement still suppresses syntax-only early return in every
-mode including off — that determination comes from the adapter, needs no
-probe, and is the defect this whole line of work exists to fix.
+Phase zero may return early only when the record built for the delivered
+bytes closes under the task's contract. A compile that accepted the artifact
+demonstrates syntax and nothing above it, so it never closes a task whose
+floor is behaviour; an oracle that every case passed does. There is one mode:
+the record decides closure, `contract.select` fills the envelope's selection,
+and the lens chooses the delivered bytes.
 """
 
 import sys
@@ -25,10 +24,6 @@ import contract as C  # noqa: E402
 import adapters as A  # noqa: E402
 import pipeline as P  # noqa: E402
 import scoring  # noqa: E402
-
-COMPLETE = {"supported": True, "runtime_clean": True, "temporal_progress": True,
-            "input_causality": True, "collision_transition": True,
-            "food_or_score_transition": True}
 
 
 
@@ -96,7 +91,7 @@ def _sandbox_factory(self_test_pass=True, smoke_ok=True, partial_oracle=False,
 
 
 def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
-             task_type="algorithmic", probe=None, plan_calls=None,
+             task_type="algorithmic", plan_calls=None,
              record_hook=None, code=PROBE_CODE, partial_oracle=False,
              passing_marker=None):
     """A V3PipelineService whose every outside dependency is controlled."""
@@ -118,9 +113,6 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
     # not decide which candidates reach the selection this slice is about.
     monkeypatch.setattr(symbols, "structural_score",
                         lambda project_symbols, code: {"ok": False})
-    monkeypatch.setattr(P, "run_browser_probe",
-                        lambda code, sandbox=None: (probe(code) if callable(probe)
-                                                    else probe))
     if record_hook is not None:
         real = adapters.contract_record
         monkeypatch.setattr(adapters, "contract_record",
@@ -158,18 +150,8 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
     return service, calls
 
 
-def _complete_probe(**over):
-    ev = {"supported": True, "runtime_clean": True, "temporal_progress": True,
-          "input_causality": True, "collision_transition": True,
-          "food_or_score_transition": True}
-    ev.update(over)
-    return ev
-
-
-BROWSER_JS = ("const c = document.getElementById('g');\n"
-              "const ctx = c.getContext('2d');\n"
-              "document.addEventListener('keydown', e => {});\n"
-              "function loop(){ ctx.fillRect(0,0,10,10); setTimeout(loop, 50); } loop();\n")
+# A script whose only verifier is a compile: syntax evidence, never closure.
+PLAIN_JS = "function add(a, b) { return a + b; }\nconsole.log(add(1, 2));\n"
 
 
 def _run(service, file_path, problem="build the thing"):
@@ -215,54 +197,6 @@ def test_algorithmic_partial_does_not_close_and_generates(monkeypatch):
     assert rec["closure_eligible"] is False
     assert rec["evidence_strength"] != C.ORACLE
     assert len(calls) == 1, "alternatives must be generated"
-
-
-# 3. Browser evidence that is real but partial: still open.
-def test_browser_partial_evidence_generates_alternatives(monkeypatch):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "enforce")
-    service, calls = _service(monkeypatch, task_type="interactive", code=BROWSER_JS,
-                              probe=lambda code: _complete_probe(input_causality=False))
-    result = _run(service, "game.js")
-
-    assert result["phase_solved"] != "probe"
-    # The probe's own verdict, before selection replaced the run's record with
-    # the delivered candidate's.
-    early = result["evidence_early_return"]
-    assert early["adapter"] == adapters.ADAPTER_BROWSER_CANVAS_JS
-    assert early["strength"] == C.RUNTIME
-    assert early["closure_eligible"] is False
-    assert early["evidence_would_return_early"] is False
-    assert early["minimum_closure_strength"] == C.BEHAVIORAL
-    assert len(calls) == 1
-
-
-# 4. Browser evidence that satisfies every requirement and the floor.
-def test_browser_complete_evidence_closes_in_enforce(monkeypatch):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "enforce")
-    service, calls = _service(monkeypatch, task_type="interactive", code=BROWSER_JS,
-                              probe=_complete_probe())
-    result = _run(service, "game.js")
-
-    rec = result["evidence_record"]
-    assert rec["evidence_strength"] == C.BEHAVIORAL
-    assert rec["requirements_complete"] is True
-    assert rec["closure_eligible"] is True
-    assert result["phase_solved"] == "probe"
-    assert calls == []
-
-
-def test_browser_complete_evidence_does_not_close_in_shadow(monkeypatch):
-    """Shadow observes. The probe-free judgement is the one that may act."""
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "shadow")
-    service, calls = _service(monkeypatch, task_type="interactive", code=BROWSER_JS,
-                              probe=_complete_probe())
-    result = _run(service, "game.js")
-
-    assert result["phase_solved"] != "probe"
-    assert len(calls) == 1
-    early = result["evidence_early_return"]
-    assert early["evidence_would_return_early"] is True
-    assert early["probe_free_would_return_early"] is False
 
 
 # 5. A contract whose declared floor IS syntax may close on syntax evidence.
@@ -318,17 +252,13 @@ def test_hash_mismatch_cannot_close(monkeypatch):
 def test_foreign_records_cannot_outvote_the_matching_one(monkeypatch):
     def _foreign(real, kw):
         kw = dict(kw)
-        if kw["candidate_content_hash"] != C.content_hash(PROBE_CODE):
+        if kw["candidate_content_hash"] != C.content_hash(PLAIN_JS):
             kw["contract_id"] = "generate:other"
         return real(**kw)
 
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "enforce")
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS,
-                              probe=lambda code: _complete_probe(
-                                  food_or_score_transition=False),
-                              record_hook=_foreign)
-    result = _run(service, "game.js")
+                              code=PLAIN_JS, record_hook=_foreign)
+    result = _run(service, "app.js")
 
     selection = result.get("evidence_selection")
     assert selection, "selection telemetry must survive"
@@ -339,12 +269,9 @@ def test_foreign_records_cannot_outvote_the_matching_one(monkeypatch):
 
 # 9. A best record that is not closure-eligible is diagnostic only.
 def test_best_record_without_closure_does_not_authorize_a_winner(monkeypatch):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "enforce")
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS,
-                              probe=lambda code: _complete_probe(
-                                  input_causality=False))
-    result = _run(service, "game.js")
+                              code=PLAIN_JS)
+    result = _run(service, "app.js")
 
     selection = result["evidence_selection"]
     assert selection["status"] == C.SELECTION_BEST_NOT_ELIGIBLE
@@ -353,46 +280,24 @@ def test_best_record_without_closure_does_not_authorize_a_winner(monkeypatch):
     assert result["contract_selection"]["best_record"] is not None
 
 
-# 10. Shadow keeps the lens bytes; enforce moves only for a verified winner.
-@pytest.mark.parametrize("mode", ["shadow", "enforce"])
-def test_lens_bytes_change_only_for_a_verified_contract_winner(monkeypatch, mode):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", mode)
+# 10. Candidate zero stays in the pool.
+def test_candidate_zero_remains_in_the_pool(monkeypatch):
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS,
-                              probe=lambda code: _complete_probe(
-                                  input_causality=False))
-    result = _run(service, "game.js")
-
-    selection = result.get("evidence_selection")
-    if selection:
-        # No verified winner exists, so neither mode may replace the choice.
-        assert selection["verified_index"] is None
-        assert result["code"] in [BROWSER_JS] + ALT_CODES
-
-
-# 11. Candidate zero stays in the pool and can win it.
-def test_candidate_zero_remains_selectable(monkeypatch):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "shadow")
-    service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS,
-                              probe=lambda code: _complete_probe(
-                                  input_causality=(code == BROWSER_JS)))
-    result = _run(service, "game.js")
+                              code=PLAIN_JS)
+    result = _run(service, "app.js")
 
     selection = result.get("evidence_selection")
     assert selection, "selection telemetry must survive"
     indices = [c["index"] for c in selection["candidates"]]
     assert 0 in indices, "candidate zero must remain in the pool"
-    assert selection["evidence_index"] == 0
+    assert selection["status"] in C.SELECTION_STATUSES
 
 
-# 12. The structured vocabulary survives into telemetry and the wire envelope.
+# 11. The structured vocabulary survives into telemetry and the wire envelope.
 def test_selection_vocabulary_reaches_telemetry_and_the_envelope(monkeypatch):
-    monkeypatch.setenv("ATLAS_EVIDENCE_MODE", "shadow")
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS,
-                              probe=lambda code: _complete_probe())
-    result = _run(service, "game.js")
+                              code=PLAIN_JS)
+    result = _run(service, "app.js")
 
     selection = result.get("evidence_selection")
     assert selection["status"] in C.SELECTION_STATUSES
@@ -401,8 +306,8 @@ def test_selection_vocabulary_reaches_telemetry_and_the_envelope(monkeypatch):
         assert key in selection
 
     # The POOL telemetry keeps the vocabulary of the selection that ran; the
-    # ENVELOPE describes the bytes actually delivered, which in shadow is the
-    # lens choice rather than the contract's pick. Both are structured, and
+    # ENVELOPE describes the bytes actually delivered, which is the lens
+    # choice rather than the contract's pick. Both are structured, and
     # neither is allowed to speak for the other.
     envelope = adapters.evidence_envelope(result, delivered_code=result["code"])
     assert envelope["selection"]["status"] in C.SELECTION_STATUSES
@@ -412,34 +317,17 @@ def test_selection_vocabulary_reaches_telemetry_and_the_envelope(monkeypatch):
     assert envelope["delivery"]["describes_delivered_candidate"] is True
 
 
-def test_env_none_differs_from_an_empty_env():
-    import os
-    os.environ["ATLAS_EVIDENCE_MODE"] = "enforce"
-    try:
-        assert P._selection_mode() == P.MODE_ENFORCE       # reads the process env
-        assert P._selection_mode({}) == P.MODE_OFF         # explicitly empty
-    finally:
-        del os.environ["ATLAS_EVIDENCE_MODE"]
-
-
-def test_probe_timeout_fits_inside_the_client_read_timeout():
-    import pipeline as P
-    assert P.BROWSER_PROBE_TIMEOUT_S < 45, \
-        "an execution budget above the client read timeout is cut off by its caller"
-
-
 # ---------------------------------------------------------------------------
 # Every successful exit describes the bytes it returns
 # ---------------------------------------------------------------------------
 #
-# The pipeline has six ways to return code with passed=true. Two of them
+# The pipeline has five ways to return code with passed=true. Two of them
 # evaluated the artifact they hand back; the rest returned code whose evidence
 # was missing or about a different candidate, so a consumer had nothing to
 # check the delivered bytes against. These drive each phase through the real
 # run() and assert the envelope describes the exact returned hash.
 
-SUCCESS_PHASES = ("probe", "dead_oracle_consensus", "budget", "phase1",
-                  "pr_cot", "refinement")
+SUCCESS_PHASES = ("probe", "budget", "phase1", "pr_cot", "refinement")
 
 
 def _envelope_for(result):
@@ -487,23 +375,6 @@ def test_probe_exit_describes_its_delivery(monkeypatch):
     assert env["evaluation"]["closure_eligible"] is True
 
 
-def test_dead_oracle_consensus_exit_describes_its_delivery(monkeypatch):
-    monkeypatch.setenv("ATLAS_V3_DEAD_ORACLE_CONSENSUS", "1")
-    chosen = {"code": "def agreed():\n    return 7\n", "index": 2}
-    monkeypatch.setattr(P, "_dead_oracle_consensus",
-                        lambda *a, **kw: (chosen, 0))
-    service, calls = _service(monkeypatch, oracle_cases=2, self_test_pass=False)
-    result = _run(service, "solve.py")
-
-    env = _assert_envelope_describes_delivery(result, "dead_oracle_consensus")
-    assert result["code"] == chosen["code"]
-    assert result["passed"] is True
-    # Consensus is agreement, not verification: the envelope must not claim a
-    # verified winner for it.
-    assert env["selection"]["status"] != C.SELECTION_VERIFIED_WINNER or \
-        env["evaluation"]["closure_eligible"] is True
-
-
 def test_budget_exit_describes_its_delivery(monkeypatch):
     # The budget path hands back the best PASSING candidate when the run's
     # wall-clock cap expires mid-pipeline. Driven through the pipeline's own
@@ -515,8 +386,8 @@ def test_budget_exit_describes_its_delivery(monkeypatch):
     monkeypatch.setattr(P, "select_candidate", lambda cands, strategy="lens": None)
     monkeypatch.setattr(P, "_remaining_budget_ms", lambda start: -1.0)
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS)
-    result = _run(service, "game.js")
+                              code=PLAIN_JS)
+    result = _run(service, "app.js")
     if result["phase_solved"] != "budget":
         pytest.skip(f"budget path not taken (got {result['phase_solved']})")
     _assert_envelope_describes_delivery(result, "budget")
@@ -524,8 +395,8 @@ def test_budget_exit_describes_its_delivery(monkeypatch):
 
 def test_phase_one_exit_describes_its_delivery(monkeypatch):
     service, calls = _service(monkeypatch, task_type="interactive",
-                              code=BROWSER_JS)
-    result = _run(service, "game.js")
+                              code=PLAIN_JS)
+    result = _run(service, "app.js")
     _assert_envelope_describes_delivery(result, "phase1")
 
 

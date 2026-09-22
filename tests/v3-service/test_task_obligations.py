@@ -20,9 +20,9 @@ import contract as C  # noqa: E402
 import obligations as O  # noqa: E402
 
 
-def _record(adapter, obligations_, accepted=True, probe=None):
+def _record(adapter, obligations_, accepted=True):
     return A.contract_record(
-        adapter=adapter, accepted=accepted, probe=probe,
+        adapter=adapter, accepted=accepted,
         contract_id="c.v1", contract_version="1", artifact_scope="solve.py",
         evaluation_context_hash="ctx", candidate_content_hash="hash",
         task_obligations=obligations_)
@@ -152,22 +152,6 @@ def test_a_syntax_evaluator_that_rejected_the_artifact_demonstrates_nothing():
     assert rec["closure_eligible"] is False
 
 
-def test_behavioral_capability_does_not_satisfy_an_unrelated_command():
-    """A browser probe that ran the artifact cleanly owns structural validity
-    and nothing else. The client's command is a different obligation and the
-    probe never executed it."""
-    probe = {"supported": True, "runtime_clean": True,
-             **{c: True for c in A.BROWSER_REQUIRED + A.BROWSER_OPTIONAL}}
-    command = O.obligation(kind=O.KIND_DECLARED_COMMAND, subject="npm test",
-                           baseline_strength=C.BEHAVIORAL)
-    syntax = O.obligation(kind=O.KIND_SYNTACTIC_VALIDITY, subject="game.js")
-    rec = _record(A.ADAPTER_BROWSER_CANVAS_JS, [syntax, command], probe=probe)
-    assert rec["evidence_strength"] == C.BEHAVIORAL
-    assert rec["observations"][syntax["id"]]["status"] == C.DEMONSTRATED
-    assert rec["observations"][command["id"]]["status"] == C.NOT_APPLICABLE
-    assert rec["requirements_complete"] is False
-
-
 def test_an_unsupported_adapter_cannot_become_closure_eligible():
     """Unsupported is unverifiable, never failed and never vacuously complete
     -- including when the task owes nothing this build can name."""
@@ -245,7 +229,7 @@ def test_an_absent_obligation_set_is_not_an_empty_one():
     a different claim -- and vacuous completeness is exactly what must not be
     reachable by omission."""
     legacy = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True, probe=None,
+        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
         contract_id="c.v1", contract_version="1", artifact_scope="s",
         evaluation_context_hash="ctx", candidate_content_hash="h")
     assert legacy["requirements"], "legacy records are measured against something"
@@ -256,11 +240,11 @@ def test_an_absent_obligation_set_is_not_an_empty_one():
 def test_legacy_and_structured_records_of_the_same_run_are_distinguishable():
     syntax = O.obligation(kind=O.KIND_SYNTACTIC_VALIDITY, subject="solve.py")
     legacy = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True, probe=None,
+        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
         contract_id="c.v1", contract_version="1", artifact_scope="s",
         evaluation_context_hash="ctx", candidate_content_hash="h")
     structured = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True, probe=None,
+        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
         contract_id="c.v1", contract_version="1", artifact_scope="s",
         evaluation_context_hash="ctx", candidate_content_hash="h",
         task_obligations=[syntax])
@@ -280,7 +264,7 @@ def test_correcting_the_registry_left_legacy_selection_where_it_was():
     recs = []
     for h in ("h1", "h2", "h3"):
         recs.append(A.contract_record(
-            adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True, probe=None,
+            adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
             contract_id="c.v1", contract_version="1", artifact_scope="s",
             evaluation_context_hash="ctx", candidate_content_hash=h))
     expected = {"contract_id": "c.v1", "contract_version": "1",
@@ -295,7 +279,7 @@ def test_correcting_the_registry_left_legacy_selection_where_it_was():
 
 def test_a_rejected_candidate_is_ineligible_rather_than_low_scoring():
     rec = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=False, probe=None,
+        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=False,
         contract_id="c.v1", contract_version="1", artifact_scope="s",
         evaluation_context_hash="ctx", candidate_content_hash="h")
     assert rec["execution_ok"] is False
