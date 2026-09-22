@@ -130,7 +130,7 @@ analysed. In particular:
 |---|---|
 | Service won't start | `docker compose logs <svc>`; port collision → change the `ATLAS_*_PORT` in `.env`; bad override → `docker compose config` names the offending key |
 | Model load failure | llama logs name the reason (VRAM, arch, quant); `atlas tier fit --write` re-sizes; `atlas model verify` checks file integrity against the pinned hash |
-| Lens degraded (`self_test_error`) | `atlas lens check` prints the exact missing artifact + fix command (`atlas lens build` / `retrain`); identity mismatch means the bundle belongs to another model |
+| Lens degraded (`self_test_error`) | `atlas lens check` prints the exact missing artifact + fix command (`atlas lens build`); identity mismatch means the bundle belongs to another model |
 | ASA inactive | llama startup log prints why (missing vector / marker mismatch); `atlas asa check`, then `atlas asa build` |
 | Sandbox failures | `docker compose logs sandbox`; egress-cut mode (`ATLAS_SANDBOX_NET_INTERNAL=true`) intentionally breaks dependency installs; resource kills show as 137/timeout in tool results |
 | GPU OOM | reduce `ATLAS_CTX_SIZE`/slots via `atlas tier fit --write`; check nothing else holds VRAM (`nvidia-smi`) |
@@ -472,14 +472,14 @@ What actually holds state, where it lives, and what losing it costs.
 |---|---|---|---|
 | Configuration | `.env` (+ `atlas.conf` for K3s) | Re-run `atlas init` | copy the file |
 | Models | `ATLAS_MODELS_DIR` (default `./models`) | Re-download (hash-verified) | optional — large, re-fetchable |
-| Lens/ASA bundles | `geometric-lens/geometric_lens/models/` + `models/*.gguf(.model)` | Published bundles re-download; **locally-trained calibration does not** | copy the dir after any `atlas lens build`/`retrain` |
-| Lens training corpus | `ATLAS_LENS_HOST_DIR` (default `./lens_training`) + `benchmark/results/` | Lose the ability to retrain calibration | copy before pruning |
+| Lens/ASA bundles | `geometric-lens/geometric_lens/models/` + `models/*.gguf(.model)` | Published bundles re-download; **locally-trained calibration does not** | copy the dir after any `atlas lens build` |
+| Lens training data | `benchmark/results/` | Lose the ability to rebuild calibration from your own bench runs | copy before pruning |
 | TUI sessions | `~/.cache/atlas-tui/sessions/` | Lose `--resume` history | copy the dir |
 | Project files | your repo | — | your VCS |
 
 ## Restore
 
-Config/models/bundles/corpus: copy back into place, `docker compose up
+Config/models/bundles/bench results: copy back into place, `docker compose up
 -d`, `atlas doctor` (it re-verifies artifact identity + hashes).
 
 ## Honest gaps

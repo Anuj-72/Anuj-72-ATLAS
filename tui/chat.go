@@ -204,93 +204,6 @@ func makeChatEvent(eventType string, payload interface{}) chatEvent {
 	return chatEvent{Type: eventType, Data: data}
 }
 
-// cancelTurn POSTs /cancel for a session_id. Best-effort: returns
-// immediately on connection failure. The TCP-disconnect path in the
-// chat client is the primary cancel mechanism; this is defense-in-depth
-// for cases where a reverse proxy buffers the disconnect.
-// fileVerdict is a per-file accept/deny for the post-pass review. Shape MUST
-// match the proxy's /feedback `files` entries.
-type fileVerdict struct {
-	Path    string `json:"path"`
-	Verdict string `json:"verdict"` // "accept" | "deny"
-}
-
-// submitFeedback posts a pass verdict to the proxy, which turns the pass's
-// writes into labeled lens-training samples. `thumbs` is the pass-level 👍/👎;
-// `files` carries any per-file accept/deny (deny → confident negative; the
-// rest ride the thumbs weight). Returns the number of samples recorded.
-func submitFeedback(proxyURL, sessionID, thumbs string, files []fileVerdict) (int, error) {
-	if sessionID == "" {
-		return 0, fmt.Errorf("no completed pass to rate yet")
-	}
-	payload := map[string]interface{}{"session_id": sessionID, "thumbs": thumbs}
-	if len(files) > 0 {
-		payload["files"] = files
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST",
-		strings.TrimRight(proxyURL, "/")+"/feedback", bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if tok := loadBearerToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("feedback returned %d: %s", resp.StatusCode,
-			strings.TrimSpace(string(b)))
-	}
-	var r struct {
-		Recorded int `json:"recorded"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
-	return r.Recorded, nil
-}
-
-// trainingStatus mirrors the proxy's /v1/lens/training-status payload.
-type trainingStatus struct {
-	Total            int    `json:"total"`
-	Good             int    `json:"good"`
-	Bad              int    `json:"bad"`
-	Threshold        int    `json:"threshold"`
-	RetrainAvailable bool   `json:"retrain_available"`
-	Command          string `json:"command"`
-}
-
-// lensRetrainStatusMsg carries a training-status poll result back to Update
-// (after a pass completes) so the model can surface the "retrain available"
-// banner without blocking on the HTTP call.
-type lensRetrainStatusMsg struct{ status trainingStatus }
-
-// fetchTrainingStatus asks the proxy how many labeled samples have accumulated
-// and whether a retrain is worth offering. Best-effort: errors are returned so
-// the caller can simply skip the banner.
-func fetchTrainingStatus(proxyURL string) (trainingStatus, error) {
-	var ts trainingStatus
-	req, err := http.NewRequest("GET",
-		strings.TrimRight(proxyURL, "/")+"/v1/lens/training-status", nil)
-	if err != nil {
-		return ts, err
-	}
-	if tok := loadBearerToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-	if err != nil {
-		return ts, err
-	}
-	defer resp.Body.Close()
-	err = json.NewDecoder(resp.Body).Decode(&ts)
-	return ts, err
-}
-
 // postPermissionDecision answers a mid-turn "permission_request" by POSTing to
 // /v1/permission. decision is "allow" or "deny"; scope is "once" or "session".
 // sessionID is the turn's session id (the value sent on THIS turn) and
@@ -327,6 +240,10 @@ func postPermissionDecision(proxyURL, sessionID, toolCallID, decision, scope str
 	return nil
 }
 
+// cancelTurn POSTs /cancel for a session_id. Best-effort: returns
+// immediately on connection failure. The TCP-disconnect path in the
+// chat client is the primary cancel mechanism; this is defense-in-depth
+// for cases where a reverse proxy buffers the disconnect.
 func cancelTurn(proxyURL, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("empty session id")
@@ -671,7 +588,7 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // installTokenTransport covers every nil-Transport client in the TUI
-// (chat SSE, permission/cancel/feedback POSTs, calibration probe,
+// (chat SSE, permission/cancel POSTs, calibration probe,
 // events stream) through the process default transport.
 func installTokenTransport() {
 	if serviceToken == "" {

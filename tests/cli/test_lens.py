@@ -301,46 +301,6 @@ def test_load_training_samples_missing_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Collected-corpus loader (atlas lens retrain source)
-# ---------------------------------------------------------------------------
-
-def test_load_collected_samples_reads_corpus(tmp_path, monkeypatch):
-    monkeypatch.setenv("ATLAS_LENS_HOST_DIR", str(tmp_path))
-    mdir = tmp_path / "gemma-4-12b-it-Q4_K_M"
-    mdir.mkdir()
-    (mdir / "samples.jsonl").write_text(
-        '{"content": "FROM python:3.11\\n", "label": 1, "weight": 1.0}\n'
-        '{"content": "FROM base\\nCMD run\\n", "label": 0, "weight": 1.0}\n'
-        '{"content": "def f(): pass\\n", "label": 1, "weight": 0.4}\n'
-    )
-    samples = lens._load_collected_samples("gemma-4-12b-it-Q4_K_M")
-    assert len(samples) == 3
-    # mapped to the {text, label, weight} shape _extract_training_embeddings wants
-    assert samples[0] == {"text": "FROM python:3.11\n", "label": 1, "weight": 1.0}
-    assert samples[2]["weight"] == 0.4
-
-
-def test_load_collected_samples_single_subdir_fallback(tmp_path, monkeypatch):
-    """A wrong/blank model name still resolves when exactly one corpus exists."""
-    monkeypatch.setenv("ATLAS_LENS_HOST_DIR", str(tmp_path))
-    mdir = tmp_path / "only-model"
-    mdir.mkdir()
-    (mdir / "samples.jsonl").write_text('{"content": "x\\n", "label": 1}\n')
-    assert len(lens._load_collected_samples("some-other-name")) == 1
-
-
-def test_load_collected_samples_empty_when_absent(tmp_path, monkeypatch):
-    monkeypatch.setenv("ATLAS_LENS_HOST_DIR", str(tmp_path))
-    assert lens._load_collected_samples("whatever") == []
-
-
-def test_sanitize_model_dir_matches_proxy(tmp_path):
-    # Must mirror proxy/lens_samples.go:sanitizeModelName.
-    assert lens._sanitize_model_dir("vendor/Model:Q6_K") == "vendor_Model_Q6_K"
-    assert lens._sanitize_model_dir("") == "default"
-
-
-# ---------------------------------------------------------------------------
 # Build subcommand — early-exit + dry-run paths
 # ---------------------------------------------------------------------------
 

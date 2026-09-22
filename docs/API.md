@@ -31,8 +31,6 @@ The main entry point. Wraps llama-server with an agent loop, grammar-constrained
 | `/v1/permission` | POST | Answer a `permission_request` (approve/deny a destructive tool call mid-turn) |
 | `/events` | GET | Subscribe to a global typed-envelope event broker — same events the TUI's pipeline pane uses |
 | `/v1/calibration/status` | GET | Lens + ASA compat verdict for the loaded model — what the TUI's Pipeline pane badge reads on startup |
-| `/feedback` | POST | Record a pass's human verdict (per-file accept/deny and/or pass-level thumbs) as weighted lens training samples |
-| `/v1/lens/training-status` | GET | Collected lens-sample counts for the loaded model plus a retrain-available flag |
 
 **OpenAI compatibility:**
 
@@ -306,61 +304,6 @@ curl http://localhost:8090/v1/calibration/status | jq .
 ```
 
 **Cache:** none — every call re-probes the lens service. Cost is ~50–200 ms (one HTTP round-trip to `lens/health`). TUI calls once at startup; CI / monitoring should poll no faster than every few seconds.
-
----
-
-### POST /feedback
-
-Records a human verdict on the most recent pass for a session as weighted lens training samples (`proxy/lens.go`). The TUI's `/good`, `/bad`, and per-file accept/deny review flow post here. Per-file verdicts take precedence; when a file carries no verdict, the pass-level thumbs labels it coarsely (with lower weight). A denial is recorded as a confident negative regardless of the pass thumbs.
-
-**Request:**
-```json
-{
-  "session_id": "tui-7f3a2c1b",
-  "thumbs": "up",
-  "files": [
-    {"path": "app.py", "verdict": "accept"},
-    {"path": "utils.py", "verdict": "deny"}
-  ]
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `session_id` | string | The session whose pending pass is being rated. One pending pass per session — rating consumes it. |
-| `thumbs` | string | `"up"` \| `"down"` \| `""` — pass-level verdict, applied to files without a per-file verdict |
-| `files[].verdict` | string | `"accept"` \| `"deny"` — per-file verdict (review mode) |
-
-**Response (200):**
-```json
-{"recorded": 2, "good": 143, "bad": 27}
-```
-
-When there is no pending pass for the session, the response is `{"recorded": 0, "note": "no pending pass for that session"}`. Samples land in the per-model training corpus that `atlas lens retrain` consumes.
-
----
-
-### GET /v1/lens/training-status
-
-Reports the collected-sample counts for the loaded model and whether a retrain is worth offering. The TUI polls this to show the "retrain available" banner.
-
-```bash
-curl http://localhost:8090/v1/lens/training-status
-```
-
-```json
-{
-  "model": "local-model",
-  "good": 1650,
-  "bad": 420,
-  "total": 2070,
-  "threshold": 2000,
-  "retrain_available": true,
-  "command": "atlas lens retrain"
-}
-```
-
-`retrain_available` is true when `total >= threshold` **and** the minority class holds at least 25% of the threshold (so the corpus isn't all-positive or all-negative). The threshold defaults to 2000 and is overridable via `ATLAS_LENS_RETRAIN_MIN`.
 
 ---
 
@@ -871,7 +814,7 @@ These are not part of the public API — every row is consumed by other ATLAS se
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/internal/lens/score-text` | POST | Score text (C(x) only). `scored: false` with `energy`/`normalized` `null` and a `failure` when no score was computed (same kinds as `gx-score`, plus `models_not_loaded`) |
-| `/internal/lens/retrain` | POST | Retrain cost field model. Returns 503 with structured guidance when the models dir is mounted read-only (the standard Compose deployment mounts it `:ro`) — run `atlas lens retrain` host-side instead. |
+| `/internal/lens/retrain` | POST | Retrain cost field model. Returns 503 with structured guidance when the models dir is mounted read-only (the standard Compose deployment mounts it `:ro`) — run `atlas lens build` host-side instead. |
 | `/internal/lens/score-per-step` | POST | Per-token C(x)+G(x) scoring (one forward pass over the prompt; returns per-step verdicts plus `first_off_rails_idx` and aggregates). Pass `layer: int` to score a specific intermediate residual layer (requires the per-layer hidden-states extension on llama-server). `scored: false` with an empty `per_step`/`aggregate`, `n_tokens: 0` and a `failure` when no score was computed (same kinds as `gx-score`). |
 
 ---

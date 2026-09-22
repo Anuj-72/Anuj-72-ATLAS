@@ -131,16 +131,6 @@ paths:
       responses:
         "200": {description: Decision delivered}
         "404": {description: No matching pending request (already resolved, cancelled, or timed out)}
-  /feedback:
-    post:
-      summary: Per-file accept/deny + pass signals into lens samples
-      responses:
-        "200": {description: Recorded}
-  /v1/lens/training-status:
-    get:
-      summary: Labeled-sample counts for the retrain-available alert
-      responses:
-        "200": {description: Counts}
   /v1/calibration/status:
     get:
       summary: Lens/ASA status incl. the seven canonical dimensions

@@ -71,7 +71,6 @@ SCHEMA: Dict[str, Field] = {
     "ATLAS_TRANSCRIPTION_SAMPLER": Field("bool"),
     "ATLAS_RESTATE_LAST_READ": Field("bool"),
     "ATLAS_MAX_TURNS": Field("int", min=0, max=1000),
-    "ATLAS_LENS_RETRAIN_MIN": Field("int", min=0, max=10_000_000),
     "ATLAS_SANDBOX_PIDS": Field("int", min=1, max=1_000_000),
     "ATLAS_SANDBOX_UID": Field("int", min=0, max=2_000_000),
     "ATLAS_SANDBOX_GID": Field("int", min=0, max=2_000_000),
@@ -118,7 +117,6 @@ SCHEMA: Dict[str, Field] = {
     "ATLAS_GHCR_OWNER": Field("str"),
     "ATLAS_PROJECT_DIR": Field("str"),
     "ATLAS_LENS_MODELS": Field("str"),
-    "ATLAS_LENS_HOST_DIR": Field("str"),
     "ATLAS_DIAGNOSTIC_HOST_DIR": Field("str"),
     "ATLAS_SECRETS_DIR": Field("str"),
     "ATLAS_MACOS_PREFIX": Field("str"),
@@ -131,8 +129,7 @@ SCHEMA: Dict[str, Field] = {
     # ASA control-vector path (entrypoint-v3.1.sh + `atlas asa`); the
     # _SCALE/_LAYER_RANGE/_ALLOW_UNVERIFIED tuning knobs are above.
     "ATLAS_CONTROL_VECTOR": Field("str"),
-    # Proxy-side lens-training corpus dir + read_file byte cap.
-    "ATLAS_LENS_DATA_DIR": Field("str"),
+    # read_file byte cap.
     "ATLAS_MAX_READ_BYTES": Field("int", min=0),
     # TUI: proxy base URL, debug log path, mouse capture (on/off).
     "ATLAS_PROXY_URL": Field("str"),
@@ -158,6 +155,12 @@ SCHEMA: Dict[str, Field] = {
         deprecated="removed with the pattern cache; the lens keeps no state"),
     "ATLAS_LENS_ONLINE_LEARNING": Field("bool",
         deprecated="removed with the pattern cache it froze"),
+    "ATLAS_LENS_HOST_DIR": Field("str",
+        deprecated="removed; the proxy no longer collects a lens training corpus"),
+    "ATLAS_LENS_DATA_DIR": Field("str",
+        deprecated="removed; the proxy no longer collects a lens training corpus"),
+    "ATLAS_LENS_RETRAIN_MIN": Field("int",
+        deprecated="removed with the lens training corpus and its retrain prompt"),
     "ATLAS_RPG_PLANNING": Field("bool",
         deprecated="removed; RPG planning was cut — see issue #148"),
 }

@@ -386,9 +386,9 @@ fatal: fetch-pack: invalid index-pack output
 
 ### 프록시가 워크스페이스에 쓰지 못함 (`.atlas.tmp: permission denied`)
 
-**증상:** 모든 `write_file`/`edit_file`이 `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied`로 실패합니다(이후 에이전트는 "쓰기 가능한 하위 디렉터리"를 찾아 헤맵니다). 렌즈 학습 샘플 뱅킹도 중단됩니다(프록시 로그에서 `/data/lens_training` 쓰기 실패).
+**증상:** 모든 `write_file`/`edit_file`이 `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied`로 실패합니다(이후 에이전트는 "쓰기 가능한 하위 디렉터리"를 찾아 헤맵니다).
 
-**원인:** atlas-proxy 이미지는 이미지에 구워진 비루트 사용자(uid 1001, `atlas`)로 실행되지만, `/workspace`(`ATLAS_PROJECT_DIR`)와 `/data/lens_training`에 바인드 마운트된 호스트 디렉터리는 운영자의 uid가 소유합니다. 읽기는 되지만(모드 755) 쓰기는 모두 거부됩니다. `.env`가 `ATLAS_PROXY_UID`보다 오래된 설치는 하드닝된 프록시 이미지를 받은 뒤 이 문제를 겪습니다.
+**원인:** atlas-proxy 이미지는 이미지에 구워진 비루트 사용자(uid 1001, `atlas`)로 실행되지만, `/workspace`(`ATLAS_PROJECT_DIR`)에 바인드 마운트된 호스트 디렉터리는 운영자의 uid가 소유합니다. 읽기는 되지만(모드 755) 쓰기는 모두 거부됩니다. `.env`가 `ATLAS_PROXY_UID`보다 오래된 설치는 하드닝된 프록시 이미지를 받은 뒤 이 문제를 겪습니다.
 
 **해결:** 샌드박스가 이미 하는 것과 동일하게, 프록시를 호출한 사용자로 실행하세요:
 
@@ -839,7 +839,7 @@ curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerpri
    ```
    풀링된 `norm`은 수백 단위여야 합니다(제공되는 Gemma 아티팩트 기준 약 100-150). `norm`이 정확히 `1.0`이면 `embd_normalize: -1`에도 불구하고 서버가 벡터를 정규화한 것이며, 이 경우 C(x)는 모든 입력에 대해 약 0.8이라는 평탄한 값을 반환합니다. 정상처럼 보이지만 아무것도 구분하지 못하는 점수입니다.
 2. `ATLAS_EMBED_POOLING=none`(기본값. [CONFIGURATION.md](../../CONFIGURATION.md) 참고)을 설정하고, 엔트리포인트가 플래그를 고정하도록 llama-server 컨테이너를 재생성하세요. `--pooling`은 llama.cpp에서 서버 전역 설정이며, 전체 텍스트 경로와 per-step 경로를 모두 지원하는 값은 `none`뿐입니다. 풀링과 스케일은 클라이언트 측에서 처리됩니다.
-3. 서버가 올바른 규약으로 응답하면 부팅 자체 테스트의 지문 검사가 통과하고 `/ready`가 200을 반환합니다. 아티팩트가 지문보다 오래되었다면 재학습(`atlas lens retrain`)이 지문을 쓰고 `embedding_contract`를 `model_identity.json`에 새깁니다.
+3. 서버가 올바른 규약으로 응답하면 부팅 자체 테스트의 지문 검사가 통과하고 `/ready`가 200을 반환합니다. 아티팩트가 지문보다 오래되었다면 재빌드(`atlas lens build`)가 지문을 쓰고 `embedding_contract`를 `model_identity.json`에 새깁니다.
 
 ### 임베딩 추출 실패
 
@@ -859,11 +859,11 @@ curl -s http://localhost:8080/embedding \
 
 ### `/internal/lens/retrain`이 503 "models directory is mounted read-only"를 반환
 
-**증상:** lens 서비스에 `/internal/lens/retrain`을 POST하면 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens retrain`"``과 함께 HTTP 503이 반환됩니다.
+**증상:** lens 서비스에 `/internal/lens/retrain`을 POST하면 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``과 함께 HTTP 503이 반환됩니다.
 
 **원인:** 표준 Compose 배포는 lens 모델 디렉토리를 읽기 전용(`:ro`)으로 컨테이너에 마운트하므로, 서비스 내 재학습 엔드포인트가 새 가중치를 쓸 수 없습니다. 엔드포인트는 학습 전에 쓰기 가능 여부를 탐침하고, 학습 실행을 낭비하는 대신 처음부터 거부합니다.
 
-**해결:** 재학습을 호스트 측에서 실행하세요 — `atlas lens retrain`(피드백 코퍼스) 또는 `atlas lens build`(벤치 후보)가 호스트에 아티팩트를 쓰고, `docker compose restart geometric-lens`로 로드합니다(서비스는 시작 시 아티팩트를 읽습니다). 벤치마크 기반 온라인 재캘리브레이션(`lens_feedback`)은 거부를 로그로 남기고 샘플 버퍼를 유지하므로 잃는 것은 없습니다.
+**해결:** 재학습을 호스트 측에서 실행하세요 — `atlas lens build`(벤치 후보 또는 레이블된 샘플 파일)가 호스트에 아티팩트를 쓰고, `docker compose restart geometric-lens`로 로드합니다(서비스는 시작 시 아티팩트를 읽습니다). 벤치마크 기반 온라인 재캘리브레이션(`lens_feedback`)은 거부를 로그로 남기고 샘플 버퍼를 유지하므로 잃는 것은 없습니다.
 
 ---
 

@@ -386,9 +386,9 @@ fatal: fetch-pack: invalid index-pack output
 
 ### 代理无法写入工作区（`.atlas.tmp: permission denied`）
 
-**症状：** 所有 `write_file`/`edit_file` 都以 `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` 失败（随后 agent 会四处寻找"可写的子目录"）。lens 训练样本也不再入库（代理日志中 `/data/lens_training` 写入失败）。
+**症状：** 所有 `write_file`/`edit_file` 都以 `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` 失败（随后 agent 会四处寻找"可写的子目录"）。
 
-**原因：** atlas-proxy 镜像以内置的非 root 用户（uid 1001，`atlas`）运行，但绑定挂载到 `/workspace`（`ATLAS_PROJECT_DIR`）和 `/data/lens_training` 的宿主目录归操作者的 uid 所有。读取可以（模式 755），写入全部被拒绝。`.env` 早于 `ATLAS_PROXY_UID` 的安装在拉取加固后的代理镜像后会遇到这个问题。
+**原因：** atlas-proxy 镜像以内置的非 root 用户（uid 1001，`atlas`）运行，但绑定挂载到 `/workspace`（`ATLAS_PROJECT_DIR`）的宿主目录归操作者的 uid 所有。读取可以（模式 755），写入全部被拒绝。`.env` 早于 `ATLAS_PROXY_UID` 的安装在拉取加固后的代理镜像后会遇到这个问题。
 
 **解决：** 像 sandbox 已经做的那样，让代理以调用者身份运行：
 
@@ -819,7 +819,7 @@ curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerpri
    ```
    池化后的 `norm` 应在数百量级（随附的 Gemma 工件约为 100-150）。若 `norm` 恰好为 `1.0`，说明服务器无视了 `embd_normalize: -1` 而对向量做了归一化，此时 C(x) 对任何输入都会返回约 0.8 的恒定值：分数看似正常，却无法区分任何东西。
 2. 设置 `ATLAS_EMBED_POOLING=none`（默认值；见 [CONFIGURATION.md](../../CONFIGURATION.md)），并重建 llama-server 容器，让入口点固定这些标志。在 llama.cpp 中 `--pooling` 是服务器全局设置，只有 `none` 能同时满足全文路径和 per-step 路径；池化与缩放都在客户端处理。
-3. 服务器提供正确约定后，启动自检的指纹校验会通过，`/ready` 返回 200。如果工件早于指纹机制，一次重训练（`atlas lens retrain`）会写入指纹，并把 `embedding_contract` 刻进 `model_identity.json`。
+3. 服务器提供正确约定后，启动自检的指纹校验会通过，`/ready` 返回 200。如果工件早于指纹机制，一次重建（`atlas lens build`）会写入指纹，并把 `embedding_contract` 刻进 `model_identity.json`。
 
 ### 嵌入向量提取失败
 
@@ -839,11 +839,11 @@ curl -s http://localhost:8080/embedding \
 
 ### `/internal/lens/retrain` 返回 503 "models directory is mounted read-only"
 
-**现象：** 对 lens 服务 POST `/internal/lens/retrain` 返回 HTTP 503，带 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens retrain`"``。
+**现象：** 对 lens 服务 POST `/internal/lens/retrain` 返回 HTTP 503，带 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``。
 
 **原因：** 标准的 Compose 部署把 lens 模型目录以只读（`:ro`）挂载进容器，因此服务内的重训练端点无法写出新权重。该端点在训练前会探测可写性，宁可提前拒绝也不浪费一轮训练。
 
-**解决方法：** 在主机侧运行重训练 —— `atlas lens retrain`（反馈语料）或 `atlas lens build`（bench 候选）在主机上写出工件，然后 `docker compose restart geometric-lens` 加载它们（服务在启动时读取工件）。基准驱动的在线重校准（`lens_feedback`）会记录这次拒绝并保留其样本缓冲区，因此不会丢失任何东西。
+**解决方法：** 在主机侧运行重训练 —— `atlas lens build`（bench 候选或带标签的样本文件）在主机上写出工件，然后 `docker compose restart geometric-lens` 加载它们（服务在启动时读取工件）。基准驱动的在线重校准（`lens_feedback`）会记录这次拒绝并保留其样本缓冲区，因此不会丢失任何东西。
 
 ---
 

@@ -110,13 +110,7 @@ Afterwards: review with `/diff` (or `git diff`), run your tests, and commit
 if happy. `/undo` soft-resets the last commit the agent made; `Ctrl+C`
 cancels a turn mid-flight.
 
-## Teach it your codebase
-
-When a pass finishes, rate it: `/good` banks the files as positive training
-samples, `/bad` as negatives, and `/review` + `/deny <path>` lets you split
-the verdict per file. Once enough samples accumulate, the TUI shows a
-retrain banner — `atlas lens retrain` then re-fits the quality scorer to
-your code and standards. Details in [CLI.md](CLI.md).
+## Bring your own model
 
 Running a model that isn't in the registry? `atlas onboard` walks the
 bring-your-own-GGUF flow ([CLI.md](CLI.md)).

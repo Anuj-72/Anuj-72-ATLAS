@@ -542,8 +542,7 @@ func renderStatsPane(p *pipelineState, width int,
 // slashCommandList drives the slash-mode autocomplete hint. Order is
 // the order users see; keep frequent commands first.
 var slashCommandList = []string{
-	"/help", "/good", "/bad", "/review",
-	"/deny", "/accept", "/redo",
+	"/help", "/review", "/redo",
 	"/clear", "/compact",
 	"/add", "/drop", "/context",
 	"/diff", "/commit", "/undo",

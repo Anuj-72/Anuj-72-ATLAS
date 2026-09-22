@@ -247,12 +247,10 @@ func newProxyMux() *http.ServeMux {
 	mux.HandleFunc("/models", handleModels)
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/ready", handleReady)
-	mux.HandleFunc("/v1/agent", handleAgent)                             // tool-based agent endpoint
-	mux.HandleFunc("/events", handleEvents)                              // typed SSE event stream
-	mux.HandleFunc("/cancel", handleCancel)                              // TUI abort hook
-	mux.HandleFunc("/v1/permission", handlePermission)                   // interactive approve/deny for destructive tools
-	mux.HandleFunc("/feedback", handleFeedback)                          // per-file accept/deny + pass thumbs → lens samples
-	mux.HandleFunc("/v1/lens/training-status", handleLensTrainingStatus) // sample counts for the "retrain available" alert
+	mux.HandleFunc("/v1/agent", handleAgent)           // tool-based agent endpoint
+	mux.HandleFunc("/events", handleEvents)            // typed SSE event stream
+	mux.HandleFunc("/cancel", handleCancel)            // TUI abort hook
+	mux.HandleFunc("/v1/permission", handlePermission) // interactive approve/deny for destructive tools
 	// TUI calls this on connect to render a Lens/ASA compat badge.
 	mux.HandleFunc("/v1/calibration/status", handleCalibrationStatus)
 	mux.HandleFunc("/version", handleVersion)

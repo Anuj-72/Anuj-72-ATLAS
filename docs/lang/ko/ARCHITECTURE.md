@@ -97,7 +97,7 @@ K3s 배포 경로(`scripts/install.sh`, `templates/`의 매니페스트)는 V3.1
 | `detectors.go` | 스턱 패턴 검출: 도구 반복, 추론 반복, 트레이스백 지역화 |
 | `context.go` | 컨텍스트 보강: 심볼 인덱스, 프로젝트 스캔, 워크스페이스 봉쇄, 세션 파일 매니페스트 |
 | `permissions.go` | 권한 게이트(`/v1/permission`), 트러스트 모드, 하드 차단 패턴 |
-| `lens.go` | 렌즈 스코어링 호출, 렌즈 샘플 뱅킹(`/feedback`), 캘리브레이션 상태 |
+| `lens.go` | 렌즈 스코어링 호출, 캘리브레이션 상태 |
 | `guardrails.go` | 도구별 스티어링 가드(축소, 누락된 명령/모듈 스티어, doctype 제거) |
 | `events.go` | 타입 엔벨로프 브로커(`/events`)와 SSE 배관 |
 | `v3_bridge.go` | v3-service의 `/v3/generate` + `/v3/plan`용 SSE 클라이언트 |

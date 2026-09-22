@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+### Removed: the lens training corpus and its capture
+
+The proxy recorded every file the model wrote, stashed each pass's writes by
+session, and appended labeled samples to a per-model corpus: through
+`POST /feedback` (the TUI's `/good`, `/bad` and per-file `/deny`) and
+mechanically (gate rejections as negatives, verified writes as positives).
+`atlas lens retrain` trained the lens on that corpus. Evaluation runs are agent
+use like any other, so the corpus filled with them — 2,425 samples on the dev
+server, 1,198 of them from the AoC benchmark — with no field that could tell
+them apart. A retrain would have trained the scorer on the test set. Nothing
+had retrained from it yet; the deployed lens is the LiveCodeBench-calibrated
+one.
+
+Removed: the pass-write capture and its stash, the mechanical labelling,
+`/feedback` and `/v1/lens/training-status`, the TUI's `/good`, `/bad`,
+`/deny` and `/accept`, its post-pass rating prompt and "retrain available"
+banner, `atlas lens retrain` and its corpus loader, the corpus bind mount
+and its K3s hostPath, and `ATLAS_LENS_DATA_DIR`, `ATLAS_LENS_HOST_DIR`,
+`ATLAS_LENS_RETRAIN_MIN` and `ATLAS_LENS_TRAINING_DIR` (the three `.env`
+keys are now flagged as removed). `/review` and `/redo` stay: they list and
+regenerate the last pass's files and never fed the corpus. The lens is built
+with `atlas lens build` from a bench run or a labeled sample file, as before.
+An existing `lens_training/` directory is no longer written; delete it once
+nothing needs it.
+
 ### Removed: the pattern cache and its SQLite state store
 
 After every V3 success, v3-service posted the problem and its solution to the

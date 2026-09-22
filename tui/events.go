@@ -238,9 +238,8 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 					m.modifiedFiles[path] = true
 					// Force-expire the debounce so the next tick scans.
 					m.lastFileScan = time.Time{}
-					// Track content writes for post-pass review (delete isn't a
-					// lens sample). The path here matches what the proxy keys
-					// /feedback verdicts by, so /deny <path> lines up.
+					// Track content writes for /review (a deleted file has
+					// nothing to review or regenerate).
 					if p.Name != "delete_file" {
 						if m.passWrites == nil {
 							m.passWrites = map[string]bool{}

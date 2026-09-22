@@ -495,7 +495,7 @@ def lens_retrain(request: LensRetrainRequest):
             detail={
                 "status": "error",
                 "reason": ("models directory is mounted read-only; "
-                           "run host-side retrain via `atlas lens retrain`"),
+                           "run host-side retrain via `atlas lens build`"),
             },
         )
 

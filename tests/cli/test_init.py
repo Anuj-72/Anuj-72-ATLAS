@@ -78,8 +78,8 @@ def test_yes_skip_download_writes_env_and_keys(tmp_path, monkeypatch, capsys):
                 "ATLAS_PROXY_UID", "ATLAS_PROXY_GID"):
         assert f"{key}=" in body, f"missing {key} in .env"
 
-    # Proxy runs as the invoking user so it can write the /workspace and
-    # lens_training bind mounts (the image's baked-in uid 1001 can't).
+    # Proxy runs as the invoking user so it can write the /workspace bind
+    # mount (the image's baked-in uid 1001 can't).
     assert f"ATLAS_PROXY_UID={os.getuid()}" in body
     assert f"ATLAS_PROXY_GID={os.getgid()}" in body
 

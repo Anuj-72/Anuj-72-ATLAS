@@ -178,7 +178,8 @@ nohup.out
 
 _agenttest/
 
-# Lens training corpus collected from agent use (local, per-machine)
+# Lens training corpus left by versions that collected one from agent use;
+# nothing writes it any more
 lens_training/
 
 # Private diagnostic captures (local, per-machine). The directory itself is

@@ -387,9 +387,9 @@ After the rebuild loads the model, the Geometric Lens still needs retraining for
 
 ### Proxy Can't Write the Workspace (`.atlas.tmp: permission denied`)
 
-**Symptom:** Every `write_file`/`edit_file` fails with `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` (the agent then wanders looking for "a writable subdirectory"). Lens training samples also stop banking (`/data/lens_training` writes fail in proxy logs).
+**Symptom:** Every `write_file`/`edit_file` fails with `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` (the agent then wanders looking for "a writable subdirectory").
 
-**Cause:** The atlas-proxy image runs as a baked-in non-root user (uid 1001, `atlas`), but the host directories bind-mounted at `/workspace` (`ATLAS_PROJECT_DIR`) and `/data/lens_training` are owned by the operator's uid. Reads work (mode 755); every write is denied. Installs whose `.env` predates `ATLAS_PROXY_UID` hit this after pulling a hardened proxy image.
+**Cause:** The atlas-proxy image runs as a baked-in non-root user (uid 1001, `atlas`), but the host directory bind-mounted at `/workspace` (`ATLAS_PROJECT_DIR`) is owned by the operator's uid. Reads work (mode 755); every write is denied. Installs whose `.env` predates `ATLAS_PROXY_UID` hit this after pulling a hardened proxy image.
 
 **Fix:** run the proxy as the invoking user, the same way the sandbox already does:
 
@@ -870,7 +870,7 @@ curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerpri
    nothing. Compare against `pass_energy_mean` in `cx_normalization.json`:
    served energies should span that band, not sit on one value.
 2. Set `ATLAS_EMBED_POOLING=none` (the default; see [CONFIGURATION.md](CONFIGURATION.md)) and recreate the llama-server container so the entrypoint pins the flags. `--pooling` is server-global, and only `none` serves both the whole-text and per-step paths; pooling and scale are handled client-side.
-3. After the server serves the correct convention, the boot self-test's fingerprint check passes and `/ready` returns 200. If the artifacts predate the fingerprint, a retrain (`atlas lens retrain`) writes one and stamps the `embedding_contract` into `model_identity.json`.
+3. After the server serves the correct convention, the boot self-test's fingerprint check passes and `/ready` returns 200. If the artifacts predate the fingerprint, a rebuild (`atlas lens build`) writes one and stamps the `embedding_contract` into `model_identity.json`.
 
 ### Embedding Extraction Fails
 
@@ -906,11 +906,11 @@ curl -s http://localhost:8099/health | python3 -c "import sys,json; l=json.load(
 
 ### `/internal/lens/retrain` Returns 503 "models directory is mounted read-only"
 
-**Symptom:** POSTing `/internal/lens/retrain` on the lens service returns HTTP 503 with ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens retrain`"``.
+**Symptom:** POSTing `/internal/lens/retrain` on the lens service returns HTTP 503 with ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``.
 
 **Cause:** The standard Compose deployment mounts the lens models directory into the container read-only (`:ro`), so the in-service retrain endpoint cannot write new weights. The endpoint probes writability before training and refuses up front rather than burning a training run.
 
-**Fix:** Run the retrain host-side — `atlas lens retrain` (feedback corpus) or `atlas lens build` (bench candidates) write the artifacts on the host, then `docker compose restart geometric-lens` loads them (the service reads its artifacts at startup). Benchmark-driven online recalibration (`lens_feedback`) logs the refusal and keeps its sample buffer, so nothing is lost.
+**Fix:** Run the retrain host-side — `atlas lens build` (bench candidates or a labeled sample file) writes the artifacts on the host, then `docker compose restart geometric-lens` loads them (the service reads its artifacts at startup). Benchmark-driven online recalibration (`lens_feedback`) logs the refusal and keeps its sample buffer, so nothing is lost.
 
 ---
 

@@ -383,9 +383,9 @@ fatal: fetch-pack: invalid index-pack output
 
 ### プロキシがワークスペースに書き込めない (`.atlas.tmp: permission denied`)
 
-**症状:** すべての `write_file`/`edit_file` が `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` で失敗します（その後エージェントは「書き込み可能なサブディレクトリ」を探して彷徨います）。レンズのトレーニングサンプルのバンキングも止まります（プロキシのログで `/data/lens_training` への書き込みが失敗）。
+**症状:** すべての `write_file`/`edit_file` が `cannot write /workspace/...: open /workspace/....atlas.tmp: permission denied` で失敗します（その後エージェントは「書き込み可能なサブディレクトリ」を探して彷徨います）。
 
-**原因:** atlas-proxy イメージはビルド時に焼き込まれた非 root ユーザー（uid 1001、`atlas`）で動作しますが、`/workspace`（`ATLAS_PROJECT_DIR`）と `/data/lens_training` にバインドマウントされるホストディレクトリはオペレーターの uid が所有しています。読み取りは通り（モード 755）、書き込みはすべて拒否されます。`.env` が `ATLAS_PROXY_UID` より古いインストールでは、ハードニングされたプロキシイメージを取得した後にこれが発生します。
+**原因:** atlas-proxy イメージはビルド時に焼き込まれた非 root ユーザー（uid 1001、`atlas`）で動作しますが、`/workspace`（`ATLAS_PROJECT_DIR`）にバインドマウントされるホストディレクトリはオペレーターの uid が所有しています。読み取りは通り（モード 755）、書き込みはすべて拒否されます。`.env` が `ATLAS_PROXY_UID` より古いインストールでは、ハードニングされたプロキシイメージを取得した後にこれが発生します。
 
 **修正:** サンドボックスが既にそうしているのと同じように、プロキシを呼び出し元ユーザーとして実行します:
 
@@ -816,7 +816,7 @@ curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerpri
    ```
    プールされた `norm` は数百の範囲になります（同梱の Gemma アーティファクトでおよそ 100-150）。`norm` がちょうど `1.0` の場合、`embd_normalize: -1` を指定したにもかかわらずサーバーがベクトルを正規化しており、C(x) はどの入力に対しても約 0.8 という平坦な値を返します。健全に見えて何も区別しないスコアです。
 2. `ATLAS_EMBED_POOLING=none`（デフォルト。[CONFIGURATION.md](../../CONFIGURATION.md) を参照）を設定し、エントリーポイントがフラグを固定するように llama-server コンテナを再作成します。`--pooling` は llama.cpp ではサーバー全体の設定であり、全文パスと per-step パスの両方を満たせるのは `none` だけです。プーリングとスケールはクライアント側で処理します。
-3. サーバーが正しい規約で応答するようになれば、起動時セルフテストのフィンガープリントチェックが通り、`/ready` は 200 を返します。アーティファクトがフィンガープリントより古い場合は、リトレーニング（`atlas lens retrain`）がフィンガープリントを書き出し、`embedding_contract` を `model_identity.json` に刻みます。
+3. サーバーが正しい規約で応答するようになれば、起動時セルフテストのフィンガープリントチェックが通り、`/ready` は 200 を返します。アーティファクトがフィンガープリントより古い場合は、再ビルド（`atlas lens build`）がフィンガープリントを書き出し、`embedding_contract` を `model_identity.json` に刻みます。
 
 ### エンベディング抽出の失敗
 
@@ -836,11 +836,11 @@ curl -s http://localhost:8080/embedding \
 
 ### `/internal/lens/retrain` が 503 "models directory is mounted read-only" を返す
 
-**症状:** lens サービスに `/internal/lens/retrain` を POST すると、``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens retrain`"`` 付きの HTTP 503 が返る。
+**症状:** lens サービスに `/internal/lens/retrain` を POST すると、``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"`` 付きの HTTP 503 が返る。
 
 **原因:** 標準の Compose デプロイは lens のモデルディレクトリをコンテナに読み取り専用（`:ro`）でマウントするため、サービス内の retrain エンドポイントは新しいウェイトを書き込めません。エンドポイントはトレーニング前に書き込み可能性をプローブし、トレーニング実行を無駄にする代わりに最初から拒否します。
 
-**修正:** リトレーニングはホスト側で実行してください — `atlas lens retrain`（フィードバックコーパス）または `atlas lens build`（ベンチ候補）がホスト上にアーティファクトを書き込み、その後 `docker compose restart geometric-lens` でロードします（サービスは起動時にアーティファクトを読み込みます）。ベンチマーク駆動のオンライン再キャリブレーション（`lens_feedback`）は拒否をログに記録してサンプルバッファを保持するため、何も失われません。
+**修正:** リトレーニングはホスト側で実行してください — `atlas lens build`（ベンチ候補またはラベル付きサンプルファイル）がホスト上にアーティファクトを書き込み、その後 `docker compose restart geometric-lens` でロードします（サービスは起動時にアーティファクトを読み込みます）。ベンチマーク駆動のオンライン再キャリブレーション（`lens_feedback`）は拒否をログに記録してサンプルバッファを保持するため、何も失われません。
 
 ---
 

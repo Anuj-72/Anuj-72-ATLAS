@@ -64,12 +64,7 @@ ATLAS_MODELS_DIR="/opt/atlas/models"
 # both see the same files.
 ATLAS_PROJECTS_DIR="/opt/atlas/data/projects"
 
-# Lens training-data corpus. hostPath-mounted at /data/lens_training in
-# the atlas-proxy pod (templates/atlas-proxy-deployment.yaml.tmpl) so
-# `atlas lens retrain` on the node reads the corpus the proxy writes.
-ATLAS_LENS_TRAINING_DIR="/opt/atlas/data/lens_training"
-
-# Parent of the lens state/projects paths above; uninstall.sh removes it
+# Parent of the data paths above; uninstall.sh removes it
 # when --data is set.
 ATLAS_DATA_DIR="/opt/atlas/data"
 

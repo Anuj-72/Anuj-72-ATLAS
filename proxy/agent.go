@@ -2184,10 +2184,6 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// kept retrying the same stub.
 			pendingLensCorrective := ""
 			if scorable, ok := extractScorableContent(parsed.Name, parsed.Args); ok {
-				// Capture the model's write for deferred lens-training labeling
-				// (a later /feedback call turns it into a weighted sample). Same
-				// content the lens scores below, so a sample mirrors its score.
-				ctx.RecordPassWrite(parsed.Name, extractFailurePath(parsed.Name, parsed.Args), scorable)
 				if score, scored := scoreContentForAgent(ctx.Ctx, ctx.LensURL, scorable); scored {
 					ctx.LensScoreHistory = append(ctx.LensScoreHistory, score.Aggregate.GxScoreMin)
 					log.Printf("[agent] lens turn=%d tool=%s gx_min=%.3f gx_mean=%.3f off_rails=%d n_tok=%d latency=%.0fms history=%s",
@@ -2255,13 +2251,6 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					truncateStr(parsed.Name, 64), truncateStr(result.Error, 240))
 				recordFailedToolCall(ctx, parsed.Name,
 					retryIdentityArgs(parsed.Name, intentArgs, parsed.Args), result.Error)
-				// Every refusal of authored content is a deterministic
-				// negative for the lens corpus. One site rather than 60-odd
-				// rejection points, and it cannot miss a gate added later.
-				if authored := authoredContent(parsed.Args); authored != "" {
-					recordGateRejection(modelName, parsed.Name,
-						rejectedPath(parsed.Args), authored, result.Error)
-				}
 				// C4: a replacement refused while the file it targeted stayed
 				// valid. The second distinct proposal against one generation
 				// is the evidence that the refusal text alone is not landing,
@@ -5285,28 +5274,6 @@ func handleAgent(w http.ResponseWriter, r *http.Request) {
 		// %q quotes the error string so user-influenced fragments
 		// embedded in err.Error() can't fake additional log entries.
 		log.Printf("[agent] error: %q", err.Error())
-	}
-
-	// Stash this pass's writes for deferred /feedback labeling (lens training
-	// data). Keyed by session id; a later thumbs / per-file verdict turns them
-	// into weighted samples. No-op when the pass wrote nothing or has no id.
-	stashPendingPass(req.SessionID, modelName, ctx.PassWrites)
-
-	// Label them mechanically too, when the run itself produced evidence.
-	// Waiting for a human meant collecting nothing at all from unattended
-	// runs — the corpus was empty after twelve of them. A human verdict
-	// arriving later carries more weight and refines these rather than
-	// competing with them.
-	//
-	// Selection is evidence-bound, not flag-bound: only the final write of
-	// a path whose on-disk bytes a green verification actually covered.
-	// The session-wide VerifiedThisRun flag stayed true through unverified
-	// rewrites and labeled files the passing command never touched.
-	if verified := verifiedFinalWrites(ctx); len(verified) > 0 {
-		if n := recordVerifiedPass(modelName, verified); n > 0 {
-			log.Printf("[lens] recorded %d verified-run sample(s) for %s (of %d writes)",
-				n, modelName, len(ctx.PassWrites))
-		}
 	}
 
 	// Send final done event

@@ -562,10 +562,9 @@ def _render_env(m: model_registry.Model, profile: tier.TierProfile,
         "ATLAS_SANDBOX_CPUS": sandbox_cpus,
         "ATLAS_SANDBOX_UID": sandbox_uid,
         "ATLAS_SANDBOX_GID": sandbox_gid,
-        # The proxy writes two host bind mounts (/workspace,
-        # /data/lens_training); run it as the invoking user for the same
-        # reason as the sandbox — the image's baked-in uid 1001 can't
-        # write operator-owned host dirs.
+        # The proxy writes the /workspace host bind mount; run it as the
+        # invoking user for the same reason as the sandbox — the image's
+        # baked-in uid 1001 can't write operator-owned host dirs.
         "ATLAS_PROXY_UID": sandbox_uid,
         "ATLAS_PROXY_GID": sandbox_gid,
     }

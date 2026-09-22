@@ -310,7 +310,7 @@ func observeInvocationFeasibility(ctx *AgentContext, entry routeEntry) Feasibili
 // so a guard can enumerate it.
 var feasibilityForbiddenInputs = []string{
 	"HumanTask", "latestUserMessage", "LastTurnReasoning",
-	"PassWrites", "SessionWrites", "V3GenerateResponse",
+	"SessionWrites", "V3GenerateResponse",
 	"WinningScore", "PhaseSolved", "CandidatesTested", "Passed",
 }
 

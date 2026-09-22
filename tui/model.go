@@ -85,22 +85,11 @@ type tuiModel struct {
 	turnActive    bool
 	turnCancel    context.CancelFunc
 	turnSessionID string
-	// lastPassSession is the session id of the most recently COMPLETED pass —
-	// what /good and /bad rate. Distinct from turnSessionID (which a new turn
-	// overwrites at send time); set when a turn finishes.
-	lastPassSession string
-	// retrainNotified gates the "retrain available" banner to once per TUI
-	// session so it doesn't repeat on every subsequent turn.
-	retrainNotified bool
 	// Post-pass review state. passWrites accumulates the files written during
 	// the in-flight pass; on completion it becomes lastPassFiles (what /review
-	// lists and /good·/bad rate). passVerdicts holds per-file deny verdicts the
-	// user set for the last pass (path → "deny"), with optional reasons for
-	// /redo. All cleared when a new pass starts.
+	// lists). Both are cleared when a new pass starts.
 	passWrites    map[string]bool
 	lastPassFiles []string
-	passVerdicts  map[string]string
-	passReasons   map[string]string
 	chatRenderer  *glamour.TermRenderer
 
 	// Set when the user presses Ctrl+C mid-turn so the trailing flurry
@@ -606,11 +595,9 @@ func (m *tuiModel) sendChatCmd(message string) tea.Cmd {
 	m.turnSessionID = sessionID
 	m.turnActive = true
 	m.userCancelled = false // fresh turn — clear the cancel sticky flag
-	// Fresh pass: reset post-pass review state so verdicts/writes don't leak
-	// from the previously-rated pass into this one.
+	// Fresh pass: reset post-pass review state so the previous pass's writes
+	// don't leak into this one.
 	m.passWrites = map[string]bool{}
-	m.passVerdicts = map[string]string{}
-	m.passReasons = map[string]string{}
 	m.lastPassFiles = nil
 
 	proxyURL := m.proxyURL
@@ -1046,9 +1033,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pending entry is gone, so answering would just 404. Clear
 			// the modal so input isn't gated by a dead prompt.
 			m.pendingPerm = nil
-			// The just-finished pass is now rateable via /good and /bad.
-			m.lastPassSession = m.turnSessionID
-			// Freeze the pass's written files for /review and per-file verdicts.
+			// Freeze the pass's written files for /review.
 			m.lastPassFiles = m.lastPassFiles[:0]
 			for p := range m.passWrites {
 				m.lastPassFiles = append(m.lastPassFiles, p)
@@ -1068,33 +1053,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Snapshot the completed turn so a later --continue/--resume
 			// reloads the full transcript.
 			m.saveSession()
-			// Post-pass rate prompt — make the thumbs feature discoverable.
-			// Only when the pass actually produced writes (something to rate)
-			// and it wasn't cancelled/errored.
-			if len(m.lastPassFiles) > 0 && p.Err == "" && !m.userCancelled {
-				m.chat = append(m.chat, chatMessage{
-					Role: roleSystem, Meta: "rate",
-					Body: fmt.Sprintf(
-						"Rate this pass → 👍 /good · 👎 /bad · 🔍 /review (%d file(s) written) — trains the lens on your workloads.",
-						len(m.lastPassFiles)),
-				})
-			}
-			// Check (once per session) whether enough labeled samples have
-			// accumulated to offer a lens retrain. Async so it never blocks
-			// the UI; the result arrives as a lensRetrainStatusMsg.
-			if !m.retrainNotified {
-				proxyURL := m.proxyURL
-				return m, tea.Batch(
-					waitForChatEvent(m.chatEvents),
-					func() tea.Msg {
-						ts, err := fetchTrainingStatus(proxyURL)
-						if err != nil {
-							return nil
-						}
-						return lensRetrainStatusMsg{ts}
-					},
-				)
-			}
 		} else {
 			// Skip dlog for llm_token — at ~30 tok/s a long generation
 			// produces thousands of entries and crowds out actually
@@ -1109,12 +1067,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForChatEvent(m.chatEvents)
 
 	case slashResultMsg:
-		// Per-file verdicts are cleared only once /good or /bad actually
-		// landed — a failed submit keeps them staged for a retry.
-		if (msg.command == "/good" || msg.command == "/bad") && msg.err == nil {
-			m.passVerdicts = map[string]string{}
-			m.passReasons = map[string]string{}
-		}
 		body := msg.output
 		if msg.err != nil {
 			if body == "" {
@@ -1138,21 +1090,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"command": msg.command, "ok": msg.err == nil,
 			"output_len": len(msg.output),
 		})
-		return m, nil
-
-	case lensRetrainStatusMsg:
-		// Surface the retrain prompt once per session when enough labeled
-		// samples have accumulated. Tells the user the exact command to run.
-		if msg.status.RetrainAvailable && !m.retrainNotified {
-			m.retrainNotified = true
-			m.chat = append(m.chat, chatMessage{
-				Role: roleSystem, Meta: "lens",
-				Body: fmt.Sprintf(
-					"🧠 Lens retrain available — %d labeled samples collected (%d 👍 / %d 👎). "+
-						"Run `%s` to boost the lens on your own workloads.",
-					msg.status.Total, msg.status.Good, msg.status.Bad, msg.status.Command),
-			})
-		}
 		return m, nil
 
 	case tickMsg:
