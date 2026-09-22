@@ -137,13 +137,8 @@ services:
       - ATLAS_MODEL_NAME=${ATLAS_MODEL_NAME:?Set ATLAS_MODEL_NAME in .env or run atlas init}
       - ATLAS_LOG_FORMAT=${ATLAS_LOG_FORMAT:-}
       - GEOMETRIC_LENS_ENABLED=true
-      # SQLite state store (pattern cache, co-occurrence graph). Learned
-      # TTL-less state — lives on the lens-state volume; losing the
-      # volume resets learning (documented in docs/OPERATIONS.md).
-      - SQLITE_DB_PATH=/data/state/geometric_state.db
       - ATLAS_SERVICE_TOKEN_FILE=/run/atlas-secrets/service-token
     volumes:
-      - lens-state:/data/state
       - ${ATLAS_LENS_MODELS:-./geometric-lens/geometric_lens/models}:/app/geometric_lens/models:ro
       - ${ATLAS_SECRETS_DIR:-./secrets}:/run/atlas-secrets:ro
     ports:
@@ -577,7 +572,6 @@ services:
       - sandbox-net
 
 volumes:
-  lens-state:
   v3-telemetry:
 
 networks:

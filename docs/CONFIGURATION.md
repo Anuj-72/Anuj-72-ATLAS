@@ -87,7 +87,7 @@ Docker Compose also sets inter-service URLs using Docker networking (e.g., `http
 
 **Restart policy.** Every service in `docker-compose.yml` runs with `restart: unless-stopped`, so the stack comes back up after a host reboot or a container crash without a manual `docker compose up`.
 
-**Removed variables (`.env`).** These keys from older installs are ignored on read; `atlas config validate` flags them and `atlas config migrate` drops them: `ATLAS_REGISTRY` (the model registry is in-package), `ATLAS_REDIS_MAXMEMORY` and `ATLAS_REDIS_MEM` (lens state moved from Redis to SQLite — `SQLITE_DB_PATH`, § 4; [ADR 0007](adr/0007-sqlite-state-store.md)), `ATLAS_ENABLE_TRAINING` (training is always available), and `ATLAS_RPG_PLANNING` (RPG planning was removed — [issue #148](https://github.com/itigges22/ATLAS/issues/148) is the record). K3s-side removals are listed in § 8.10.
+**Removed variables (`.env`).** These keys from older installs are ignored on read; `atlas config validate` flags them and `atlas config migrate` drops them: `ATLAS_REGISTRY` (the model registry is in-package), `ATLAS_REDIS_MAXMEMORY` and `ATLAS_REDIS_MEM` (lens state moved from Redis to SQLite, [ADR 0007](adr/0007-sqlite-state-store.md)), `SQLITE_DB_PATH` and `ATLAS_LENS_ONLINE_LEARNING` (the pattern cache and its SQLite store were removed; the lens keeps no state), `ATLAS_ENABLE_TRAINING` (training is always available), and `ATLAS_RPG_PLANNING` (RPG planning was removed — [issue #148](https://github.com/itigges22/ATLAS/issues/148) is the record). K3s-side removals are listed in § 8.10.
 
 `PARALLEL_SLOTS` and `KV_CACHE_TYPE_K/V` are accepted as fallbacks, but the
 canonical `ATLAS_*` names take precedence and are what `atlas init` and
@@ -259,7 +259,6 @@ The Go proxy that runs the agent loop, routes tool calls, and orchestrates the A
 | `ATLAS_V3_URL` | `http://localhost:8070` | V3 Pipeline service endpoint |
 | `ATLAS_LENS_DATA_DIR` | `/data/lens_training` | Where collected lens-training samples are written (per-model `samples.jsonl`). Each agent file-write becomes a candidate sample; a `/feedback` call (per-file accept/deny + pass 👍/👎) labels and weights it. Backed by the `${ATLAS_LENS_HOST_DIR:-./lens_training}` host bind mount (§ 1) so it persists across proxy restarts, accumulates toward a retrain, and is readable by the host CLI. Consumed by `atlas lens retrain`. |
 | `ATLAS_LENS_RETRAIN_MIN` | `2000` | Labeled-sample count at which the TUI surfaces the "retrain available" prompt (`/v1/lens/training-status`). A balance guard also requires ≥ 25% of this in the minority class, so the corpus isn't all-pass or all-fail. Raise for a larger, more representative corpus before retraining. |
-| `ATLAS_LENS_ONLINE_LEARNING` | `1` | Whether the pattern cache may change while geometric-lens is running. Set `0` to freeze it: patterns are still retrieved and served and lens scoring is untouched, but nothing writes back. Two paths mutate the cache, and freezing has to stop both — the write path adds patterns after a solve, and the read path updates `last_accessed` / `access_count`, which retrieval scores on. A controlled paired run needs the freeze: without it, the patterns an early case touches change what a later case is served, so the arms are no longer run against the same cache and case order becomes a variable in the result. `/health` reports the current setting as `online_learning`, because a frozen cache and a cache whose writes are failing look identical from outside. |
 | `ATLAS_V3_TIMEOUT` | `180` | Interactive wall-clock cap (seconds) on a single V3 pipeline call from the agent path (`write_file` / `edit_file`). On timeout the proxy falls back to the model's own content (still syntax- and structural-gated) instead of hanging the session — bounds the long-tail Phase-3 repair stall (observed ~11 min on a 103-line write). The v3-service reads the same value for its refinement budget gate: when the remaining budget cannot afford one refinement iteration it skips straight to the fallback (`refinement_skip` event) instead of starting work the bridge would abandon. Set `0` to disable the cap (uncapped behavior for offline bench runs). Measured on a 12B Q4 at 4 slots (2026-08-03, 28-session run): 11 of 29 write-class calls reached the cap, 33 of the 41 minutes spent in those calls. On that tier the cap is the common outcome rather than a long-tail guard, and each one discards a completed plan, its candidates and their sandbox verification. Raise it (or set `0`) when measuring what the pipeline produces; the interactive default trades that output for a bounded wait. |
 | `ATLAS_MAX_READ_BYTES` | (derived) | Byte cap on a single `read_file` result (`readFileByteCap` in `proxy/tools.go`). Unset, the cap is half the per-slot context budget treated as a worst-case 1-token/char (dense content: G-code, minified JS, base64), clamped to [2 KB, 200 KB] — one read can never overflow the slot. Any positive integer overrides the derived value. A capped read reports the real `EndLine` of the shown range and records only the shown bytes for dedup. |
 | `ATLAS_MODEL_NAME` | `local-model` | Neutral fallback request identifier; `/v1/models` reports llama-server's loaded model when available |
@@ -417,7 +416,7 @@ the V3 service.
 
 ## 4. Geometric Lens
 
-Python FastAPI service for C(x)/G(x) scoring (`/internal/lens/*`) and the pattern cache (`/internal/patterns/*`). Every route it serves is internal to the stack; the proxy and v3-service are its only callers.
+Python FastAPI service for C(x)/G(x) scoring (`/internal/lens/*`). Every route it serves is internal to the stack; the proxy and v3-service are its only callers.
 
 ### Environment Variables
 
@@ -427,7 +426,6 @@ Python FastAPI service for C(x)/G(x) scoring (`/internal/lens/*`) and the patter
 | `LLAMA_URL` | `http://llama-server:8080` | llama-server endpoint. Read by `config.py:LlamaConfig` and also by `embedding_extractor.py` as the embedding source. |
 | `LLAMA_EMBED_URL` | (falls back to `LLAMA_URL`) | Dedicated embedding endpoint. Use this if you have a separate embedding server; otherwise embeddings reuse the LLAMA_URL host. |
 | `LLAMA_EMBED_CAPACITY_TOKENS` | (unset) | The embedding server's physical batch (`-ub`): the longest input one Lens score can be computed from. Docker Compose sets it from `ATLAS_UBATCH`, the value llama-server runs with, so `/health` reports the capacity before any request is refused; a refusal's own count replaces it. Information only. An input past the capacity is reported `unscored` (typed, with the server's counts), never truncated or split; see [ADR 0010](adr/0010-lens-capacity-boundary-is-typed.md). Values that are not positive integers are ignored. |
-| `SQLITE_DB_PATH` | `/data/state/geometric_state.db` | SQLite state store (pattern cache, co-occurrence graph, metrics). Lives on the `lens-state` named volume mounted at `/data/state`. When the store is unavailable the service degrades gracefully: scoring keeps answering and pattern-context reads return empty. Learned state is TTL-less and lives in this one file — volume loss resets it to the seed patterns. |
 | `ATLAS_ALLOW_PICKLE_GX` | unset | Opt-in for loading the legacy `gx_xgboost.pkl` G(x) format. Unpickling executes arbitrary code, so the service refuses `.pkl` by default and asks for the JSON export (`gx_xgboost.json`). Set to `1` once to load an old bundle, then re-export. |
 
 ### Scoring Model Parameters
@@ -442,10 +440,6 @@ Python FastAPI service for C(x)/G(x) scoring (`/internal/lens/*`) and the patter
 Missing or invalid calibration never falls back to another model's values.
 C(x) reports a neutral normalized score and G(x) reports `uncalibrated`;
 threshold-based intervention remains disabled while raw telemetry stays visible.
-
-### Pattern cache
-
-The lens stores patterns from completed sessions (SQLite, `SQLITE_DB_PATH`) and serves them back through one read endpoint, `POST /internal/patterns/context`. Matching is pattern-type + recency + success rate (no retrieval index): the task text is heuristically classified, candidate patterns are scored through `pattern_scorer.compute_score` (Ebbinghaus decay), and 1-hop co-occurrence expansion adds linked patterns. The proxy calls this in the agent-loop setup and injects the top ≤3 results as one `[system note]` block (hard 600-char cap, fail-soft on any error — see § 2). There are no tuning knobs; behavior is always-on and degrades to "no injection" when the lens or its store is unavailable.
 
 ---
 
@@ -633,7 +627,6 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PVC_LENS_STATE_SIZE` | `1Gi` | `lens-state` PVC used by the geometric-lens pod for the SQLite learned-state store (`/data/state/geometric_state.db`) |
 | `ATLAS_PVC_PROJECTS_SIZE` | `20Gi` | `lens-projects` PVC used by the geometric-lens pod for its project index storage |
 
 ### 8.4 Model & Inference
@@ -704,4 +697,4 @@ The install scripts also honor three runtime-only env vars (not in `atlas.conf` 
 
 ### 8.10 Removed variables
 
-Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is the interactive `atlas lens retrain` / `/internal/lens/retrain` path).
+Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_PVC_LENS_STATE_SIZE` (sized the `lens-state` PVC, removed with the pattern cache and its SQLite store), `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is the interactive `atlas lens retrain` / `/internal/lens/retrain` path).

@@ -76,7 +76,7 @@ The K3s deployment path (`scripts/install.sh`, manifests in `templates/`) is CUD
 | **atlas-proxy** | 8090 | Go | Agent loop, tool-call routing, tier classification, `/v1/agent` SSE, `/events` typed SSE, `/cancel`. `/v1/chat/completions` forwards to llama-server with only a `max_tokens` clamp applied (see API.md). |
 | **atlas-tui** | (client) | Go | Bubbletea TUI; consumes `/events` and `/v1/agent` SSE streams. |
 | **v3-service** | 8070 | Python | V3 pipeline HTTP wrapper (PlanSearch, DivSampling, PR-CoT, etc.) |
-| **geometric-lens** | 8099 | Python (FastAPI) | Internal `/internal/*` scoring service: C(x) energy scoring, G(x) XGBoost quality prediction, per-step scoring, plus the pattern cache (read + write); owns the SQLite state store (`SQLITE_DB_PATH` on the `lens-state` volume) backing the pattern cache and co-occurrence graph |
+| **geometric-lens** | 8099 | Python (FastAPI) | Internal `/internal/*` scoring service: C(x) energy scoring, G(x) XGBoost quality prediction, per-step scoring |
 | **sandbox** | 30820 (host) / 8020 (container) | Python (FastAPI) | Isolated code execution, compilation, linting, test running |
 
 ---
@@ -90,7 +90,7 @@ The proxy is 12 Go files, one concern each:
 | File | Owns |
 |---|---|
 | `main.go` | HTTP server, routes, auth, passthrough, error envelope, private-value log filter |
-| `agent.go` | The agent loop: turn state, LLM calls, plan generation, pattern-context injection, stuck-loop breakers |
+| `agent.go` | The agent loop: turn state, LLM calls, plan generation, stuck-loop breakers |
 | `tools.go` | The 14 tool definitions + executors, tier classification, tool-call grammar |
 | `gates.go` | Honesty/plan gates: claim-check, structural, syntax, embedded-script, plan-adherence, plan-reminder, asset lint |
 | `detectors.go` | Stuck-pattern detectors: tool repetition, reasoning repetition, traceback localization |
@@ -500,8 +500,6 @@ See [PLAN_MODE.md](PLAN_MODE.md) for the full flow, components, tunables, skip c
 
 Operator-facing limits and the knobs that tune them. Internal steering guards (traceback localization, missing-module/missing-command/broken-inline-script/case-mismatch steers, symbol grounding, no-op/empty-content/syntax gates, doctype strip) live in `proxy/guardrails.go` and `proxy/agent.go`; the structural gate (refuses a `.py` write that introduces an unresolved direct call — a would-be `NameError` — on `edit_file`, `structural_edit`, and every `write_file` branch; under BypassV3 only the non-iterating T0/T1 direct `write_file` skips it, so the demo baseline pane shows the raw model, while the edit paths and the iteration fast-path stay gated in all modes) lives in `proxy/gates.go`. The embedded-script gate lives there too: it parses the JavaScript (and brace-balances the CSS) inside `<script>`/`<style>` blocks — in `.html`/`.htm`/`.jinja`/`.jinja2` files **and inside Python string literals**, the `render_template_string` shape — through v3-service `POST /internal/embedded_script_check`, and refuses a change that newly breaks it. It exists because every other gate is structurally blind to that code: the 2026-08-01 dogfooding session left a stray `)` in a Flask app's inline `<script>`, and the Python compiled, the server started and `curl /` returned 200, so the verification gate passed and `done` was accepted while the page was dead in the browser. Same healthy→broken rule as the syntax gate (a still-broken repair-in-progress is allowed) and the same fail-soft posture: an unreachable service, a missing grammar or an ambiguous block (template statement tags, `<script src>`, a non-JS `type`, an escaped Python string) yields no finding, never a blocked write. The missing-command steer fires on `command not found` shell errors: the sandbox is non-root on a read-only base, so absent binaries can never be apt-installed at runtime — the steer says so and points at pip-installable equivalents or the preinstalled toolchains instead of letting the model re-run into the repetition breaker. The broken-inline-script steer fires when a `python -c` verification one-liner fails with a SyntaxError in the `-c` argument itself (a multi-statement `def`/`for` body jammed onto one line): the solution file may be correct while only the verify command is malformed, so it directs the model to move the test into a `.py` file rather than re-run the unparseable one-liner.
 
-**Pattern-context injection.** During run setup — next to the symbol-index injection — the proxy asks the lens pattern-cache reader (`POST /internal/patterns/context`) for lessons from previous sessions whose pattern type matches the user message, and injects the top ≤3 as one `[system note]` block (hard 600-char cap). Strictly fail-soft: any error, timeout, or empty result skips the block, so the lens being down never costs a turn. Emits `pattern_context_injected` on the `/v1/agent` stream. `fetchPatternContext` in `proxy/agent.go`; the serving side is § 5 → [Pattern cache](#pattern-cache).
-
 **Fast-path writes during active iteration.** V3 fires on the *first* write of a T2+ file (baseline generation). But once the model has written a file and just saw it fail a run, the next write is a targeted fix in an edit-test-fix loop — it skips V3 (still syntax- and structural-gated) and writes directly. V3's full pipeline is multi-minute per call and, on a file mid-debug, frequently completes without a usable result and falls back anyway; paying that latency per iteration throttles the loop to a handful of cycles. The fast-path keys off `SessionWrites[path]` plus a failed most-recent run referencing the file.
 
 **Iteration vs. repetition.** The loop breakers distinguish a model *iterating toward a fix* from one *spinning*. `write_file` repetition is keyed on the target path **plus a whitespace-stripped content fingerprint**: reasserting the same draft collides and counts toward the threshold, but rewriting a file with materially different content (fixing successive compiler errors) produces distinct signatures and is not counted. When repetition *is* detected, the breaker **steers before it kills** — the first detection injects a corrective `[system note]` and the loop continues; only a second detection (the model repeated after seeing the nudge) ends the session. This replaced an immediate hard-stop that terminated legitimate iteration with the solution on disk but unverified.
@@ -661,7 +659,7 @@ Legend: blue = Phase 1 (generation), green = Phase 2 (selection), brown = Phase 
 
 ## 5. Geometric Lens
 
-Neural scoring system that evaluates code quality without executing it by analyzing the geometric structure of model embeddings. Runs entirely on CPU. The service surface is internal-only (`/internal/*`): C(x)/G(x) scoring (single-shot and per-step) plus the [pattern cache](#pattern-cache) that feeds lessons from previous sessions back into the agent loop.
+Neural scoring system that evaluates code quality without executing it by analyzing the geometric structure of model embeddings. Runs entirely on CPU. The service surface is internal-only (`/internal/*`): C(x)/G(x) scoring (single-shot and per-step).
 
 #### Why "Geometric Lens"?
 
@@ -732,9 +730,8 @@ Attribution only: no scoring, selection, authorization or completion logic
 reads these headers, and no candidate bytes or user content enter them.
 
 **The proxy's direct Lens calls carry their own invocation.** The proxy talks
-to the Lens directly on two model-bound paths, per-write scoring
-(`/internal/lens/score-per-step`) and pattern context
-(`/internal/patterns/context`); neither is a V3 candidate invocation. One owner,
+to the Lens directly on one model-bound path, per-write scoring
+(`/internal/lens/score-per-step`), which is not a V3 candidate invocation. One owner,
 `proxy/lens_identity.go`, builds those requests and stamps the bound
 `X-ATLAS-Request-ID` together with a proxy-owned Lens invocation derived from
 that request id alone: `proxy-lens:` followed by the first 32 hex digits of
@@ -778,35 +775,9 @@ between two different models.
 
 > **Note:** Model weights (.pt, .pkl files) are not committed to the repository — they are built during training and baked into the container image or mounted at runtime. When model files are absent, the service degrades gracefully: C(x) returns neutral energy, G(x) returns `gx_score: 0.5` and `verdict: "unavailable"`. That neutral answer is reserved for a Lens that is disabled or has no artifacts; a score the Lens attempted and could not compute is answered `scored: false` with a typed `failure` and no number. Training data and weights are available on [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS).
 
-### Pattern cache
-
-Cross-session memory: patterns written after successful runs are served back to future agent loops as context.
-
-```mermaid
-graph LR
-    subgraph write["Write path (v3-service, post-run)"]
-        PE["Pattern Extractor"] --> PS["Pattern Store\nSQLite"]
-        PS --> COO["Co-occurrence Graph\nHebbian edge weights"]
-    end
-
-    subgraph read["Read path (/internal/patterns/context)"]
-        CLS["Task-type classifier\n(heuristic, on the task text)"] --> PSC["Pattern Scorer\ntype match × Ebbinghaus decay × success"]
-        PSC --> EXP["1-hop expansion\nco_occurrence.get_linked_patterns"]
-        EXP --> OUT["top-k patterns\n→ proxy [system note] injection"]
-    end
-
-    PS --> PSC
-    COO --> EXP
-
-    style write fill:#1a3a5c,color:#fff
-    style read fill:#2d5016,color:#fff
-```
-
-Modules: `geometric-lens/cache/{pattern_store, pattern_extractor, pattern_scorer, co_occurrence, seed_patterns}.py`. Matching is pattern-type + recency + success rate — there is no retrieval index; the store seeds itself with `seed_patterns` on first boot, and every serve updates the pattern's access stats. The consumer side is the proxy's pattern-context injection (§ 3).
-
 <a id="rag--pageindex-v2"></a><a id="confidence-router--pattern-cache"></a>
 
-> **Removed subsystems.** Earlier releases shipped a RAG/PageIndex project indexer, a BM25 pattern matcher, and a Thompson-Sampling confidence router inside the lens. They were reachable only through lens endpoints nothing in the product called, and were removed in the 2026-08 simplification campaign (see CHANGELOG). The pattern cache above is what remains of that stack, rebuilt around a single always-on reader.
+> **Removed subsystems.** Earlier releases shipped a RAG/PageIndex project indexer, a BM25 pattern matcher, and a Thompson-Sampling confidence router inside the lens. They were reachable only through lens endpoints nothing in the product called, and were removed in the 2026-08 simplification campaign (see CHANGELOG). The pattern cache, the last of that stack, was removed in 2026-09: it stored the solution of every successful session, evaluation runs included, and injected "lessons" into every later run, which made it a channel from the test set into the product.
 
 ---
 

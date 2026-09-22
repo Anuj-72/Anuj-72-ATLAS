@@ -93,7 +93,6 @@
    - [C(x) Cost Field](docs/ARCHITECTURE.md#scoring-models) - model-hidden-dim→512→128→1 MLP that scores candidate quality
    - [G(x) Quality Prediction](docs/ARCHITECTURE.md#scoring-models) - XGBoost ensemble used for selection
    - [Per-step scoring](docs/API.md#geometric-lens-port-8099) - per-token C(x)/G(x) scoring of writes, with per-model calibrated thresholds driving interventions
-   - [Pattern cache](docs/ARCHITECTURE.md#pattern-cache) - lessons from previous sessions, injected into new runs
 
 5. **[Sandbox](docs/ARCHITECTURE.md#6-sandbox)** - isolated execution for build verification.
    - Multi-language execution: Python, Rust, Go, C, Shell, others

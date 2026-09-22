@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### Removed: the pattern cache and its SQLite state store
+
+After every V3 success, v3-service posted the problem and its solution to the
+lens, where an LLM extracted a "pattern" and stored it; at the start of every
+session the proxy asked the lens for up to three patterns and injected them as
+a `[system note]` of lessons from previous sessions. The store held the
+solutions of evaluation sessions (a fish-timer puzzle, a stats module, a
+standup app), so it was a channel from the test set into the product. Measured
+across 714 injection events in the evaluation evidence, 713 served the same
+three seed idioms and no stored solution was ever served: it changed nothing
+and carried that risk. There was no switch to turn it off.
+
+Removed: the read and write endpoints (`/internal/patterns/*`), the extractor,
+store, scorer, co-occurrence graph and seed patterns, the proxy's
+pattern-context injection and its `pattern_context_injected` event, the V3
+write hook, the TUI row, `ATLAS_LENS_ONLINE_LEARNING`, and the SQLite state
+store that held nothing else — with its `lens-state` volume and PVC,
+`SQLITE_DB_PATH`, the `sqlite` block in the lens `/health` and `/ready`, and
+the doctor's `sqlite_state` check. `SQLITE_DB_PATH` and
+`ATLAS_LENS_ONLINE_LEARNING` are now flagged as removed keys. An existing
+`lens-state` volume is no longer mounted; reclaim it with
+`docker volume rm atlas_lens-state` once nothing needs its contents.
+
 ### Removed: the requested-behaviour exit gate and its word lists
 
 A completion exit was bounced, and the terminal set to

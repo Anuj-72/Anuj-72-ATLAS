@@ -6,7 +6,7 @@ When Phase 1+2 candidates all fail, the loop:
   2. Generates refined constraints (3B)
   3. Generates code from best hypothesis
   4. Tests in sandbox
-  5. Learns from result (success → Pattern Cache, fail → iterate)
+  5. Learns from the result (fail → iterate)
 
 When the loop exhausts its iterations unsolved, the caller (pipeline
 orchestrator / bench runner) moves on to its next repair strategy.

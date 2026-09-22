@@ -59,14 +59,6 @@ Tree-sitter-backed structural tooling: `structural_edit`, the symbol index, the 
 
 - **Sotnikov, D., 2026.** *chiasmus: tree-sitter + solver call graph for code analysis.* GitHub [yogthos/chiasmus](https://github.com/yogthos/chiasmus). Inspiration for the structural code-reasoning layer.
 
-### Pattern Cache & Memory (shipped)
-
-The pattern cache serves lessons from previous sessions back into the agent loop, scored by pattern-type match, recency decay, and success rate, with co-occurrence expansion (see ARCHITECTURE.md § Pattern cache).
-
-- **Ebbinghaus, 1885.** *Über das Gedächtnis* (On Memory). The forgetting curve — memory strength decays roughly exponentially with time. **Implemented** as the decay term in `geometric-lens/cache/pattern_scorer.py`.
-- **ACT-R** (Anderson et al.). Adaptive Control of Thought-Rational. ~30-day half-life for activation — numeric baseline for the decay half-life.
-- **Park et al., 2025.** *Memoria: Human-Inspired Memory Architecture.* arXiv [2310.03052](https://arxiv.org/abs/2310.03052). Hebbian learning + lifespan-based memory. **Implemented** via the `Count(i,j) / Count(i,i)` edge-weight formulation in `geometric-lens/cache/co_occurrence.py`.
-
 ### Lens Evolution — continual learning (shipped)
 
 Phase 4 of the V3 PRD. ATLAS retrains C(x) across domains without wiping prior knowledge using EWC + replay buffer. Code lives in `geometric-lens/geometric_lens/{ewc,replay_buffer,training}.py`; validation in `tests/v3/test_phase4_validation.py`.
@@ -85,6 +77,8 @@ Papers that informed architectural decisions by describing what *not* to do.
 ## 2. Deprecated / superseded
 
 Research that informed components that are *not* part of the current release. Kept for historical context.
+
+- **Ebbinghaus, 1885**, *Über das Gedächtnis*; **ACT-R** (Anderson et al.); **Park et al., 2025**, *Memoria: Human-Inspired Memory Architecture*, arXiv [2310.03052](https://arxiv.org/abs/2310.03052). The decay term, its half-life baseline and the Hebbian co-occurrence weights of the pattern cache. **The pattern cache was removed in 2026-09**: it stored the solution of every successful session, evaluation runs included, and injected them into later runs.
 
 - **Liu et al., 2025.** *Compute-Optimal TTS: 0.5B beats GPT-4o.* arXiv [2512.02008](https://arxiv.org/abs/2512.02008). Motivated the Confidence Router's difficulty-aware routing. **The router was removed in the 2026-07 simplification** — it was reachable only through lens endpoints nothing in the product called.
 - **VectifyAI, 2025.** *MAFIN 2.5 / PageIndex.* Reasoning-based retrieval over tree structures. Basis for the PageIndex V2 indexer (tree-sitter AST + BM25 + LLM-guided traversal), **removed with the retrieval stack in the 2026-08 simplification**.

@@ -1,12 +1,11 @@
-// The proxy's own identity on the Lens calls it makes directly.
+// The proxy's own identity on the Lens call it makes directly.
 //
-// Two proxy-owned calls reach the geometric-lens service and make it embed
-// text with the model server: per-write scoring (/internal/lens/score-per-step)
-// and the pattern-cache reader (/internal/patterns/context). Neither is a V3
-// candidate invocation, so neither has a V3 invocation identity to carry; until
-// now they carried only the request id the outbound transport stamps, and an
-// acquisition relay that requires a (request, invocation) pair on every
-// embedding refused them.
+// One proxy-owned call reaches the geometric-lens service and makes it embed
+// text with the model server: per-write scoring (/internal/lens/score-per-step).
+// It is not a V3 candidate invocation, so it has no V3 invocation identity to
+// carry; until now it carried only the request id the outbound transport
+// stamps, and an acquisition relay that requires a (request, invocation) pair
+// on every embedding refused it.
 //
 // This file is the single owner of that identity. lensInvocationID derives a
 // request-scoped invocation identity from the typed request id and nothing

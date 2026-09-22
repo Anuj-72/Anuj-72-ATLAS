@@ -145,19 +145,19 @@ SCHEMA: Dict[str, Field] = {
     "ATLAS_SANDBOX_TMP_SIZE": Field("str"),
     "ATLAS_SANDBOX_PIP_SIZE": Field("str"),
     "ATLAS_SANDBOX_CACHE_SIZE": Field("str"),
-    # Lens SQLite state store path (host/dev runs; compose pins the
-    # container path). Not ATLAS_-prefixed: read directly by the lens
-    # service, listed here so migrate() carries it forward.
-    "SQLITE_DB_PATH": Field("str"),
     # Removed keys: ignored on read, flagged as deprecated on validate.
     "ATLAS_ENABLE_TRAINING": Field("bool",
         deprecated="removed; training is always available"),
     "ATLAS_REGISTRY": Field("str",
         deprecated="removed; the registry is in-package"),
     "ATLAS_REDIS_MAXMEMORY": Field("str",
-        deprecated="removed; lens state is SQLite (SQLITE_DB_PATH)"),
+        deprecated="removed; the lens keeps no state"),
     "ATLAS_REDIS_MEM": Field("str",
-        deprecated="removed; lens state is SQLite (SQLITE_DB_PATH)"),
+        deprecated="removed; the lens keeps no state"),
+    "SQLITE_DB_PATH": Field("str",
+        deprecated="removed with the pattern cache; the lens keeps no state"),
+    "ATLAS_LENS_ONLINE_LEARNING": Field("bool",
+        deprecated="removed with the pattern cache it froze"),
     "ATLAS_RPG_PLANNING": Field("bool",
         deprecated="removed; RPG planning was cut — see issue #148"),
 }

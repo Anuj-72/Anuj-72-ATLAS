@@ -3,7 +3,7 @@
 Verifies an ATLAS install is healthy end-to-end. Runs ~20 checks across
 the host environment, the docker stack, and a live request through the
 proxy: individual checks (docker, compose, nvidia, model_file,
-lens_weights, sqlite_state, workspace_mounts, image_skew, tier_match
+lens_weights, workspace_mounts, image_skew, tier_match
 (PC-055), tier_constraints (PC-055.1), asa_steering (BiasBusters #4),
 e2e_smoke), five per-container state checks (one per service in
 `EXPECTED_SERVICES`), and five per-endpoint health checks. Designed to
@@ -735,43 +735,6 @@ def check_asa_steering(atlas_root: str) -> CheckResult:
     return CheckResult("asa_steering", status, message, verdict.reason)
 
 
-def check_sqlite_state() -> CheckResult:
-    """State store (SQLite inside the lens container) availability.
-
-    The lens owns the state file (SQLITE_DB_PATH on the lens-state
-    volume) and reports it in its /health payload under
-    `subsystems.sqlite` — read that instead of probing the file, since
-    only the container can see it. When the store is unavailable the
-    pattern cache/router degrade to neutral and the task queue returns
-    503, so this fails loudly while scoring itself keeps answering.
-    """
-    ok, body = _http_get(f"{LENS_URL}/health")
-    if not ok:
-        return CheckResult("sqlite_state", "skip",
-            "lens /health unreachable (see health/lens)", body[:200])
-    try:
-        subsystems = json.loads(body).get("subsystems", {})
-    except json.JSONDecodeError:
-        return CheckResult("sqlite_state", "skip",
-            "lens /health returned non-JSON")
-    st = subsystems.get("sqlite")
-    if not isinstance(st, dict):
-        return CheckResult("sqlite_state", "warn",
-            "lens /health reports no sqlite subsystem",
-            "lens image predates the SQLite state store — "
-            "docker compose up -d geometric-lens with a current image")
-    healthy = st.get("connected")
-    if healthy is None:
-        healthy = st.get("ok", st.get("available"))
-    if healthy:
-        return CheckResult("sqlite_state", "pass", "state store available",
-                           json.dumps(st)[:200])
-    return CheckResult("sqlite_state", "fail",
-        "state store unavailable — pattern cache/router run neutral, "
-        "task queue returns 503",
-        (st.get("error") or json.dumps(st))[:200])
-
-
 def check_tier_constraints(atlas_root: Optional[str] = None) -> CheckResult:
     """PC-055.1 cross-check: does the host meet the recommended tier's
     per-axis minimums (RAM, CPU, disk)?
@@ -1307,11 +1270,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     # but on by default when present; sits next to lens_weights since both
     # are host-side artifact checks.
     _add(check_asa_steering(atlas_root))
-
-    # 9. SQLite state store (via lens /health) — only meaningful when
-    # the lens container answered above; skips cleanly otherwise.
-    if any(r.status == "pass" for r in container_results):
-        _add(check_sqlite_state())
 
     # 9.5. Workspace mount alignment — proxy file tools and sandbox
     # run_command must see the same host directory as /workspace, or the

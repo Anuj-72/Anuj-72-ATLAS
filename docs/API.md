@@ -112,7 +112,6 @@ Every event has the shape `{"type":"<name>","data":{...}}`. Types in emission or
 | `v3_structural_veto` | A sandbox-passing candidate was rejected because tree-sitter found direct-identifier calls resolving to no local def, import, builtin, or project symbol. The candidate is marked failed and re-enters the Phase-3 repair pool; the energy fallback never returns it. | `stage`, `detail`, `index` (int, candidate index), `n_unresolved` (int), `unresolved_calls` (string[], up to 5), `n_calls_total` (int) |
 | `v3_call_chain_context` | Phase-3 repair injected a call-chain context block for the failing function. Informational. | `stage`, `detail`, `function` (string — the failing function name) |
 | `symbol_index_injected` | Turn-zero auto-injection of function/class snippets for symbols named in the user message. | `matched` (string[] — matched symbol names), `n_files` (int — project files scanned), `skipped` (int — symbols that didn't resolve) |
-| `pattern_context_injected` | Turn-zero injection of the lens pattern-cache reader's results (`POST /internal/patterns/context`): lessons from previous sessions whose pattern type matches the task, injected as one `[system note]` block. Absent when the lens is unreachable or returns nothing (fail-soft). | `count` (int — patterns injected, ≤3), `types` (string[] — the injected patterns' types) |
 | `agent_lens_score` | Lens scored a `write_file` or `edit_file` tool call's content. Fires per write/edit before tool execution. | `tool` (`write_file`\|`edit_file`), `turn` (int), `n_tokens` (int), `first_off_rails_idx` (int, -1 if none), `gx_score_min` (float), `gx_score_mean` (float), `latency_ms` (float) |
 | `agent_lens_intervention` | Lens detected consecutive low-quality writes against the model's `low`/`severe` thresholds and queued a corrective for the next LLM call. Absent when calibration is missing. | `turn` (int), `tool` (string), `reason` (string — the corrective injected into ctx.Messages) |
 | `agent_repeat_intervention` | Proxy saw the same `(tool_name, args)` signature ≥3× in the last 8 turns and queued a corrective. | `turn` (int), `tool` (string), `reason` (string — the corrective injected into ctx.Messages) |
@@ -783,7 +782,7 @@ curl http://localhost:8070/health
 
 ## Geometric Lens (Port 8099)
 
-Energy-based code scoring using C(x) cost field and G(x) quality prediction, plus the pattern cache (lessons from previous sessions, served back to the agent loop). Every route is internal to the stack — the proxy and v3-service are the only callers.
+Energy-based code scoring using C(x) cost field and G(x) quality prediction. Every route is internal to the stack — the proxy and v3-service are the only callers.
 
 > **Internal port:** The container binds uvicorn to **8099** (`geometric-lens/Dockerfile`, `EXPOSE 8099`). Docker Compose maps host 8099 → container 8099. Bare-metal launches with the same `--port 8099` default. K3s deployments expose `ATLAS_LENS_NODEPORT` (default 31144) externally.
 
@@ -850,7 +849,7 @@ curl http://localhost:8099/internal/lens/gx-score \
 
 ```bash
 curl http://localhost:8099/health
-# {"service": "geometric-lens", "status": "healthy", "subsystems": {"sqlite": {...}, "llama_server": {...}, "lens": {...}}}
+# {"service": "geometric-lens", "status": "healthy", "subsystems": {"llama_server": {...}, "lens": {...}}}
 ```
 
 Always returns 200 — the endpoint is informational. `status` is `"healthy"` or `"degraded"`; the `subsystems.lens` block carries `cost_field_loaded`, `cost_field_dim`, `embed_dim`, `gx_loaded`, `cx_calibrated`, `gx_calibrated`, and the self-test result the proxy's `/v1/calibration/status` verdict is derived from.
@@ -865,31 +864,12 @@ curl http://localhost:8099/ready
 
 Readiness probe (`geometric-lens/main.py`). Flips to 503 when scoring is degraded (lens weights missing, embedding-dim mismatch). The atlas-proxy `/health` and `/ready` handlers both call this — `/health` is informational, `/ready` is pass/fail. The payload repeats `embed_capacity_tokens`; the capacity never changes the verdict.
 
-### POST /internal/patterns/context
-
-The pattern-cache read path. Returns patterns from previous sessions whose pattern type matches the task text, scored by type match + recency + success rate, with 1-hop co-occurrence expansion. The proxy calls this in its agent-loop setup and injects the results as a `[system note]` block (see the `pattern_context_injected` event on `/v1/agent`). Served patterns get their access stats updated in the background.
-
-**Request:**
-```json
-{"task": "fix the broken index.html template", "top_k": 3}
-```
-
-**Response:**
-```json
-{
-  "patterns": [
-    {"summary": "...", "content": "...", "type": "error_fix", "age_days": 3.2}
-  ]
-}
-```
-
 ### Additional endpoints
 
 These are not part of the public API — every row is consumed by other ATLAS services in-stack. They require the service token when one is configured (`secrets/service-token`, see CONFIGURATION.md `ATLAS_SERVICE_TOKEN_FILE`) and are open otherwise.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/internal/patterns/write` | POST | Write pattern data — in-stack path used by v3-service after a successful run |
 | `/internal/lens/score-text` | POST | Score text (C(x) only). `scored: false` with `energy`/`normalized` `null` and a `failure` when no score was computed (same kinds as `gx-score`, plus `models_not_loaded`) |
 | `/internal/lens/retrain` | POST | Retrain cost field model. Returns 503 with structured guidance when the models dir is mounted read-only (the standard Compose deployment mounts it `:ro`) — run `atlas lens retrain` host-side instead. |
 | `/internal/lens/score-per-step` | POST | Per-token C(x)+G(x) scoring (one forward pass over the prompt; returns per-step verdicts plus `first_off_rails_idx` and aggregates). Pass `layer: int` to score a specific intermediate residual layer (requires the per-layer hidden-states extension on llama-server). `scored: false` with an empty `per_step`/`aggregate`, `n_tokens: 0` and a `failure` when no score was computed (same kinds as `gx-score`). |

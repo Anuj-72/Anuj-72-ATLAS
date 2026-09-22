@@ -319,13 +319,12 @@ def test_capacity_parser_reads_llama_servers_message():
 @pytest.fixture(scope="module")
 def app_client(llama, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("lens-capacity")
-    os.environ["SQLITE_DB_PATH"] = str(tmp / "state.db")
     os.environ["GEOMETRIC_LENS_ENABLED"] = "false"
     os.environ["ATLAS_SERVICE_TOKEN_FILE"] = str(tmp / "no-token")
     os.environ["LLAMA_URL"] = llama
     os.environ["LLAMA_EMBED_URL"] = llama
     from fastapi.testclient import TestClient
-    for name in ("main", "config", "sqlite_store", "pipeline", "cache"):
+    for name in ("main", "config"):
         mod = sys.modules.get(name)
         if mod is not None and not str(getattr(mod, "__file__", "")).startswith(
                 os.path.abspath(ROOT)):

@@ -76,7 +76,6 @@ ATLAS_DATA_DIR="/opt/atlas/data"
 #-------------------------------------------
 # Persistent Volume Sizes
 #-------------------------------------------
-ATLAS_PVC_LENS_STATE_SIZE="1Gi"    # backs lens-state PVC (SQLite learned state)
 ATLAS_PVC_PROJECTS_SIZE="20Gi"     # backs lens-projects PVC in the lens deployment
 
 #-------------------------------------------

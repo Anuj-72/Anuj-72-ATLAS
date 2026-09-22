@@ -10,11 +10,6 @@ from contextlib import asynccontextmanager
 
 import httpx
 from config import config
-from sqlite_store import get_db_pool
-from pipeline import (
-    retrieve_cached_patterns, record_pattern_access,
-    write_pattern_async, record_pattern_outcome,
-)
 from geometric_lens.model_transport import (model_headers as _model_headers,
                                             startup_identity as _startup_identity)
 from geometric_lens import embed_capacity as _embed_capacity
@@ -67,16 +62,6 @@ from geometric_lens.structured_log import (install as _install_logging,
                                             bind_identity as _bind_identity)
 _install_logging("geometric-lens")
 logger = logging.getLogger(__name__)
-
-# Initialize the SQLite state store (pattern cache + co-occurrence graph)
-# so the schema exists before the first request. A failure here leaves the
-# store degraded: the pattern cache falls back to neutral behavior
-# (see ADR 0002).
-try:
-    get_db_pool()
-except Exception as e:
-    logger.error(f"Failed to initialize SQLite state store: {e}")
-
 
 # Boot-time self-test cache. Populated in lifespan() and re-populated after a
 # successful reload/retrain; read by /health and /ready.
@@ -229,25 +214,6 @@ def _run_lens_self_test() -> None:
         }
 
 
-def _db_state() -> Dict[str, Any]:
-    """State of the SQLite store backing patterns, router state, and the
-    task queue. Probes a real table (not SELECT 1) so a schema-less or
-    broken file/volume shows up as connected=False rather than only
-    failing on first write."""
-    from sqlite_store import DB_PATH
-    try:
-        pool = get_db_pool()
-        with pool.get_connection() as conn:
-            conn.execute("SELECT COUNT(*) FROM store_metadata")
-        return {"connected": True, "path": DB_PATH}
-    except Exception as e:
-        # Full exception goes to the service log via _safe_detail; the
-        # response keeps the connected/path/error keys (atlas doctor keys
-        # on `connected`) with a generic error value.
-        return {"connected": False, "path": DB_PATH,
-                "error": f"{type(e).__name__}: {_safe_detail(e, 'sqlite state probe')}"}
-
-
 def _llama_state() -> Dict[str, Any]:
     url = config.llama.base_url.rstrip("/") + "/health"
     try:
@@ -269,13 +235,6 @@ async def lifespan(app: FastAPI):
     logger.info("Geometric Lens API starting up")
     logger.info(f"Llama server: {config.llama.base_url}")
 
-    # Load seed persistent patterns into Pattern Cache
-    try:
-        from cache.seed_patterns import load_seed_patterns
-        await load_seed_patterns()
-    except Exception as e:
-        logger.warning(f"Failed to load seed patterns: {e}")
-
     # Boot-time C(x)/G(x) self-test. Records state; never raises. Startup work
     # carries the declared startup identity when one is configured (attribution
     # only), and none otherwise.
@@ -294,7 +253,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Geometric Lens API",
-    description="C(x)/G(x) scoring, the Pattern Cache, and sandbox analysis for the ATLAS stack",
+    description="C(x)/G(x) scoring and sandbox analysis for the ATLAS stack",
     version="3.0.1",
     lifespan=lifespan
 )
@@ -351,7 +310,7 @@ async def _correlation_id(request, call_next):
 
 # Endpoints
 # Note: probe/scoring endpoints below are deliberately plain `def` — they do
-# synchronous work (sqlite query, httpx sync client, urlopen to llama-server,
+# synchronous work (httpx sync client, urlopen to llama-server,
 # torch), so FastAPI runs them in its threadpool instead of blocking the
 # event loop.
 @app.get("/health")
@@ -361,25 +320,15 @@ def health():
     Always returns 200 — this endpoint is for *information*, not gating.
     Use /ready for liveness/scoring-functional gating.
     """
-    db_st = _db_state()
     llama_st = _llama_state()
     lens_ok = (
         not _BOOT_STATE["lens_enabled"] or _BOOT_STATE["self_test_pass"]
     )
-    overall = (
-        db_st["connected"]
-        and llama_st["reachable"]
-        and lens_ok
-    )
+    overall = llama_st["reachable"] and lens_ok
     return {
         "service": "geometric-lens",
         "status": "healthy" if overall else "degraded",
-        # Stated rather than inferred: a frozen cache and a cache whose
-        # writes are silently failing look identical from the outside, and
-        # an experiment that needs the freeze has to be able to check it.
-        "online_learning": online_learning_enabled(),
         "subsystems": {
-            "sqlite": db_st,
             "llama_server": llama_st,
             "lens": {
                 "enabled": _BOOT_STATE["lens_enabled"],
@@ -415,7 +364,6 @@ def ready():
     Use this for orchestrator probes that should pull traffic away when
     lens scoring degrades (the silent-failure mode PC-019 was filed for).
     """
-    db_st = _db_state()
     llama_st = _llama_state()
     lens_required = _BOOT_STATE["lens_enabled"]
     # Settle a boot-order race rather than latching it. Only retried when the
@@ -431,10 +379,9 @@ def ready():
 
     lens_ok = (not lens_required) or _BOOT_STATE["self_test_pass"]
 
-    ok = db_st["connected"] and llama_st["reachable"] and lens_ok
+    ok = llama_st["reachable"] and lens_ok
     payload = {
         "ready": ok,
-        "sqlite": db_st["connected"],
         "llama_server": llama_st["reachable"],
         "lens_self_test": _BOOT_STATE["self_test_pass"],
         "lens_required": lens_required,
@@ -445,116 +392,6 @@ def ready():
     if not ok:
         raise HTTPException(status_code=503, detail=payload)
     return payload
-
-
-# ──────────────────────────────────────────────────────────────
-# Pattern Cache: Write Path + Monitoring Endpoints
-# ──────────────────────────────────────────────────────────────
-
-class PatternWriteRequest(BaseModel):
-    query: str
-    solution: str
-    retry_count: int = 1
-    max_retries: int = 5
-    error_context: Optional[str] = None
-    source_files: List[str] = []
-    active_pattern_ids: List[str] = []
-    success: bool = True
-
-
-# Strong references to in-flight pattern-write tasks. asyncio only keeps a
-# weak reference to tasks, so without this a pattern write could be
-# garbage-collected mid-flight. Tasks discard themselves on completion.
-_pattern_write_tasks: set = set()
-
-
-# One definition, in config, so the store honours the same flag: its read
-# path bumps hit/miss counters synchronously and never passes through the
-# spawn helper below.
-from config import online_learning_enabled  # noqa: E402
-
-
-def _spawn_pattern_task(coro) -> None:
-    """create_task with a strong reference held until the task completes.
-
-    Refuses to start anything while online learning is frozen, and closes
-    the coroutine rather than leaving it un-awaited. Gating here rather than
-    at each call site means a new mutating path is frozen by default instead
-    of being frozen only if someone remembered.
-    """
-    import asyncio
-
-    if not online_learning_enabled():
-        coro.close()
-        return
-    task = asyncio.create_task(coro)
-    _pattern_write_tasks.add(task)
-    task.add_done_callback(_pattern_write_tasks.discard)
-
-
-class PatternContextRequest(BaseModel):
-    task: str
-    top_k: int = 3
-
-
-@app.post("/internal/patterns/context")
-async def pattern_context(request: PatternContextRequest):
-    """Read path: patterns from previous sessions matching the task.
-
-    Type + recency matching (see pipeline.retrieve_cached_patterns) — the
-    proxy calls this in the agent-loop setup and injects the result as a
-    system note. Served patterns get their access stats updated in the
-    background.
-    """
-    scored = await retrieve_cached_patterns(request.task, top_k=request.top_k)
-    if scored:
-        _spawn_pattern_task(record_pattern_access(scored))
-    return {
-        "patterns": [
-            {
-                "summary": ps.pattern.summary,
-                "content": ps.pattern.content,
-                "type": ps.pattern.type.value,
-                "age_days": round(ps.pattern.age_days(), 1),
-            }
-            for ps in scored
-        ]
-    }
-
-
-@app.post("/internal/patterns/write")
-async def write_pattern_internal(request: PatternWriteRequest):
-    """Write path for in-stack service-to-service calls (v3-service).
-
-    Schedules pattern extraction + outcome recording in the background.
-    Gated by the service-token middleware like the rest of `/internal/*`;
-    only reachable from inside the docker network in normal deployments.
-    """
-    if not request.success:
-        if request.active_pattern_ids:
-            _spawn_pattern_task(
-                record_pattern_outcome(request.active_pattern_ids, success=False)
-            )
-        return {"status": "recorded_failure"}
-
-    _spawn_pattern_task(
-        write_pattern_async(
-            query=request.query,
-            solution=request.solution,
-            retry_count=request.retry_count,
-            max_retries=request.max_retries,
-            error_context=request.error_context,
-            source_files=request.source_files,
-            active_pattern_ids=request.active_pattern_ids,
-        )
-    )
-
-    if request.active_pattern_ids:
-        _spawn_pattern_task(
-            record_pattern_outcome(request.active_pattern_ids, success=True)
-        )
-
-    return {"status": "accepted", "message": "Pattern extraction started in background"}
 
 
 # ──────────────────────────────────────────────────────────────

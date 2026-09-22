@@ -223,7 +223,7 @@ class _FakeLensHandler(http.server.BaseHTTPRequestHandler):
                 "thresholds": {"off_rails": 0.34, "low": 0.34,
                                "severe": 0.28},
             })
-        else:  # /internal/patterns/write and anything else
+        else:  # anything else
             self._reply({"status": "ok"})
 
 

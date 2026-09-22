@@ -77,7 +77,7 @@ K3s 배포 경로(`scripts/install.sh`, `templates/`의 매니페스트)는 V3.1
 | **atlas-proxy** | 8090 | Go | 에이전트 루프, 도구 호출 라우팅, 등급 분류, `/v1/agent` SSE, `/events` 타입 SSE, `/cancel`. `/v1/chat/completions`는 변경 없이 llama-server로 패스스루. |
 | **atlas-tui** | (클라이언트) | Go | Bubbletea TUI; `/events`와 `/v1/agent` SSE 스트림을 소비. |
 | **v3-service** | 8070 | Python | V3 파이프라인 HTTP 래퍼(PlanSearch, DivSampling, PR-CoT 등) |
-| **geometric-lens** | 8099 | Python (FastAPI) | 내부 `/internal/*` 스코어링 서비스: C(x) 에너지 스코어링, G(x) XGBoost 품질 예측, 스텝별 스코어링, 그리고 패턴 캐시(읽기 + 쓰기). 패턴 캐시·동시 발생 그래프·태스크 큐를 지탱하는 SQLite 상태 저장소(`lens-state` 볼륨의 `SQLITE_DB_PATH`)를 소유 |
+| **geometric-lens** | 8099 | Python (FastAPI) | 내부 `/internal/*` 스코어링 서비스: C(x) 에너지 스코어링, G(x) XGBoost 품질 예측, 스텝별 스코어링 |
 | **sandbox** | 30820 (호스트) / 8020 (컨테이너) | Python (FastAPI) | 격리된 코드 실행, 컴파일, 린팅, 테스트 실행 |
 
 ---
@@ -91,7 +91,7 @@ K3s 배포 경로(`scripts/install.sh`, `templates/`의 매니페스트)는 V3.1
 | 파일 | 담당 |
 |---|---|
 | `main.go` | HTTP 서버, 라우팅, 인증, 패스스루, 오류 엔벨로프, 비공개 값 로그 필터 |
-| `agent.go` | 에이전트 루프: 턴 상태, LLM 호출, 플랜 생성, 패턴 컨텍스트 주입, 스턱 루프 차단기 |
+| `agent.go` | 에이전트 루프: 턴 상태, LLM 호출, 플랜 생성, 스턱 루프 차단기 |
 | `tools.go` | 16개 도구 정의와 실행기, 티어 분류, 도구 호출 문법 |
 | `gates.go` | 정직성/플랜 게이트: 클레임 체크, 구조, 구문, 임베드 스크립트, 플랜 준수, 플랜 리마인더, 에셋 린트 |
 | `detectors.go` | 스턱 패턴 검출: 도구 반복, 추론 반복, 트레이스백 지역화 |
@@ -415,7 +415,7 @@ graph LR
 
 ## 5. Geometric Lens
 
-모델 임베딩의 기하 구조를 분석하여 코드를 실행하지 않고도 코드 품질을 평가하는 신경 스코어링 시스템입니다. 전적으로 CPU에서 돌아갑니다. 서비스 표면은 내부 전용(`/internal/*`)입니다: C(x)/G(x) 스코어링(단발 및 스텝별)과, 이전 세션의 교훈을 에이전트 루프로 되돌려 주는 [패턴 캐시](#패턴-캐시).
+모델 임베딩의 기하 구조를 분석하여 코드를 실행하지 않고도 코드 품질을 평가하는 신경 스코어링 시스템입니다. 전적으로 CPU에서 돌아갑니다. 서비스 표면은 내부 전용(`/internal/*`)입니다: C(x)/G(x) 스코어링(단발 및 스텝별).
 
 #### 왜 "Geometric Lens"인가?
 
@@ -470,35 +470,9 @@ C(x) 정규화는 `sigmoid(steepness × (energy - midpoint))`입니다. 선택�
 
 > **참고:** 모델 가중치(.pt, .pkl 파일)는 저장소에 커밋되지 않습니다 — 학습 중에 빌드되어 컨테이너 이미지에 구워지거나 런타임에 마운트됩니다. 모델 파일이 없으면 서비스는 우아하게 성능 저하됩니다: C(x)는 중립 에너지를 반환하고, G(x)는 `gx_score: 0.5`와 `verdict: "unavailable"`을 반환합니다. 학습 데이터와 가중치는 [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS)에서 제공됩니다.
 
-### 패턴 캐시
-
-세션을 넘나드는 기억: 성공한 실행 뒤에 기록된 패턴이 이후 에이전트 루프에 컨텍스트로 제공됩니다.
-
-```mermaid
-graph LR
-    subgraph write["Write path (v3-service, post-run)"]
-        PE["Pattern Extractor"] --> PS["Pattern Store\nSQLite"]
-        PS --> COO["Co-occurrence Graph\nHebbian edge weights"]
-    end
-
-    subgraph read["Read path (/internal/patterns/context)"]
-        CLS["Task-type classifier\n(heuristic, on the task text)"] --> PSC["Pattern Scorer\ntype match × Ebbinghaus decay × success"]
-        PSC --> EXP["1-hop expansion\nco_occurrence.get_linked_patterns"]
-        EXP --> OUT["top-k patterns\n→ proxy [system note] injection"]
-    end
-
-    PS --> PSC
-    COO --> EXP
-
-    style write fill:#1a3a5c,color:#fff
-    style read fill:#2d5016,color:#fff
-```
-
-모듈: `geometric-lens/cache/{pattern_store, pattern_extractor, pattern_scorer, co_occurrence, seed_patterns}.py`. 매칭은 패턴 종류 + 최신성 + 성공률로 이뤄지며 검색 인덱스는 없습니다. 스토어는 첫 부팅 때 `seed_patterns`로 스스로를 시드하고, 서빙할 때마다 해당 패턴의 접근 통계를 갱신합니다. 소비 측은 프록시의 패턴 컨텍스트 주입입니다(§3).
-
 <a id="rag--pageindex-v2"></a><a id="confidence-router--pattern-cache"></a>
 
-> **제거된 서브시스템.** 이전 릴리스에는 RAG/PageIndex 프로젝트 인덱서, BM25 패턴 매처, 그리고 Thompson 샘플링 기반 신뢰도 라우터가 렌즈 안에 들어 있었습니다. 이들은 제품에서 아무도 호출하지 않는 렌즈 엔드포인트를 통해서만 접근할 수 있었고, 2026-08 단순화 캠페인에서 제거되었습니다(CHANGELOG 참고). 위의 패턴 캐시가 그 스택에서 남은 부분이며, 항상 켜져 있는 단일 리더를 중심으로 다시 만들어졌습니다.
+> **제거된 서브시스템.** 이전 릴리스에는 RAG/PageIndex 프로젝트 인덱서, BM25 패턴 매처, 그리고 Thompson 샘플링 기반 신뢰도 라우터가 렌즈 안에 들어 있었습니다. 이들은 제품에서 아무도 호출하지 않는 렌즈 엔드포인트를 통해서만 접근할 수 있었고, 2026-08 단순화 캠페인에서 제거되었습니다(CHANGELOG 참고). 그 스택에서 마지막으로 남아 있던 패턴 캐시도 2026-09에 제거되었습니다. 평가 실행을 포함한 모든 성공 세션의 해답을 저장해 이후 모든 실행에 '교훈'으로 주입했기 때문에, 테스트 세트에서 제품으로 이어지는 통로였습니다.
 
 ---
 

@@ -49,10 +49,6 @@ CLASSIFIED = {
          "in each worker for log correlation. The identity the outbound call "
          "is sent under does not travel this way at all: it lives on the "
          "request-scoped LLMAdapter, which the worker already holds."),
-    "v3-service/adapters.py::_post_pattern_outcome::Thread":
-        ("propagates",
-         "Captures rid on the request thread and passes it explicitly to "
-         "_service_headers(rid). The reference pattern for this file."),
     "v3-service/main.py::_watch_parent_for::Thread":
         ("propagates",
          "Watches the parent socket for EOF and cancels a scope it was handed "

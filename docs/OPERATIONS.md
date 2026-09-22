@@ -134,11 +134,10 @@ analysed. In particular:
 | ASA inactive | llama startup log prints why (missing vector / marker mismatch); `atlas asa check`, then `atlas asa build` |
 | Sandbox failures | `docker compose logs sandbox`; egress-cut mode (`ATLAS_SANDBOX_NET_INTERNAL=true`) intentionally breaks dependency installs; resource kills show as 137/timeout in tool results |
 | GPU OOM | reduce `ATLAS_CTX_SIZE`/slots via `atlas tier fit --write`; check nothing else holds VRAM (`nvidia-smi`) |
-| Disk full | models dir is the usual consumer; `atlas model remove <name> --yes`; learned state is a single SQLite file on the `lens-state` volume (small — pattern state, not bulk data) |
-| Corrupt state after crash | restart alone can't fix a corrupt `geometric_state.db` — the `lens-state` volume survives any plain `down`. Confirm: `atlas doctor` fails `sqlite_state`; lens `/health` shows `subsystems.sqlite.connected: false` (note `docker compose ps` still shows the lens **healthy** — its healthcheck probes `/health`, which always returns 200); then § Repairing corrupt learned state (SQLite). Artifacts re-verify by hash on doctor |
+| Disk full | models dir is the usual consumer; `atlas model remove <name> --yes` |
 | Failed upgrade | § Rolling back (pin the previous tag, restore `.env.bak`) |
 | Bad/revoked artifact | SECURITY.md § artifact revocation; `atlas model verify` + `--force-artifacts` reinstall pins |
-| Full reset (keep models) | `docker compose down -v && docker compose up -d` — **destructive**: wipes the learned SQLite state (`lens-state` volume) + lens project index stack-wide, keeps models/config. Last resort; never needed for corruption alone (§ Repairing corrupt learned state) |
+| Full reset (keep models) | `docker compose down -v && docker compose up -d` — **destructive**: wipes the stack's named volumes (`v3-telemetry`), keeps models/config. Last resort |
 
 ## Resource tuning
 
@@ -355,9 +354,7 @@ signed; `sha-*` tags never move.
   bundles are per-model and identity-checked at load; an upgrade that
   changes bundle requirements surfaces as a doctor warning with the
   exact rebuild command, not a silent break.
-- **Learned state:** the `lens-state` volume (the pattern cache +
-  co-occurrence graph in `geometric_state.db`) and the `v3-telemetry` volume
-  persist across upgrades.
+- **Telemetry:** the `v3-telemetry` volume persists across upgrades.
 
 ## Version compatibility
 
@@ -465,12 +462,6 @@ snapshot, re-download the pinned published bundle
 pinned in the registry, so you get exactly the published bytes) or
 restore your own backup of the lens models dir (§ Backup and restore).
 
-## Learned state
-
-The SQLite state store has no schema coupling to ATLAS versions; it
-rolls back with the `lens-state` volume (or keeps working across
-versions untouched).
-
 ---
 
 # Backup and restore
@@ -483,7 +474,6 @@ What actually holds state, where it lives, and what losing it costs.
 | Models | `ATLAS_MODELS_DIR` (default `./models`) | Re-download (hash-verified) | optional — large, re-fetchable |
 | Lens/ASA bundles | `geometric-lens/geometric_lens/models/` + `models/*.gguf(.model)` | Published bundles re-download; **locally-trained calibration does not** | copy the dir after any `atlas lens build`/`retrain` |
 | Lens training corpus | `ATLAS_LENS_HOST_DIR` (default `./lens_training`) + `benchmark/results/` | Lose the ability to retrain calibration | copy before pruning |
-| Learned state | `geometric_state.db` on the `lens-state` volume (pattern cache + co-occurrence graph — TTL-less) | Learning resets to the seed patterns; nothing breaks | one file — see below |
 | TUI sessions | `~/.cache/atlas-tui/sessions/` | Lose `--resume` history | copy the dir |
 | Project files | your repo | — | your VCS |
 
@@ -491,98 +481,6 @@ What actually holds state, where it lives, and what losing it costs.
 
 Config/models/bundles/corpus: copy back into place, `docker compose up
 -d`, `atlas doctor` (it re-verifies artifact identity + hashes).
-
-## Learned state (SQLite)
-
-The entire learned state is one file: `geometric_state.db` at
-`SQLITE_DB_PATH` (default `/data/state/geometric_state.db`) on the
-`lens-state` volume. Two safe ways to copy it out:
-
-```bash
-# 1. Cold copy — stop the stack first (no writers, plain file copy).
-#    Copy the WAL/SHM siblings too: recent commits can still live in
-#    geometric_state.db-wal until SQLite checkpoints them.
-docker compose stop
-docker run --rm -v atlas_lens-state:/data/state -v "$PWD":/backup alpine \
-  sh -c 'cp /data/state/geometric_state.db* /backup/'
-docker compose start
-
-# 2. Online copy — SQLite's backup API is consistent under WAL
-#    (python stdlib; the lens image has no sqlite3 CLI)
-docker compose exec geometric-lens python -c "import sqlite3; \
-  src = sqlite3.connect('/data/state/geometric_state.db'); \
-  dst = sqlite3.connect('/tmp/state-backup.db'); \
-  src.backup(dst); dst.close(); src.close()"
-docker compose cp geometric-lens:/tmp/state-backup.db ./geometric_state.db
-```
-
-Do NOT `cp` the live file while the stack is running — a plain copy of
-a database mid-write can be torn; use one of the two forms above.
-
-Restore: stop the stack, copy the file back into the volume (inverse of
-the cold copy), start, check `/health` on the lens — the
-`subsystems.sqlite` block should report the store available.
-
-## Repairing corrupt learned state (SQLite)
-
-Four distinct procedures — use the least destructive that applies:
-
-| Procedure | Command | Fixes |
-|---|---|---|
-| Restart | `docker compose restart geometric-lens` | transient init failures (locked file, unwritable path) — NOT file corruption; the `lens-state` volume survives any plain `down`/`up` |
-| Repair | steps below | a corrupt `geometric_state.db` — the service re-creates an empty schema on start |
-| Restore | § Learned state (SQLite) | corruption when you have a known-good backup |
-| Reset | `docker compose down -v` | **destructive** — wipes learned state + lens project index stack-wide; last resort, never needed for corruption alone |
-
-Symptoms: `atlas doctor` fails `sqlite_state`; lens `/health` shows
-`subsystems.sqlite.connected: false` with a `DatabaseError` (`file is
-not a database`, `malformed database schema`, `database disk image is
-malformed`); `/ready` returns 503. `docker compose ps` still shows the
-lens **healthy** (its healthcheck probes `/health`, which always
-returns 200). Scoring keeps answering — pattern-context reads just
-return empty until the store is repaired.
-
-```bash
-# 1. Stop the lens so nothing writes during the copy
-docker compose stop geometric-lens
-
-# 2. Back up the current files — db + WAL/SHM siblings — even corrupt
-#    (recovery tooling may salvage rows from them later)
-docker run --rm -v atlas_lens-state:/data/state -v "$PWD":/backup alpine \
-  sh -c 'cp /data/state/geometric_state.db* /backup/'
-
-# 3. Confirm corruption on the backed-up copy (host python; the lens
-#    image has no sqlite3 CLI). Any DatabaseError, or rows other than
-#    [('ok',)], confirms corruption. A clean 'ok' means the problem is
-#    elsewhere (permissions, volume mount) — stop here and diagnose.
-python3 -c "import sqlite3; print(sqlite3.connect( \
-  'file:geometric_state.db?mode=ro', uri=True) \
-  .execute('PRAGMA integrity_check').fetchall())"
-
-# 4. Move the corrupt files aside on the volume — don't delete, and
-#    move all three together (a stale -wal beside a fresh db re-corrupts)
-docker run --rm -v atlas_lens-state:/data/state alpine \
-  sh -c 'for f in /data/state/geometric_state.db*; do mv "$f" "$f.corrupt"; done'
-
-# 5. Start — the service re-creates the full schema on an empty file
-docker compose start geometric-lens
-
-# 6. Have a known-good backup? Restore it instead of running on the
-#    empty schema: stop again, copy the backup in (inverse of step 2),
-#    start.
-
-# 7. Verify
-atlas doctor                      # sqlite_state: pass
-curl -s localhost:8099/health     # subsystems.sqlite.connected: true
-```
-
-What an empty schema costs: learned patterns and the co-occurrence
-graph reset. Seed patterns re-load automatically at startup, then the
-cache re-learns from use — nothing breaks.
-
-Caveat: `PRAGMA integrity_check` can pass while corruption sits in
-unused pages — if store errors recur with a clean check, treat the file
-as corrupt anyway and repair.
 
 ## Honest gaps
 

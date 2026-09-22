@@ -458,11 +458,10 @@ The checks:
 | Stack | health/llama, lens, v3, sandbox, proxy | all 5 `/health` endpoints return ok |
 | Stack | internal_auth | internal service auth: token file present with tight permissions, and live enforcement probed both ways (wrong token → 401, valid token accepted); warns when auth is disabled (no `secrets/service-token`) |
 | Stack | status_dimensions | informational: the seven lens/ASA status dimensions from the proxy `/v1/calibration/status` (the same source the TUI badge reads); never fails the run |
-| Stack | sqlite_state | lens `/health` reports the SQLite state store available (`subsystems.sqlite`) |
 | Stack | image_skew | all 5 `atlas-*` images on the same tag |
 | End-to-end | e2e_smoke | live `/v1/chat/completions` round-trip to llama-server (`--quick` to skip) |
 
-The `vulkan` and `metal-native` rows are conditional on the configured backend; the health, `internal_auth`, `status_dimensions`, and `sqlite_state` rows run only when at least one container is up; `e2e_smoke` is skipped by `--quick`. The remaining checks always run.
+The `vulkan` and `metal-native` rows are conditional on the configured backend; the health, `internal_auth`, and `status_dimensions` rows run only when at least one container is up; `e2e_smoke` is skipped by `--quick`. The remaining checks always run.
 
 If you'd rather check by hand:
 
@@ -697,7 +696,7 @@ K3s uses `atlas.conf` (not `.env`) for configuration. The HTTP contracts and pip
 | Service exposure | Host ports (`8090`, `8080`, `8099`, `8070`, `30820`) | NodePorts (`30080`, `32735`, `31144`, `30070`, `30820`) |
 | Project workspace | Bind mount (`ATLAS_PROJECT_DIR` → `/workspace`) | `hostPath` (`ATLAS_PROJECTS_DIR` → `/workspace` on every Pod that needs it) |
 | Model files | Bind mount (`ATLAS_MODELS_DIR` → `/models:ro`) | `hostPath` on the GPU node (`ATLAS_MODELS_DIR`, `Directory`, ro) |
-| Stateful storage | Named volumes (`lens-state`, `v3-telemetry`) | PVCs (`lens-projects` sized by `ATLAS_PVC_PROJECTS_SIZE`) |
+| Stateful storage | Named volume (`v3-telemetry`) | PVCs (`lens-projects` sized by `ATLAS_PVC_PROJECTS_SIZE`) |
 | GPU allocation | `deploy.resources.reservations.devices` (nvidia) | `resources.limits.nvidia.com/gpu: 1` (requires GPU Operator or device plugin) |
 | Sandbox toolchain caches | `tmpfs` mounts per language | `emptyDir` with `sizeLimit` per language (universal pattern, same set) |
 

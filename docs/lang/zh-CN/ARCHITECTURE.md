@@ -77,7 +77,7 @@ K3s 部署路径（`scripts/install.sh`，清单在 `templates/` 中）截至 V3
 | **atlas-proxy** | 8090 | Go | agent 循环、工具调用路由、tier 分类、`/v1/agent` SSE、`/events` 类型化 SSE、`/cancel`。`/v1/chat/completions` 原样透传给 llama-server。 |
 | **atlas-tui** | （客户端） | Go | Bubbletea TUI；消费 `/events` 和 `/v1/agent` SSE 流。 |
 | **v3-service** | 8070 | Python | V3 pipeline 的 HTTP 封装（PlanSearch、DivSampling、PR-CoT 等） |
-| **geometric-lens** | 8099 | Python (FastAPI) | 内部 `/internal/*` 打分服务：C(x) 能量打分、G(x) XGBoost 质量预测、逐步打分，以及模式缓存（读 + 写）；拥有 SQLite 状态存储（`lens-state` 卷上的 `SQLITE_DB_PATH`），支撑模式缓存、共现图和任务队列 |
+| **geometric-lens** | 8099 | Python (FastAPI) | 内部 `/internal/*` 打分服务：C(x) 能量打分、G(x) XGBoost 质量预测、逐步打分 |
 | **sandbox** | 30820（主机）/ 8020（容器） | Python (FastAPI) | 隔离的代码执行、编译、检查、测试运行 |
 
 ---
@@ -91,7 +91,7 @@ K3s 部署路径（`scripts/install.sh`，清单在 `templates/` 中）截至 V3
 | 文件 | 职责 |
 |---|---|
 | `main.go` | HTTP 服务器、路由、鉴权、透传、错误信封、私密值日志过滤 |
-| `agent.go` | agent 循环：轮次状态、LLM 调用、计划生成、模式上下文注入、卡死循环断路器 |
+| `agent.go` | agent 循环：轮次状态、LLM 调用、计划生成、卡死循环断路器 |
 | `tools.go` | 16 个工具定义与执行器、层级分类、工具调用语法 |
 | `gates.go` | 诚实性/计划闸门：声明校验、结构、语法、内嵌脚本、计划遵循、计划提醒、资源 lint |
 | `detectors.go` | 卡死模式检测：工具重复、推理重复、traceback 定位 |
@@ -411,7 +411,7 @@ graph LR
 
 ## 5. Geometric Lens
 
-一个神经打分系统，通过分析模型嵌入的几何结构，在不执行代码的情况下评估代码质量。完全运行在 CPU 上。服务表面仅对内（`/internal/*`）：C(x)/G(x) 打分（单次与逐步），以及把此前会话中的经验回灌进 agent 循环的[模式缓存](#模式缓存)。
+一个神经打分系统，通过分析模型嵌入的几何结构，在不执行代码的情况下评估代码质量。完全运行在 CPU 上。服务表面仅对内（`/internal/*`）：C(x)/G(x) 打分（单次与逐步）。
 
 #### 为什么叫 "Geometric Lens"？
 
@@ -466,35 +466,9 @@ C(x) 的归一化是 `sigmoid(steepness × (energy - midpoint))`。所选模型�
 
 > **注意：** 模型权重（.pt、.pkl 文件）未提交到仓库 —— 它们在训练期间构建，并烘焙进容器镜像或在运行时挂载。当模型文件缺失时，服务会优雅降级：C(x) 返回中性能量，G(x) 返回 `gx_score: 0.5` 和 `verdict: "unavailable"`。训练数据与权重可在 [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS) 获取。
 
-### 模式缓存
-
-跨会话记忆：成功运行后写入的模式，会作为上下文回灌给后续的 agent 循环。
-
-```mermaid
-graph LR
-    subgraph write["Write path (v3-service, post-run)"]
-        PE["Pattern Extractor"] --> PS["Pattern Store\nSQLite"]
-        PS --> COO["Co-occurrence Graph\nHebbian edge weights"]
-    end
-
-    subgraph read["Read path (/internal/patterns/context)"]
-        CLS["Task-type classifier\n(heuristic, on the task text)"] --> PSC["Pattern Scorer\ntype match × Ebbinghaus decay × success"]
-        PSC --> EXP["1-hop expansion\nco_occurrence.get_linked_patterns"]
-        EXP --> OUT["top-k patterns\n→ proxy [system note] injection"]
-    end
-
-    PS --> PSC
-    COO --> EXP
-
-    style write fill:#1a3a5c,color:#fff
-    style read fill:#2d5016,color:#fff
-```
-
-模块：`geometric-lens/cache/{pattern_store, pattern_extractor, pattern_scorer, co_occurrence, seed_patterns}.py`。匹配依据是模式类型 + 新近度 + 成功率 —— 不存在检索索引；store 会在首次启动时用 `seed_patterns` 自我播种，每次服务都会更新该模式的访问统计。消费方是代理的模式上下文注入（§3）。
-
 <a id="rag--pageindex-v2"></a><a id="confidence-router--pattern-cache"></a>
 
-> **已移除的子系统。** 早期版本在 lens 内部附带了 RAG/PageIndex 项目索引器、BM25 模式匹配器，以及基于 Thompson 采样的置信度路由器。它们只能通过产品中无人调用的 lens 端点触达，已在 2026-08 的简化行动中移除（见 CHANGELOG）。上面的模式缓存是那套栈残留下来的部分，并围绕单一常驻读取器做了重建。
+> **已移除的子系统。** 早期版本在 lens 内部附带了 RAG/PageIndex 项目索引器、BM25 模式匹配器，以及基于 Thompson 采样的置信度路由器。它们只能通过产品中无人调用的 lens 端点触达，已在 2026-08 的简化行动中移除（见 CHANGELOG）。那套栈中最后残留的模式缓存也已于 2026-09 移除：它保存了每个成功会话（包括评测运行）的解答，并作为“经验”注入之后的每次运行，因而成了从测试集通向产品的通道。
 
 ---
 

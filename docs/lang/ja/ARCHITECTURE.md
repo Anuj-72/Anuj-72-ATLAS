@@ -77,7 +77,7 @@ K3s デプロイパス（`scripts/install.sh`、`templates/` 内のマニフェ�
 | **atlas-proxy** | 8090 | Go | エージェントループ、ツールコールルーティング、ティア分類、`/v1/agent` SSE、`/events` 型付き SSE、`/cancel`。`/v1/chat/completions` は llama-server へそのままパススルー。 |
 | **atlas-tui** | (クライアント) | Go | Bubbletea TUI; `/events` と `/v1/agent` の SSE ストリームを消費。 |
 | **v3-service** | 8070 | Python | V3 パイプラインの HTTP ラッパー（PlanSearch、DivSampling、PR-CoT など） |
-| **geometric-lens** | 8099 | Python (FastAPI) | 内部 `/internal/*` スコアリングサービス: C(x) エネルギースコアリング、G(x) XGBoost 品質予測、ステップごとのスコアリング、およびパターンキャッシュ（読み書き）。パターンキャッシュ、共起グラフ、タスクキューを支える SQLite ステートストア（`lens-state` ボリューム上の `SQLITE_DB_PATH`）を所有 |
+| **geometric-lens** | 8099 | Python (FastAPI) | 内部 `/internal/*` スコアリングサービス: C(x) エネルギースコアリング、G(x) XGBoost 品質予測、ステップごとのスコアリング |
 | **sandbox** | 30820 (ホスト) / 8020 (コンテナ) | Python (FastAPI) | 分離されたコード実行、コンパイル、リント、テスト実行 |
 
 ---
@@ -91,7 +91,7 @@ K3s デプロイパス（`scripts/install.sh`、`templates/` 内のマニフェ�
 | ファイル | 担当 |
 |---|---|
 | `main.go` | HTTP サーバー、ルーティング、認証、パススルー、エラーエンベロープ、秘匿値のログフィルタ |
-| `agent.go` | エージェントループ: ターン状態、LLM 呼び出し、プラン生成、パターンコンテキストの注入、スタックループのブレーカー |
+| `agent.go` | エージェントループ: ターン状態、LLM 呼び出し、プラン生成、スタックループのブレーカー |
 | `tools.go` | 16 個のツール定義と実行系、ティア分類、ツールコール文法 |
 | `gates.go` | 誠実性 / プランゲート: クレームチェック、構造、構文、埋め込みスクリプト、プラン遵守、プランリマインダ、アセットリント |
 | `detectors.go` | スタックパターン検出: ツールの繰り返し、推論の繰り返し、トレースバックの局所化 |
@@ -388,7 +388,7 @@ graph LR
 
 ## 5. Geometric Lens
 
-モデルの埋め込みの幾何構造を分析することで、コードを実行せずにその品質を評価するニューラルスコアリングシステム。完全に CPU 上で動作します。サービスの表面は内部専用（`/internal/*`）です: C(x)/G(x) のスコアリング（単発およびステップごと）に加え、以前のセッションで得た教訓をエージェントループへ還流させる[パターンキャッシュ](#パターンキャッシュ)。
+モデルの埋め込みの幾何構造を分析することで、コードを実行せずにその品質を評価するニューラルスコアリングシステム。完全に CPU 上で動作します。サービスの表面は内部専用（`/internal/*`）です: C(x)/G(x) のスコアリング（単発およびステップごと）。
 
 #### なぜ「Geometric Lens」なのか?
 
@@ -443,35 +443,9 @@ C(x) の正規化は `sigmoid(steepness × (energy - midpoint))` です。両方
 
 > **注:** モデルの重み（.pt、.pkl ファイル）はリポジトリにコミットされていません — トレーニング中にビルドされ、コンテナイメージに焼き込まれるか、実行時にマウントされます。モデルファイルが存在しない場合、サービスは緩やかにデグレードします: C(x) は中立エネルギーを返し、G(x) は `gx_score: 0.5` と `verdict: "unavailable"` を返します。トレーニングデータと重みは [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS) で公開しています。
 
-### パターンキャッシュ
-
-セッションをまたぐ記憶: 成功した実行の後に書き込まれたパターンが、以後のエージェントループにコンテキストとして提供されます。
-
-```mermaid
-graph LR
-    subgraph write["Write path (v3-service, post-run)"]
-        PE["Pattern Extractor"] --> PS["Pattern Store\nSQLite"]
-        PS --> COO["Co-occurrence Graph\nHebbian edge weights"]
-    end
-
-    subgraph read["Read path (/internal/patterns/context)"]
-        CLS["Task-type classifier\n(heuristic, on the task text)"] --> PSC["Pattern Scorer\ntype match × Ebbinghaus decay × success"]
-        PSC --> EXP["1-hop expansion\nco_occurrence.get_linked_patterns"]
-        EXP --> OUT["top-k patterns\n→ proxy [system note] injection"]
-    end
-
-    PS --> PSC
-    COO --> EXP
-
-    style write fill:#1a3a5c,color:#fff
-    style read fill:#2d5016,color:#fff
-```
-
-モジュール: `geometric-lens/cache/{pattern_store, pattern_extractor, pattern_scorer, co_occurrence, seed_patterns}.py`。マッチングはパターン種別 + 新しさ + 成功率で行われ、検索インデックスは存在しません。ストアは初回起動時に `seed_patterns` で自身をシードし、提供のたびにそのパターンのアクセス統計を更新します。消費側はプロキシのパターンコンテキスト注入です（§3）。
-
 <a id="rag--pageindex-v2"></a><a id="confidence-router--pattern-cache"></a>
 
-> **削除されたサブシステム。** 以前のリリースには、RAG/PageIndex のプロジェクトインデクサ、BM25 のパターンマッチャ、そして Thompson サンプリングによる信頼度ルーターがレンズ内に同梱されていました。これらはプロダクト内のどこからも呼ばれていないレンズのエンドポイント経由でしか到達できず、2026-08 の簡素化キャンペーンで削除されました（CHANGELOG を参照）。上記のパターンキャッシュが、そのスタックから残ったものであり、常時オンの単一リーダーを中心に作り直されています。
+> **削除されたサブシステム。** 以前のリリースには、RAG/PageIndex のプロジェクトインデクサ、BM25 のパターンマッチャ、そして Thompson サンプリングによる信頼度ルーターがレンズ内に同梱されていました。これらはプロダクト内のどこからも呼ばれていないレンズのエンドポイント経由でしか到達できず、2026-08 の簡素化キャンペーンで削除されました（CHANGELOG を参照）。そのスタックの最後に残ったパターンキャッシュも 2026-09 に削除されました。評価実行を含むすべての成功セッションの解答を保存し、以後のすべての実行に「教訓」として注入していたため、テストセットからプロダクトへの経路になっていました。
 
 ---
 

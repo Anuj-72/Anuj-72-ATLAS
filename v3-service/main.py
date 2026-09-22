@@ -365,11 +365,6 @@ class V3Handler(BaseHTTPRequestHandler):
             result["code"] = baseline_code
             result["phase_solved"] = "baseline"
 
-        # After baseline substitution, not before — the pattern cache must
-        # see the solution that is actually returned (it saw solution=""
-        # on baseline-only results when this fired earlier).
-        adapters._post_pattern_outcome(problem, result)
-
         # Structured evidence, serialised by evidence_wire. No policy is
         # decided here: this handler neither ranks, nor closes, nor infers a
         # strength -- it asks the serialiser for an envelope and writes it.

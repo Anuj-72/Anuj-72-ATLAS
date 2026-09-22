@@ -189,14 +189,13 @@ def test_background_thread_without_binding_forwards_nothing(stub):
 @pytest.fixture(scope="module")
 def app_client(stub, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("lens")
-    os.environ["SQLITE_DB_PATH"] = str(tmp / "state.db")
     os.environ["GEOMETRIC_LENS_ENABLED"] = "false"   # middleware and transport are what is under test
     os.environ["ATLAS_SERVICE_TOKEN_FILE"] = str(tmp / "no-token")
     from fastapi.testclient import TestClient
-    # The Lens app uses flat imports (config, sqlite_store, pipeline, main); another
+    # The Lens app uses flat imports (config, main); another
     # service's flat modules of the same names may already be cached when several
     # test trees share one session, so import the Lens app from its own root.
-    for name in ("main", "config", "sqlite_store", "pipeline", "cache"):
+    for name in ("main", "config"):
         mod = sys.modules.get(name)
         if mod is not None and not str(getattr(mod, "__file__", "")).startswith(os.path.abspath(ROOT)):
             del sys.modules[name]
@@ -301,7 +300,7 @@ def test_no_second_identity_store_exists():
 
 def test_scoring_and_selection_never_read_the_attribution_headers():
     for name in ("geometric_lens/service.py", "geometric_lens/cost_field.py", "geometric_lens/thresholds.py",
-                 "geometric_lens/calibration.py", "geometric_lens/identity.py", "pipeline.py"):
+                 "geometric_lens/calibration.py", "geometric_lens/identity.py"):
         text = _src(name)
         assert "X-ATLAS-Request-ID" not in text and "X-ATLAS-V3-Invocation-ID" not in text, name
         assert "identity_headers(" not in text and "current_identity(" not in text, name

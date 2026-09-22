@@ -219,24 +219,21 @@ func (c *lensCapture) server(t *testing.T) *httptest.Server {
 		switch r.URL.Path {
 		case "/internal/lens/score-per-step":
 			fmt.Fprint(w, `{"enabled":true,"gx_available":true,"n_tokens":3,"hidden_dim":8,"layer":"l","aggregate":{"gx_score_min":0.7,"gx_score_mean":0.8,"first_off_rails_idx":-1},"latency_ms":1}`)
-		case "/internal/patterns/context":
-			fmt.Fprint(w, `{"patterns":[{"summary":"s","type":"t"}]}`)
 		default:
 			w.WriteHeader(404)
 		}
 	}))
 }
 
-func TestPerWriteScoringAndPatternContextSendTheSamePair(t *testing.T) {
+func TestEveryPerWriteScoreInARequestSendsTheSamePair(t *testing.T) {
 	cap := &lensCapture{}
 	srv := cap.server(t)
 	defer srv.Close()
 	ctx := lensCtx("req-0011223344556677")
-	if _, scored := scoreContentForAgent(ctx, srv.URL, "def f():\n    return 1\n"); !scored {
-		t.Fatal("scoring did not run")
-	}
-	if block, _ := fetchPatternContext(&AgentContext{Ctx: ctx, LensURL: srv.URL}, "write a parser"); block == "" {
-		t.Fatal("pattern context did not run")
+	for _, content := range []string{"def f():\n    return 1\n", "x = 1\n"} {
+		if _, scored := scoreContentForAgent(ctx, srv.URL, content); !scored {
+			t.Fatal("scoring did not run")
+		}
 	}
 	want, _ := lensInvocationID("req-0011223344556677")
 	if len(cap.pairs) != 2 {
@@ -263,12 +260,11 @@ func TestConcurrentRequestsKeepTheirOwnLensPair(t *testing.T) {
 			ctx := lensCtx(rid)
 			for r := 0; r < rounds; r++ {
 				scoreContentForAgent(ctx, srv.URL, "x = 1\n")
-				fetchPatternContext(&AgentContext{Ctx: ctx, LensURL: srv.URL}, "task")
 			}
 		}(w)
 	}
 	wg.Wait()
-	if len(cap.pairs) != workers*rounds*2 {
+	if len(cap.pairs) != workers*rounds {
 		t.Fatalf("calls %d", len(cap.pairs))
 	}
 	for _, p := range cap.pairs {
@@ -287,9 +283,6 @@ func TestCancelledOrExpiredContextStopsLensCalls(t *testing.T) {
 	cancel()
 	if _, scored := scoreContentForAgent(ctx, srv.URL, "x = 1\n"); scored {
 		t.Fatal("scored on a cancelled context")
-	}
-	if block, _ := fetchPatternContext(&AgentContext{Ctx: ctx, LensURL: srv.URL}, "task"); block != "" {
-		t.Fatal("pattern context on a cancelled context")
 	}
 	if len(cap.pairs) != 0 {
 		t.Fatalf("%d call(s) reached the Lens after cancellation", len(cap.pairs))
@@ -330,7 +323,7 @@ func TestEveryProxyOwnedModelBoundLensCallUsesTheOneIdentityOwner(t *testing.T) 
 			if strings.HasPrefix(trim, "//") {
 				continue
 			}
-			if strings.Contains(line, `"/internal/lens/`) || strings.Contains(line, `"/internal/patterns/`) {
+			if strings.Contains(line, `"/internal/lens/`) {
 				if !strings.Contains(line, "newLensRequest(") {
 					t.Errorf("%s:%d builds a Lens call outside lens_identity.go: %s", name, n+1, trim)
 				}
@@ -359,19 +352,19 @@ func TestInvocationIdentityHasOneOwnerAndNoDecisionReader(t *testing.T) {
 	}
 }
 
-func TestNoProxyBackgroundLensCallExistsOutsideTheTwoRequestScopedSites(t *testing.T) {
+func TestNoProxyBackgroundLensCallExistsOutsideTheRequestScopedSite(t *testing.T) {
 	sites := 0
 	for name, src := range proxySources(t) {
 		for n, line := range strings.Split(src, "\n") {
 			if strings.Contains(line, "newLensRequest(") && !strings.Contains(strings.TrimSpace(line), "func newLensRequest") {
 				sites++
-				if name != "lens.go" && name != "agent.go" {
+				if name != "lens.go" {
 					t.Errorf("%s:%d: unexpected Lens call site", name, n+1)
 				}
 			}
 		}
 	}
-	if sites != 2 {
-		t.Fatalf("expected exactly two proxy-owned model-bound Lens call sites, found %d", sites)
+	if sites != 1 {
+		t.Fatalf("expected exactly one proxy-owned model-bound Lens call site (per-write scoring), found %d", sites)
 	}
 }

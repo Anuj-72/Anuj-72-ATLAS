@@ -1,6 +1,5 @@
 """Outbound service adapters for the V3 service: llama-server chat/embedding
-clients, the sandbox client, internal-auth plumbing, and the pattern-cache
-write hook."""
+clients, the sandbox client, and internal-auth plumbing."""
 
 import json
 import os
@@ -125,59 +124,6 @@ def _service_headers(rid: str = "", invocation_id: str = "") -> dict:
     if invocation_id:
         headers[INVOCATION_ID_HEADER] = invocation_id
     return headers
-
-
-# --- Pattern Cache write hook -------------------------------------------------
-# Maps the V3 phase that produced the winning solution to a retry_count value.
-# The pattern cache uses retry_count / max_retries as a "surprise" proxy — higher
-# retries mean the pattern was harder to find and worth caching with more weight.
-_PHASE_RETRY_COUNT = {
-    "probe": 1,             # solved on first probe (phase_solved="probe")
-    "phase1": 2,            # plan-search candidates passed
-    "pr_cot": 3,            # required PR-CoT repair
-    "refinement": 4,        # required refinement loop
-    "none": 5,              # nothing passed; best-by-energy returned
-}
-
-
-def _post_pattern_outcome(problem: str, result: dict):
-    """Fire-and-forget: post the pipeline outcome to geometric-lens for caching.
-
-    Runs in a background thread so it never delays the response. Errors are
-    logged but never raised — the pattern cache is best-effort, not load-bearing.
-    """
-    # Capture the correlation ID on the request thread — the ContextVar
-    # doesn't propagate into a newly created thread.
-    try:
-        from structured_log import get_request_id
-        rid = get_request_id()
-    except ImportError:
-        rid = ""
-
-    def _do_post():
-        payload = {
-            "query": problem,
-            "solution": result.get("code", ""),
-            "retry_count": _PHASE_RETRY_COUNT.get(result.get("phase_solved", "none"), 5),
-            "max_retries": 5,
-            "error_context": None,
-            "source_files": [],
-            "active_pattern_ids": [],
-            "success": bool(result.get("passed")),
-        }
-        try:
-            req = urllib.request.Request(
-                f"{LENS_URL}/internal/patterns/write",
-                data=json.dumps(payload).encode(),
-                headers=_service_headers(rid),
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                resp.read()
-        except Exception as e:
-            print(f"  [pattern-write] POST failed (non-fatal): {e}", flush=True)
-
-    threading.Thread(target=_do_post, daemon=True).start()
 
 
 # --- PC-061 step B: typed event emission ------------------------------------
