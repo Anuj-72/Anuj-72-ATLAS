@@ -109,6 +109,11 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
                         lambda code: {"gx_score_min": 0.9, "gx_score_mean": 0.9,
                                       "cx_norm_max": 0.1, "first_off_rails_idx": -1,
                                       "n_tokens": 10, "thresholds": {"severe": 0.30}})
+    # The probe scores through score_candidate_combined, which posts to the
+    # lens; unstubbed, every test here sent candidate code to whatever
+    # listened on the default lens port -- the live lens on the dev server.
+    monkeypatch.setattr(scoring, "score_candidate_combined",
+                        lambda code: dict(scoring.NEUTRAL_COMBINED))
     # The structural veto is a different subsystem with its own tests; it must
     # not decide which candidates reach the selection this slice is about.
     monkeypatch.setattr(symbols, "structural_score",
