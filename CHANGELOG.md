@@ -30,6 +30,24 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: a spent exit gate no longer reads as a clean completion
+
+Every exit gate stops sending the run back after three bounces. Seven of them
+(the claim check, the unread-citation gate, the route, orphan and plan gates,
+redirect-only verification and the artifact gate) then let the exit through
+as `completed`, with nothing in the status, the reason or the summary. A gate
+whose finding still holds at the exit now records it. A claim-check gap and a
+reply citing files the run never read end the run `incomplete`
+(`claim_check_unresolved`, `unread_citation`). The heuristic gates, which have
+known false positives, let it complete with a caveat in the summary, and the
+`done` event names every spent gate in a new `unresolved` field. The artifact
+gate also kept its finding only until its first bounce; the drift now holds
+until something verifies again. The unread-citation gate no longer flags a
+file the run itself moved or deleted: naming it reports the operation, not a
+guess about code it never saw. The run-first gate gets a reason of its own
+(`warned_file_never_run`) as a backstop; the deliverable check already refused
+those exits, because a warned write is recorded as a failed parse.
+
 ### Withdrawn: the V3.0 LiveCodeBench result (74.6%)
 
 The 74.6% LiveCodeBench "pass@1" published with V3.0, and the phase-by-phase

@@ -198,6 +198,18 @@ type runState struct {
 	// several, and the answer accounted for fewer than two of them.
 	replyScopeUnmet bool
 	handoffSentBack bool
+	// unresolvedGates records, for the exit being judged, each gate whose
+	// finding still held when its bounces were spent, with the finding in one
+	// line. A spent gate used to fall straight through to "completed" with
+	// nothing in the status, the reason or the summary. finalizeCompletion
+	// ends the run on the findings that are facts about the delivered work;
+	// the heuristic ones become caveats in the summary (unresolvedGateCaveats).
+	unresolvedGates map[string]string
+	// driftedAfterVerify names a file whose bytes changed, outside the edit
+	// tools, after the run that verified it. It holds until a run verifies
+	// again: the artifact gate that found it clears verifiedThisLoop on its
+	// first bounce, and without this the next exit no longer saw the drift.
+	driftedAfterVerify string
 	// Name of a tool_call that has been streamed but not yet answered by a
 	// tool_result. The call is announced before permission and execution,
 	// so any exit in between has to answer it or the consumer is left with
@@ -533,6 +545,7 @@ func (s *runState) observeVerification(ctx *AgentContext, userMessage string, tu
 		s.failing, s.sawFailedVerification = nil, false
 		s.redRunStreak = 0
 		s.uncountedCheck = ""
+		s.driftedAfterVerify = ""
 		s.verifiedHashes = sessionWriteHashes(ctx)
 		// A program run as `prog < data` is verified under a contract the
 		// caller may not use. Tracked so the exit can tell the two apart.
@@ -682,6 +695,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// to "completed", so the cap turned an unfinished reply into a success.
 	s.replyOutstanding, s.replyDeclaredIncomplete = false, false
 	s.replyAwaitsUser, s.replyHandedBack, s.replyScopeUnmet = false, false, false
+	s.unresolvedGates = nil
 	if promisesMoreContent(claimText) {
 		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
 			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
@@ -746,10 +760,13 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// Diagnostic questions are exactly where that exemption costs the most:
 	// the reply IS the deliverable, and a guess is indistinguishable from an
 	// answer.
-	if cited := unreadFileCitations(ctx, claimText); len(cited) > 0 && s.chargeBounce("evidence_gate") {
-		log.Printf("[agent] evidence gate: bouncing exit at turn %d — reply cites %v with no read (bounce %d/%d)",
-			s.turn, cited, s.gateBounces["evidence_gate"], maxGateBounces)
-		return "evidence_gate", unreadCitationMessage(cited)
+	if cited := unreadFileCitations(ctx, claimText); len(cited) > 0 {
+		if s.chargeBounce("evidence_gate") {
+			log.Printf("[agent] evidence gate: bouncing exit at turn %d — reply cites %v with no read (bounce %d/%d)",
+				s.turn, cited, s.gateBounces["evidence_gate"], maxGateBounces)
+			return "evidence_gate", unreadCitationMessage(cited)
+		}
+		s.gateUnresolved("evidence_gate", "the reply cites "+strings.Join(cited, ", ")+", which this run never read")
 	}
 	// An investigation that answers for less than it opened. Only for a
 	// read-only run whose request named several files (investigationScopeUnmet),
@@ -780,6 +797,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 				"`%s` is on disk with a parse warning and has never been run. Run it first — %s — and fix it before finishing; as written it cannot work.",
 				p, runFirstInstruction(ctx, p))
 		}
+		s.gateUnresolved("run_first_gate", p+" has a parse warning and was never run")
 		break
 	}
 	// A page this run wrote submits to a route the server never defines. The
@@ -794,10 +812,14 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// keep, and bouncing that answer three times would be a false positive
 	// the user cannot act on.
 	if sessionWroteWebFiles(ctx) {
-		if broken := routeContractFindings(ctx.WorkingDir); len(broken) > 0 && s.chargeBounce("route_contract_gate") {
-			log.Printf("[agent] route contract gate: %d unmatched submit target(s) at exit (bounce %d/%d)",
-				len(broken), s.gateBounces["route_contract_gate"], maxGateBounces)
-			return "route_contract_gate", routeContractMessage(broken)
+		if broken := routeContractFindings(ctx.WorkingDir); len(broken) > 0 {
+			if s.chargeBounce("route_contract_gate") {
+				log.Printf("[agent] route contract gate: %d unmatched submit target(s) at exit (bounce %d/%d)",
+					len(broken), s.gateBounces["route_contract_gate"], maxGateBounces)
+				return "route_contract_gate", routeContractMessage(broken)
+			}
+			s.gateUnresolved("route_contract_gate", fmt.Sprintf(
+				"%d form or request target(s) in the pages this run wrote name a route the server does not define", len(broken)))
 		}
 	}
 	// A job this run started is still running. Completion is refused while a
@@ -831,23 +853,35 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	}
 	// Verified only through a stdin redirect: the program was never run the
 	// way its caller will run it. See stdinRedirectSource for the measurement.
-	if s.verifiedByRedirect != "" && !s.verifiedStandalone && s.chargeBounce("contract_gate") {
-		log.Printf("[agent] contract gate: every verification piped %q into stdin (bounce %d/%d)",
-			s.verifiedByRedirect, s.gateBounces["contract_gate"], maxGateBounces)
-		return "contract_gate", redirectOnlyVerificationMessage(s.verifiedByRedirect)
+	if s.verifiedByRedirect != "" && !s.verifiedStandalone {
+		if s.chargeBounce("contract_gate") {
+			log.Printf("[agent] contract gate: every verification piped %q into stdin (bounce %d/%d)",
+				s.verifiedByRedirect, s.gateBounces["contract_gate"], maxGateBounces)
+			return "contract_gate", redirectOnlyVerificationMessage(s.verifiedByRedirect)
+		}
+		s.gateUnresolved("contract_gate", "the program was only ever run with "+s.verifiedByRedirect+
+			" piped into its stdin, never the way a caller that does not pipe input would run it")
 	}
 	// Verification is of bytes, not of a moment. If any file this session
 	// wrote no longer matches the hash snapshotted when the verifying run
 	// succeeded, the final artifact is unverified whatever the booleans say.
 	if s.verifiedThisLoop {
-		if changed := driftedSinceVerification(ctx, s.verifiedHashes); changed != "" && s.chargeBounce("artifact_gate") {
-			log.Printf("[agent] artifact gate: %s changed after the run that verified it (bounce %d/%d)",
-				changed, s.gateBounces["artifact_gate"], maxGateBounces)
+		if changed := driftedSinceVerification(ctx, s.verifiedHashes); changed != "" {
+			// Bounce or not, what is on disk now was never run.
 			s.verifiedThisLoop = false
 			s.verifiedStandalone = false
+			s.driftedAfterVerify = changed
+		}
+	}
+	if changed := s.driftedAfterVerify; changed != "" {
+		if s.chargeBounce("artifact_gate") {
+			log.Printf("[agent] artifact gate: %s changed after the run that verified it (bounce %d/%d)",
+				changed, s.gateBounces["artifact_gate"], maxGateBounces)
 			return "artifact_gate", fmt.Sprintf(
 				"`%s` changed after the run that verified it, so what is on disk now has never been executed. Run it again and confirm the output before finishing.", changed)
 		}
+		s.gateUnresolved("artifact_gate", relativeToWorkspace(ctx, changed)+
+			" changed after the run that verified it and was not run again")
 	}
 	if (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop && s.chargeBounce("verification_gate") {
 		log.Printf("[agent] verification gate: bouncing exit at turn %d (trigger=%s, no successful verification command this loop, bounce %d/%d)",
@@ -868,10 +902,17 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// restart the process and probe the code it actually wrote. Measured on
 	// flask_pause rep 2 (cycle 6, R3).
 	if s.verifiedThisLoop && s.lastVerifyWasLocalProbe {
-		if staleJob, staleFile := staleServingJob(ctx); staleJob != "" && s.chargeBounce("verification_gate") {
-			log.Printf("[agent] the probe that verified this loop hit job %s, started before the last change to %s (bounce %d/%d)",
-				staleJob, staleFile, s.gateBounces["verification_gate"], maxGateBounces)
-			return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
+		if staleJob, staleFile := staleServingJob(ctx); staleJob != "" {
+			if s.chargeBounce("verification_gate") {
+				log.Printf("[agent] the probe that verified this loop hit job %s, started before the last change to %s (bounce %d/%d)",
+					staleJob, staleFile, s.gateBounces["verification_gate"], maxGateBounces)
+				return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
+			}
+			// The probe answered for older code, so nothing verified this.
+			s.verifiedThisLoop = false
+			s.gateUnresolved("stale_probe", fmt.Sprintf(
+				"the probe that verified the run reached job %s, which started before the last change to %s",
+				staleJob, relativeToWorkspace(ctx, staleFile)))
 		}
 	}
 	// The work contract owes evidence that what this run wrote works, and
@@ -889,16 +930,23 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// Code the run added that nothing calls. Checked at the exit rather than
 	// at the write, because wiring it up on a later turn is normal — only
 	// finishing with it unwired is the defect.
-	if orphans := orphanedAdditions(ctx); len(orphans) > 0 && s.chargeBounce("orphan_gate") {
-		log.Printf("[agent] orphan gate: bouncing exit at turn %d — added-but-uncalled in %d file(s) (bounce %d/%d)",
-			s.turn, len(orphans), s.gateBounces["orphan_gate"], maxGateBounces)
-		return "orphan_gate", orphanedAdditionsMessage(orphans)
+	if orphans := orphanedAdditions(ctx); len(orphans) > 0 {
+		if s.chargeBounce("orphan_gate") {
+			log.Printf("[agent] orphan gate: bouncing exit at turn %d — added-but-uncalled in %d file(s) (bounce %d/%d)",
+				s.turn, len(orphans), s.gateBounces["orphan_gate"], maxGateBounces)
+			return "orphan_gate", orphanedAdditionsMessage(orphans)
+		}
+		s.gateUnresolved("orphan_gate", "code this run added is never called: "+orphanNames(ctx, orphans))
 	}
-	if msg := planIncompleteMessage(ctx); msg != "" && s.chargeBounce("plan_gate") {
-		log.Printf("[agent] plan gate: bouncing exit at turn %d — %d/%d steps satisfied (bounce %d/%d)",
-			s.turn, countTrue(ctx.PlanStepsSatisfied), len(ctx.Plan.Steps),
-			s.gateBounces["plan_gate"], maxGateBounces)
-		return "plan_gate", msg
+	if msg := planIncompleteMessage(ctx); msg != "" {
+		if s.chargeBounce("plan_gate") {
+			log.Printf("[agent] plan gate: bouncing exit at turn %d — %d/%d steps satisfied (bounce %d/%d)",
+				s.turn, countTrue(ctx.PlanStepsSatisfied), len(ctx.Plan.Steps),
+				s.gateBounces["plan_gate"], maxGateBounces)
+			return "plan_gate", msg
+		}
+		s.gateUnresolved("plan_gate", fmt.Sprintf("%d of %d plan steps were never carried out",
+			len(ctx.Plan.Steps)-countTrue(ctx.PlanStepsSatisfied), len(ctx.Plan.Steps)))
 	}
 	if observeActionDemand(ctx, s, shadowGateActionGate,
 		decideActionDemand(ctx.TaskContract, userMessage, ctx.Tier, s.inspectedWorkspace)) &&
@@ -914,10 +962,14 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		return "output_gate", expectedOutputMissingMessage(missing)
 	}
 	if claimsUniversal(claimText) || promptIsMultiIssue(userMessage) {
-		if gap := verifyCompletionClaims(ctx.WorkingDir); gap != "" && s.chargeBounce("claim_check") {
-			log.Printf("[agent] claim-check gate: bouncing exit at turn %d (bounce %d/%d) — %q",
-				s.turn, s.gateBounces["claim_check"], maxGateBounces, truncateStr(gap, 200))
-			return "claim_check", gap
+		if gap := verifyCompletionClaims(ctx.WorkingDir); gap != "" {
+			if s.chargeBounce("claim_check") {
+				log.Printf("[agent] claim-check gate: bouncing exit at turn %d (bounce %d/%d) — %q",
+					s.turn, s.gateBounces["claim_check"], maxGateBounces, truncateStr(gap, 200))
+				return "claim_check", gap
+			}
+			s.gateUnresolved("claim_check", strings.TrimRight(truncateStr(
+				strings.Join(completionClaimGaps(ctx.WorkingDir), " "), 240), "."))
 		}
 	}
 	return "", ""
@@ -934,6 +986,77 @@ func contractDemandMessage(ctx *AgentContext, d verificationDemand) string {
 	return fmt.Sprintf("Cannot finish yet: nothing that ran since `%s` was last written shows it working. "+
 		"Run it — %s — or run tests that exercise it, and check the output before finishing.",
 		path, runFirstInstruction(ctx, path))
+}
+
+// gateUnresolved records that gate's finding still holds and its bounces are
+// spent, so the exit that follows cannot read as a clean completion.
+func (s *runState) gateUnresolved(gate, finding string) {
+	if s.unresolvedGates == nil {
+		s.unresolvedGates = map[string]string{}
+	}
+	s.unresolvedGates[gate] = finding
+	log.Printf("[agent] %s: bounces spent and the finding still holds: %s", gate, truncateStr(finding, 160))
+}
+
+// unresolvedReasons are the spent gates whose finding is a fact about the
+// delivered work, with the terminal reason each ends the run with. They are
+// checked in this order.
+var unresolvedReasons = []struct{ gate, reason string }{
+	{"claim_check", "claim_check_unresolved"},
+	{"run_first_gate", "warned_file_never_run"},
+	{"evidence_gate", "unread_citation"},
+}
+
+// caveatGates are the spent gates whose finding is a heuristic with known
+// false positives: a route registered where the lint cannot see it, code
+// called dynamically, a plan step done another way, a program whose real
+// interface is stdin, a drift or a stale probe the verification demand
+// already judges. The run may complete, and the summary says what was not
+// confirmed.
+var caveatGates = []string{"artifact_gate", "contract_gate", "orphan_gate", "plan_gate", "route_contract_gate", "stale_probe"}
+
+// unresolvedGateCaveats is the part of a completed run's summary that names
+// what the spent heuristic gates still found.
+func unresolvedGateCaveats(st *runState) string {
+	if st == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, g := range caveatGates {
+		if f, ok := st.unresolvedGates[g]; ok {
+			sb.WriteString("\n\nNot confirmed by this run: " + f + ".")
+		}
+	}
+	return sb.String()
+}
+
+// unresolvedGateNames lists the spent gates in a stable order, for the
+// terminal event.
+func unresolvedGateNames(st *runState) string {
+	if st == nil || len(st.unresolvedGates) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(st.unresolvedGates))
+	for g := range st.unresolvedGates {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+// orphanNames names up to three uncalled additions.
+func orphanNames(ctx *AgentContext, orphans map[string][]orphanedSymbol) string {
+	var names []string
+	for file, syms := range orphans {
+		for _, sym := range syms {
+			names = append(names, sym.Name+" in "+relativeToWorkspace(ctx, file))
+		}
+	}
+	sort.Strings(names)
+	if len(names) > 3 {
+		names = append(names[:3], fmt.Sprintf("%d more", len(names)-3))
+	}
+	return strings.Join(names, ", ")
 }
 
 // chargeBounce spends one of gate's bounces and reports whether it had one
@@ -1022,21 +1145,25 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				"fenced_tokens": ctx.FencedTokens,
 			},
 		})
+		donePayload := map[string]interface{}{
+			"success":           status.Completed(),
+			"status":            string(status),
+			"reason":            ctx.TerminalReason,
+			"total_duration_ms": dur,
+			"total_tokens":      ctx.TotalTokens,
+			"fenced_calls":      ctx.FencedCalls,
+			"fenced_tokens":     ctx.FencedTokens,
+		}
+		if ctx.TerminalUnresolved != "" {
+			donePayload["unresolved"] = ctx.TerminalUnresolved
+		}
 		Emit(Envelope{
 			EventID:    NewEventID(),
 			Timestamp:  float64(time.Now().UnixNano()) / 1e9,
 			Type:       EvtDone,
 			Stage:      "agent",
 			DurationMS: dur,
-			Payload: map[string]interface{}{
-				"success":           status.Completed(),
-				"status":            string(status),
-				"reason":            ctx.TerminalReason,
-				"total_duration_ms": dur,
-				"total_tokens":      ctx.TotalTokens,
-				"fenced_calls":      ctx.FencedCalls,
-				"fenced_tokens":     ctx.FencedTokens,
-			},
+			Payload:    donePayload,
 		})
 	}()
 
@@ -7132,6 +7259,7 @@ func emitTerminal(ctx *AgentContext, st *runState, status TerminalStatus, reason
 		retireAuthorizationGrants(ctx, grantTerminal)
 		ctx.TerminalStatus = status
 		ctx.TerminalReason = reason
+		ctx.TerminalUnresolved = unresolvedGateNames(st)
 		if st != nil && st.pendingToolCall != "" {
 			// The outstanding call is answered first, so tool_call and
 			// tool_result stay balanced at every exit.
@@ -7148,11 +7276,18 @@ func emitTerminal(ctx *AgentContext, st *runState, status TerminalStatus, reason
 		// `reason` are additive, so a consumer that never learned about them
 		// reads the same event it always did -- and reads the same TRUTH,
 		// which is what honestTerminalSummary enforces.
-		ctx.Stream("done", map[string]string{
+		done := map[string]string{
 			"summary": honestTerminalSummary(ctx, st, status, reason, summary),
 			"status":  string(status),
 			"reason":  reason,
-		})
+		}
+		// Additive: present only when an exit gate spent its bounces with its
+		// finding still true, so a consumer reading status alone can still
+		// tell a clean completion from one with caveats.
+		if ctx.TerminalUnresolved != "" {
+			done["unresolved"] = ctx.TerminalUnresolved
+		}
+		ctx.Stream("done", done)
 	})
 }
 
@@ -7642,8 +7777,9 @@ func hasHonestMarker(s string) bool {
 
 // honestTerminalSummary is the last thing between a terminal and the client.
 //
-// For a completed status it changes nothing: the gate authorised the claim, so
-// the account stands. For every other status it guarantees three properties --
+// For a completed status the account stands, because the gate authorised the
+// claim; what a spent heuristic gate still found is appended as a caveat. For
+// every other status it guarantees three properties --
 // there is a summary, it carries no completion claim, and it says plainly that
 // the task was not confirmed finished.
 // deletionSummaryLimit bounds how many paths a completion summary names before
@@ -7653,26 +7789,7 @@ const deletionSummaryLimit = 5
 func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatus,
 	reason, summary string) string {
 	if status.Completed() {
-		// A run whose work was removing files says which ones, from the
-		// ledger rather than from anything the model wrote. Paths only: no
-		// hashes, no ledger vocabulary, no permission machinery.
-		if reason == "approved_deletions_demonstrated" {
-			if paths := approvedDeletionPaths(ctx); len(paths) > 0 {
-				named := paths
-				more := ""
-				if len(named) > deletionSummaryLimit {
-					more = fmt.Sprintf(" and %d more", len(named)-deletionSummaryLimit)
-					named = named[:deletionSummaryLimit]
-				}
-				line := fmt.Sprintf("Deleted %s%s, as you approved. Confirmed gone.",
-					strings.Join(named, ", "), more)
-				if s := strings.TrimSpace(summary); s != "" {
-					return line + "\n\n" + s
-				}
-				return line
-			}
-		}
-		return summary
+		return completedTerminalSummary(ctx, reason, summary) + unresolvedGateCaveats(st)
 	}
 	out := strings.TrimSpace(summary)
 	if claim := completionClaimIn(out); claim != "" {
@@ -7692,6 +7809,30 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 	return out
 }
 
+// completedTerminalSummary is the account of a completion the gate authorised.
+func completedTerminalSummary(ctx *AgentContext, reason, summary string) string {
+	// A run whose work was removing files says which ones, from the ledger
+	// rather than from anything the model wrote. Paths only: no hashes, no
+	// ledger vocabulary, no permission machinery.
+	if reason == "approved_deletions_demonstrated" {
+		if paths := approvedDeletionPaths(ctx); len(paths) > 0 {
+			named := paths
+			more := ""
+			if len(named) > deletionSummaryLimit {
+				more = fmt.Sprintf(" and %d more", len(named)-deletionSummaryLimit)
+				named = named[:deletionSummaryLimit]
+			}
+			line := fmt.Sprintf("Deleted %s%s, as you approved. Confirmed gone.",
+				strings.Join(named, ", "), more)
+			if s := strings.TrimSpace(summary); s != "" {
+				return line + "\n\n" + s
+			}
+			return line
+		}
+	}
+	return summary
+}
+
 // serverTerminalFallback is what the user reads when the producer had nothing
 // to say, or said something the run cannot support. It reports only facts the
 // server holds: what the outcome was, whether anything is on disk, and whether
@@ -7704,6 +7845,9 @@ func serverTerminalFallback(ctx *AgentContext, st *runState, status TerminalStat
 	case reason == "investigation_handed_back":
 		sb.WriteString("Stopped: the reply asks you to find something in the project files instead of reading " +
 			"them, so the task is not reported as finished.")
+	case unresolvedFinding(st, reason) != "":
+		sb.WriteString("Stopped: a check at the end still failed after the agent was sent back to fix it — " +
+			unresolvedFinding(st, reason) + ".")
 	case status == TerminalTimedOut:
 		sb.WriteString("Stopped: the session ran out of time before the work finished.")
 	case status == TerminalFailed:
@@ -7738,6 +7882,20 @@ func serverTerminalFallback(ctx *AgentContext, st *runState, status TerminalStat
 	sb.WriteString(" This run did not confirm the task was complete.")
 	sb.WriteString(liveBackgroundJobNote(ctx))
 	return sb.String()
+}
+
+// unresolvedFinding is the finding of the spent gate a terminal reason names,
+// or "".
+func unresolvedFinding(st *runState, reason string) string {
+	if st == nil {
+		return ""
+	}
+	for _, u := range unresolvedReasons {
+		if u.reason == reason {
+			return st.unresolvedGates[u.gate]
+		}
+	}
+	return ""
 }
 
 // modelProseIfAuthorized passes the model's own account through only where the
@@ -8647,6 +8805,17 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	// settle it.
 	if hasUnresolvedDebt(st) {
 		return TerminalIncomplete, "unresolved_mutation_debt"
+	}
+	// A gate that spent its bounces with its finding still true, where the
+	// finding is a fact about the delivered work: a claim-check gap (a
+	// template the code renders does not exist), a file with a parse warning
+	// that never ran, a reply citing files the run never read. Last, so every
+	// more specific reason above keeps its place. The heuristic gates stand as
+	// caveats in the summary instead.
+	for _, u := range unresolvedReasons {
+		if _, ok := st.unresolvedGates[u.gate]; ok {
+			return TerminalIncomplete, u.reason
+		}
 	}
 	if completedReason != "" {
 		return TerminalCompleted, completedReason

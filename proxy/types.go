@@ -1042,7 +1042,10 @@ type AgentContext struct {
 	// the deferred broker envelope so the two cannot disagree.
 	TerminalStatus TerminalStatus
 	TerminalReason string
-	terminalOnce   sync.Once
+	// TerminalUnresolved names the exit gates that spent their bounces with
+	// their finding still true, comma-separated; empty when there were none.
+	TerminalUnresolved string
+	terminalOnce       sync.Once
 
 	// Ledger is the observational record of what this session has done to
 	// each declared/session-owned deliverable, keyed by CANONICAL

@@ -1460,7 +1460,9 @@ const maxCitedPaths = 3
 //
 // The predicate is existence plus absence of evidence, not a judgement about
 // the claim: the file has to be real, and the run has to have never read it.
-// A file the model wrote is evidence enough, since it authored the contents.
+// A file the model wrote is evidence enough, since it authored the contents,
+// and so is one it moved or deleted: naming it reports the operation, not a
+// guess about code it never saw.
 func unreadFileCitations(ctx *AgentContext, text string) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -1477,7 +1479,7 @@ func unreadFileCitations(ctx *AgentContext, text string) []string {
 		if info, err := os.Stat(resolved); err != nil || info.IsDir() {
 			continue
 		}
-		if ctx.WasBodySeen(resolved) {
+		if ctx.WasBodySeen(resolved) || ledgerTracks(ctx, resolved) {
 			continue
 		}
 		out = append(out, name)

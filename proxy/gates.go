@@ -147,8 +147,20 @@ func claimsUniversal(summary string) bool {
 // Those are blocking because a missing render_template target is a
 // guaranteed 500 at runtime; the rest of the lint stays advisory.
 func verifyCompletionClaims(workingDir string) string {
-	if workingDir == "" {
+	gaps := completionClaimGaps(workingDir)
+	if len(gaps) == 0 {
 		return ""
+	}
+	return fmt.Sprintf(
+		"Your `done` summary claims the work is complete, but a structural check of the workspace found gaps:\n\n%s\n\nFix the missing files (or correct your summary to acknowledge what's not done) before declaring done.",
+		strings.Join(gaps, "\n"))
+}
+
+// completionClaimGaps are the hard gaps verifyCompletionClaims bounces on:
+// template references whose target does not exist.
+func completionClaimGaps(workingDir string) []string {
+	if workingDir == "" {
+		return nil
 	}
 	var gaps []string
 	for _, f := range assetLintFindings(workingDir) {
@@ -156,12 +168,7 @@ func verifyCompletionClaims(workingDir string) string {
 			gaps = append(gaps, f)
 		}
 	}
-	if len(gaps) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(
-		"Your `done` summary claims the work is complete, but a structural check of the workspace found gaps:\n\n%s\n\nFix the missing files (or correct your summary to acknowledge what's not done) before declaring done.",
-		strings.Join(gaps, "\n"))
+	return gaps
 }
 
 // Structural gate for the edit and write paths (issue #147). The V3
