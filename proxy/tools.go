@@ -11,7 +11,7 @@
 //	  ToolDef — schema, model-facing description, executor — so a tool's
 //	  three faces are edited in one place. The V3 and sandbox calls a tool
 //	  makes (candidate generation for a T2 write, tree-sitter outline,
-//	  pycheck, the run client) sit with the tool that makes them rather than
+//	  the run client) sit with the tool that makes them rather than
 //	  in a shared client block.
 //	Tier classification — whether a given write is boilerplate the proxy
 //	  writes straight to disk (T0/T1) or logic worth routing through the V3
@@ -2936,28 +2936,6 @@ func editFileTool() *ToolDef {
 					"Read the file to see its current state, then either make a DIFFERENT edit or declare done."), nil
 			}
 
-			// Syntax gate — the edit_file counterpart of structural_edit's
-			// post-splice compile check. A garbage-quoted new_str (doubled
-			// quotes, stray escapes) otherwise lands on disk and turns a
-			// runnable .py file into a SyntaxError. Best-effort: when the
-			// v3-service is unreachable or busy the check is skipped rather
-			// than blocking the edit.
-			if strings.ToLower(filepath.Ext(input.Path)) == ".py" {
-				if ok, perr := pycheckViaV3(ctx, input.Path, newContent); !ok {
-					log.Printf("[edit_file] syntax gate rejected edit to %s: %s", input.Path, perr)
-					// A real verdict about the proposed bytes: they do not parse.
-					return &ToolResult{
-						Success: false,
-						Error: fmt.Sprintf(
-							"edit_file: this edit would make %s invalid Python — %s. The file was NOT modified. "+
-								"Check your quoting in new_str and try again.", input.Path, perr),
-						MutationStatus:   MutationRefused,
-						ValidationKind:   ValidationKindSyntax,
-						ValidationStatus: ValidationFailed,
-					}, nil
-				}
-			}
-
 			// Route through V3 pipeline when the file warrants it. The
 			// gate now mirrors write_file (file-tier only, no request-tier
 			// AND-gate) — having two separate tier checks meant V3 only
@@ -5177,41 +5155,6 @@ func resolvePath(path, workingDir string) string {
 // user pastes "/home/isaac/snake/app.py" into a prompt — the model
 // copies the absolute path, the proxy rewrites it to /workspace/app.py,
 // and read_file actually finds the file.
-// pycheckViaV3 asks the v3-service whether Python source parses. Returns
-// (true, "") when it parses, when the check can't run (service down, busy,
-// timeout), or when V3 is bypassed — fail-open by design: the gate exists
-// to catch garbage-quoted edits, not to make edits depend on v3-service
-// availability. Returns (false, error) only on a definitive SyntaxError.
-func pycheckViaV3(ctx *AgentContext, path, source string) (bool, string) {
-	if ctx.V3URL == "" || !ctx.V3GenerationEnabled() {
-		return true, ""
-	}
-	body, err := json.Marshal(map[string]string{"path": path, "source": source})
-	if err != nil {
-		return true, ""
-	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Post(ctx.V3URL+"/internal/pycheck", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return true, ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return true, ""
-	}
-	var out struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return true, ""
-	}
-	if out.OK {
-		return true, ""
-	}
-	return false, out.Error
-}
-
 // redundantReadShortCircuit returns a compact synthetic result when the
 // model asks to read a file it has ALREADY read this session and the
 // content on disk is unchanged. A weak model frequently re-reads the same

@@ -30,6 +30,20 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: V3 judged Python with a different interpreter than the one that runs it
+
+v3-service ran on Python 3.11 while the sandbox runs 3.13, so every
+`compile()` or `ast.parse` verdict V3 gave used an older grammar than the
+code's runtime: valid 3.12+ code such as `f"{d["k"]}"` (PEP 701) was
+"invalid Python". The worst place was `edit_file`'s `/internal/pycheck`
+pre-gate, which refused such edits, and ran before the sandbox's own check
+with its rule that a file already broken may be repaired one error at a
+time, so a partial repair was refused too. v3-service now builds on the
+sandbox's digest-pinned `python:3.13-slim`, and a test holds the two bases
+equal. The pre-gate and the V3 endpoint behind it are removed; the sandbox
+check on the edited file already covers the same bytes. The interactive lint
+now reports `SKIPPED` rather than `OK` when it could not parse the code.
+
 ### Fixed: the sandbox's syntax check passed what it never checked, and failed valid code
 
 `/syntax-check` built its errors from the checker's stderr and ignored how the

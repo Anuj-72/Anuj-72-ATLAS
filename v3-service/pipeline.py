@@ -1677,7 +1677,8 @@ class V3PipelineService:
                 # handling (PC-034).
                 lint_ok, lint_reason = scoring.interactive_lint(code)
                 if lint_ok:
-                    emit("interactive_lint", "OK")
+                    emit("interactive_lint",
+                         f"SKIPPED ({lint_reason})" if lint_reason else "OK")
                     return verify_build_if_requested(out, err)
                 emit("interactive_lint", f"FAIL: {lint_reason}")
                 return False, out, f"interactive_lint: {lint_reason}", verification_evidence

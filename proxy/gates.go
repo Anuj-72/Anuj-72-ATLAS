@@ -698,8 +698,8 @@ func sandboxSyntaxOutcome(ctx *AgentContext, path, content string) checkOutcome 
 //	else if(key === 'ArrowDown' && direction !== 'UP') nextDirection = 'DOWN');
 //
 // Every gate on the write path was structurally blind to it. The Python
-// compiles (the JavaScript is string content), so pycheck and the sandbox's
-// /syntax-check pass; the server starts and `curl /` returns 200, so the
+// compiles (the JavaScript is string content), so the sandbox's /syntax-check
+// passes; the server starts and `curl /` returns 200, so the
 // verification gate passes and `done` is accepted — while the game is dead in
 // the browser. Nothing in the loop ever parses the JavaScript.
 //

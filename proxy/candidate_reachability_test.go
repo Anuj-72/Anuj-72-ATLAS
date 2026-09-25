@@ -299,7 +299,6 @@ func TestOneActivationAuthorityPerCandidateRoute(t *testing.T) {
 	// Every site that reaches the producer names it, and only those sites plus
 	// the syntax helper, which decides nothing about candidates.
 	allowed := map[string]bool{
-		"func pycheckViaV3(":         true,
 		"func writeFileTool(":        true,
 		"func structuralEditTool(":   true,
 		"func runEditPipeline(":      true,

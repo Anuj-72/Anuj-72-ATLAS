@@ -552,6 +552,11 @@ def verify_build_command(
     return True, out, err, evidence
 
 
+# interactive_lint's reason when it could not parse the code and checked
+# nothing.
+INTERACTIVE_LINT_NOT_RUN = "not run: the code does not parse in this interpreter"
+
+
 def interactive_lint(code: str) -> Tuple[bool, str]:
     """Heuristic checks beyond compile-OK for interactive (terminal/UI) tasks.
 
@@ -567,9 +572,9 @@ def interactive_lint(code: str) -> Tuple[bool, str]:
     try:
         tree = _ast.parse(code)
     except SyntaxError:
-        # Compile gate above already caught this; treat as passed here so
-        # we don't double-report.
-        return True, ""
+        # The compile gate above owns syntax, so this is not a second
+        # failure -- but the lint did not run either, and must not say OK.
+        return True, INTERACTIVE_LINT_NOT_RUN
 
     has_curses = False
     has_termios_setraw = False

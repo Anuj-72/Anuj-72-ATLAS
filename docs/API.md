@@ -643,20 +643,6 @@ An `embedded_regions` array is added when the file holds code in another languag
 ]}
 ```
 
-### POST /internal/pycheck
-
-Parse-check Python source without executing it (pure `compile()`). Used by the proxy's `edit_file` path to refuse writing a `.py` file the edit would break — the same gate `structural_edit` applies post-splice.
-
-**Request:**
-```json
-{"path": "app.py", "source": "<file text>"}
-```
-
-**Response:** `{"ok": true}` on success, or:
-```json
-{"ok": false, "error": "SyntaxError at line 3: invalid syntax (offending line: def foo(:)", "line": 3}
-```
-
 ### POST /internal/structural_check
 
 Resolve every direct-identifier call in a Python source against its local defs, imports, bound names, builtins, and (optionally) supplied project symbols — without executing it. Used by the proxy's structural gate (#147) on the `.py` write paths (`edit_file`, `structural_edit`, and the `write_file` branches; under BypassV3 only the non-iterating T0/T1 direct `write_file` is excepted) to refuse content that introduces a `NameError`: a call to a name the file never binds parses fine but 500s at request time.
@@ -681,7 +667,7 @@ Resolve every direct-identifier call in a Python source against its local defs, 
 
 ### POST /internal/embedded_script_check
 
-Syntax-check the JavaScript (and brace-balance the CSS) *embedded* in a file — what `/internal/pycheck` and the sandbox's `/syntax-check` are both blind to, because they see the host language only. Two carriers are handled: `<script>`/`<style>` blocks in `.html`/`.htm`/`.jinja`/`.jinja2` files, and HTML held in a **Python string literal** (the `render_template_string` shape). Backs the proxy's embedded-script gate on `edit_file`, `insert_after`, `replace_lines`, `structural_edit` and the `write_file` branches.
+Syntax-check the JavaScript (and brace-balance the CSS) *embedded* in a file — what the sandbox's `/syntax-check` is blind to, because it sees the host language only. Two carriers are handled: `<script>`/`<style>` blocks in `.html`/`.htm`/`.jinja`/`.jinja2` files, and HTML held in a **Python string literal** (the `render_template_string` shape). Backs the proxy's embedded-script gate on `edit_file`, `insert_after`, `replace_lines`, `structural_edit` and the `write_file` branches.
 
 Given the optional `previous` (the pre-edit file) it also reports a **stopped render loop**: a function a repeating timer used to drive that the edit left scheduled exactly once, never re-arming. That finding carries `"defect": "stopped_loop"` and needs both versions, because one version alone cannot tell a dead loop from a deliberate delayed one-shot. A finding for a missing closing token also carries `opened_line` / `opened_text`, the block that was left unclosed: tree-sitter reports the absence at the point the parser gave up, which is generally a line the edit never touched. A `let`/`const` declaring the same name twice in one scope is reported from the edited file alone as `"defect": "redeclaration"` — the spec makes that an unconditional early error, so the browser refuses the whole script. Same blind spot as the syntax check, one level up — the JavaScript parses, the server starts and the page returns 200, and the page freezes after one frame.
 

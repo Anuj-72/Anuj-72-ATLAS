@@ -1,5 +1,6 @@
 import importlib.util
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -468,7 +469,18 @@ def test_a_checker_that_finished_still_gives_its_verdict(tmp_path, monkeypatch):
 # detected as a module and `node --check` compiles nothing, so garbage and
 # truncated modules exited 0; before 20.19 every valid module was rejected.
 
-_requires_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def _runs(*cmd):
+    """The tool is installed and answers. macOS ships a /usr/bin/javac that
+    exists without a JDK, so being on PATH is not enough."""
+    if shutil.which(cmd[0]) is None:
+        return False
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
+    except Exception:
+        return False
+
+
+_requires_node = pytest.mark.skipif(not _runs("node", "--version"), reason="node not available")
 
 
 @_requires_node
@@ -522,8 +534,8 @@ def test_typescript_counts_only_syntax_diagnostics(tmp_path, monkeypatch):
     assert sandbox._syntax_check_impl("typescript", "const x = 1;\n", tmp_path) == [crashed]
 
 
-_requires_javac = pytest.mark.skipif(shutil.which("javac") is None, reason="javac not available")
-_requires_kotlinc = pytest.mark.skipif(shutil.which("kotlinc") is None, reason="kotlinc not available")
+_requires_javac = pytest.mark.skipif(not _runs("javac", "-version"), reason="javac not available")
+_requires_kotlinc = pytest.mark.skipif(not _runs("kotlinc", "-version"), reason="kotlinc not available")
 
 
 @_requires_javac

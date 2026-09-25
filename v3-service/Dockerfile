@@ -1,5 +1,10 @@
-# python:3.11-slim — digest-pinned for reproducible builds (Dependabot maintains)
-FROM docker.io/python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
+# python:3.13-slim, the same digest-pinned base the sandbox runs (Dependabot
+# maintains). Every compile() and ast.parse verdict this service gives --
+# structural_edit's post-splice check, the call graph, the lints -- is about
+# code the sandbox then executes, so it has to use that interpreter's grammar.
+# On 3.11 it rejected valid 3.12+ code (PEP 701 f"{d["k"]}", PEP 695 type
+# parameters) that the sandbox runs fine.
+FROM docker.io/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
 WORKDIR /app
 
 # Install system deps

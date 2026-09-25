@@ -222,8 +222,6 @@ class V3Handler(BaseHTTPRequestHandler):
             self._handle_symbol_index()
         elif self.path == "/internal/outline":
             self._handle_outline()
-        elif self.path == "/internal/pycheck":
-            self._handle_pycheck()
         elif self.path == "/internal/structural_check":
             self._handle_structural_check()
         elif self.path == "/internal/embedded_script_check":
@@ -616,34 +614,6 @@ class V3Handler(BaseHTTPRequestHandler):
         )
         self._json_response(200, result)
 
-    def _handle_pycheck(self):
-        """POST /internal/pycheck — does this Python source parse?
-
-        Request:  {"path": "app.py", "source": "<file text>"}
-        Response: {"ok": bool, "error": "...", "line": N}
-
-        Used by the proxy's edit_file path to refuse writing a .py file the
-        edit would break — the same gate structural_edit applies post-splice. Pure
-        compile() check, no execution.
-        """
-        content_len = int(self.headers.get("Content-Length", 0))
-        try:
-            body = json.loads(self.rfile.read(content_len) or b"{}")
-        except json.JSONDecodeError as e:
-            self._json_response(400, {"ok": False, "error": f"invalid JSON body: {e}"})
-            return
-        path = body.get("path", "") or "<edit>"
-        source = body.get("source", "") or ""
-        try:
-            compile(source, path, "exec")
-            self._json_response(200, {"ok": True})
-        except SyntaxError as e:
-            snippet = (e.text or "").strip()
-            msg = f"SyntaxError at line {e.lineno}: {e.msg}"
-            if snippet:
-                msg += f" (offending line: {snippet})"
-            self._json_response(200, {"ok": False, "error": msg, "line": e.lineno or 0})
-
     def _handle_structural_check(self):
         """POST /internal/structural_check — does every direct-identifier call
         in this Python source resolve (local def, import, builtin, or a
@@ -697,7 +667,7 @@ class V3Handler(BaseHTTPRequestHandler):
         Response: {"ok": bool, "findings": [{line, column, kind, where,
                                             message, hint, text}]}
 
-        Covers what /internal/pycheck and the sandbox's /syntax-check are both
+        Covers what the sandbox's /syntax-check is
         blind to: a `<script>` block inside an .html/.jinja file, and — the
         2026-08-01 dogfooding case — inside a Python string literal handed to
         render_template_string. A stray `)` in that JavaScript leaves the

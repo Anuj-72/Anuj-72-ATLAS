@@ -1832,10 +1832,6 @@ func runEditGate(t *testing.T, tool string, c editGateCase) (*ToolResult, string
 				out["unresolved"] = []string{c.introduces}
 			}
 			json.NewEncoder(w).Encode(out)
-		case r.URL.Path == "/internal/pycheck":
-			// edit_file's own pre-gate lint. Answered benignly: this table is
-			// about the syntax gate's classification, not that check.
-			_, _ = w.Write([]byte(`{"ok":true,"errors":[]}`))
 		case r.URL.Path == "/internal/embedded_script_check":
 			st.mu.Lock()
 			st.embedded++
@@ -2046,8 +2042,6 @@ func TestEditToolsReportTheDecisiveStructuralRefusal(t *testing.T) {
 				switch {
 				case r.URL.Path == "/internal/cyclomatic_complexity":
 					_, _ = w.Write([]byte(`{"ok":true,"cyclomatic_complexity":1}`))
-				case r.URL.Path == "/internal/pycheck":
-					_, _ = w.Write([]byte(`{"ok":true,"errors":[]}`))
 				case r.URL.Path == "/internal/structural_check":
 					var body map[string]interface{}
 					json.NewDecoder(r.Body).Decode(&body)
