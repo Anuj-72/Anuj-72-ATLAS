@@ -7318,9 +7318,35 @@ func terminalCompletionAllowed(ctx *AgentContext, expected []string) (bool, stri
 		return true, "no_file_obligation"
 	}
 	if deliverablesDemonstrablyValid(ctx, paths) {
+		// The reason names the evidence. Code and pages that nothing in this
+		// run ran are current and parse; that is all the completion rests on.
+		if len(unexecutedDeliverables(ctx, expected)) > 0 {
+			return true, "deliverables_parse_only"
+		}
 		return true, "deliverables_demonstrated"
 	}
 	return false, "deliverables_not_demonstrated"
+}
+
+// unexecutedDeliverables lists the deliverables that can be run -- code in an
+// executable language, and HTML pages, which run in a browser -- that no
+// current run in this session showed working (pathCoverageSatisfied).
+// Documents and data have nothing to run and are not listed.
+func unexecutedDeliverables(ctx *AgentContext, expected []string) []string {
+	var out []string
+	for _, rel := range declaredOrOwnedDeliverables(ctx, expected) {
+		resolved := resolveAgentPath(ctx, rel)
+		ext := strings.ToLower(filepath.Ext(resolved))
+		if meta, gated := syntaxGateLanguages[ext]; !(gated && meta.Executable) && ext != ".html" && ext != ".htm" {
+			continue
+		}
+		h := fileSHA256(ctx, resolved)
+		if h == "" || pathCoverageSatisfied(ctx, resolved, h) {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out
 }
 
 // declaredOrOwnedDeliverables is the union of what the run said it would
@@ -7729,8 +7755,13 @@ var claimNegators = []string{
 
 // completionClaimIn returns the first unnegated completion claim in s, or "".
 func completionClaimIn(s string) string {
+	return claimIn(s, completionClaims)
+}
+
+// claimIn returns the first of claims that s makes unnegated, or "".
+func claimIn(s string, claims []string) string {
 	low := strings.ToLower(s)
-	for _, claim := range completionClaims {
+	for _, claim := range claims {
 		from := 0
 		for {
 			i := strings.Index(low[from:], claim)
@@ -7789,7 +7820,15 @@ const deletionSummaryLimit = 5
 func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatus,
 	reason, summary string) string {
 	if status.Completed() {
-		return completedTerminalSummary(ctx, reason, summary) + unresolvedGateCaveats(st)
+		out := completedTerminalSummary(ctx, reason, summary)
+		var expected []string
+		if st != nil {
+			expected = st.expectedOutputs
+		}
+		if unrun := unexecutedDeliverables(ctx, expected); len(unrun) > 0 {
+			out = parseOnlySummary(out, unrun)
+		}
+		return out + unresolvedGateCaveats(st)
 	}
 	out := strings.TrimSpace(summary)
 	if claim := completionClaimIn(out); claim != "" {
@@ -7807,6 +7846,44 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 		out += " This run did not confirm the task was complete."
 	}
 	return out
+}
+
+// executionClaims are what a model says when it believes the code ran:
+// claims a parse cannot support. Checked with completionClaimIn's negation
+// rule, so "nothing verified it works" is not one.
+var executionClaims = []string{
+	"everything works", "all tests pass", "tests pass", "works correctly", "works as expected",
+	"fully working", "fully functional", "runs correctly", "runs successfully",
+	"runs without error", "i verified", "verified that", "verified it", "i tested",
+	"tested it", "i ran it", "i ran the", "correctly handles", "correctly processes",
+	"correctly implements",
+}
+
+// parseOnlySummary is the account of a completion that rests on a parse. The
+// model's prose stands when it claims no more than that; when it says the
+// code works or its tests pass, the server's sentence comes first and the
+// model's account is labelled, because nothing in the run checked it
+// (audit P-agent-3/INTEGRITY#1: "All tests pass and everything works" was
+// shown word for word over an index.html nothing had loaded).
+func parseOnlySummary(prose string, unrun []string) string {
+	named := unrun
+	more := ""
+	if len(named) > 3 {
+		more = fmt.Sprintf(" and %d more", len(named)-3)
+		named = named[:3]
+	}
+	fact := fmt.Sprintf("%s%s parse, but nothing in this run ran them.", strings.Join(named, ", "), more)
+	if len(unrun) == 1 {
+		fact = fmt.Sprintf("%s parses, but nothing in this run ran it.", unrun[0])
+	}
+	prose = strings.TrimSpace(prose)
+	switch {
+	case prose == "":
+		return fact
+	case claimIn(prose, executionClaims) != "":
+		return fact + "\n\nThe agent's own account, which nothing in this run checked:\n" + truncateStr(prose, 1200)
+	}
+	return prose + "\n\n" + fact
 }
 
 // completedTerminalSummary is the account of a completion the gate authorised.

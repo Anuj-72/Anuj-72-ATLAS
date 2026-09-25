@@ -875,7 +875,12 @@ func TestDirectMutatorOutcomeTable(t *testing.T) {
 // check with 503, and an unreachable check service is now shown to the client
 // once per session (noteCheckServiceUnavailable). That one `text` event is the
 // only difference; the ledger is still invisible.
-const ledgerLoopTranscriptHash = "7a51fb61ef80cbef3ff70816a4f2b8a4a4f1a1194395e4e272703359a2e40a46"
+//
+// Re-pinned for the terminal event alone: nothing in this fixture runs
+// solve.py, so the completion's reason is deliverables_parse_only and the
+// summary adds "solve.py parses, but nothing in this run ran it." Every other
+// event is unchanged; the ledger is still invisible.
+const ledgerLoopTranscriptHash = "8508e55eb149f8123201993fa7646888b6d47e548f6b57cf98f4f6153f0104f7"
 
 // prompt_tokens is elided for a fixture reason rather than a timing one: the
 // workspace path is part of the system prompt and t.TempDir() varies in
@@ -2283,8 +2288,9 @@ func TestDeleteDoesNotSwallowTheRestOfTheTask(t *testing.T) {
 	}
 	// This fixture approves the deletion, so the run is judged on all of its
 	// work: the removal the user authorised AND the file it was asked to
-	// write. The subject here is that the write happened at all.
-	if r.terminal["reason"] != "deliverables_demonstrated" {
+	// write. The subject here is that the write happened at all. Nothing ran
+	// report.py, so the deliverable's reason is the parse-only one.
+	if r.terminal["reason"] != "deliverables_parse_only" {
 		t.Errorf("reason=%q, want the deliverable to own the terminal", r.terminal["reason"])
 	}
 }
@@ -2309,7 +2315,7 @@ func TestDeleteContinuationMatrix(t *testing.T) {
 					return dlDel("a.py")
 				}
 				return map[string]interface{}{"type": "done", "summary": "wrote report.py"}
-			}, 2, "deliverables_demonstrated"},
+			}, 2, "deliverables_parse_only"},
 		{"delete only", "Delete a.py.",
 			map[string]string{"a.py": delSeed},
 			func(i int) map[string]interface{} {
@@ -2900,7 +2906,7 @@ func TestApprovedDeletionCompletionMatrix(t *testing.T) {
 					return dlWrite("report.py", valid)
 				}
 				return map[string]interface{}{"type": "done", "summary": "done"}
-			}, true, TerminalCompleted, "deliverables_demonstrated",
+			}, true, TerminalCompleted, "deliverables_parse_only",
 			[]string{"a.py"}, []string{"report.py"}},
 
 		{"9 denied deletion", map[string]string{"a.py": valid},

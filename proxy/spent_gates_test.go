@@ -178,3 +178,52 @@ func TestACleanExitReportsNothingUnresolved(t *testing.T) {
 		t.Fatalf("a clean exit reported unresolved gates: %v", *done)
 	}
 }
+
+// P-agent-3/INTEGRITY#1: a completion that rests on a parse said
+// "deliverables_demonstrated", and the model's "All tests pass and everything
+// works" was shown word for word over code nothing had run.
+func TestAParseOnlyCompletionSaysSo(t *testing.T) {
+	cases := []struct {
+		name, file, body, command, prose string
+		wantReason                       string
+		wantPrefix, wantContains         string
+	}{
+		{"claims over unrun code", "solve.py", "print(1)\n", "",
+			"All tests pass and everything works.", "deliverables_parse_only",
+			"solve.py parses, but nothing in this run ran it.", "which nothing in this run checked"},
+		{"a plain account over unrun code", "solve.py", "print(1)\n", "",
+			"Wrote solve.py.", "deliverables_parse_only",
+			"Wrote solve.py.", "solve.py parses, but nothing in this run ran it."},
+		{"a negated claim is not a claim", "solve.py", "print(1)\n", "",
+			"Wrote solve.py; I did not verify it works correctly.", "deliverables_parse_only",
+			"Wrote solve.py;", "solve.py parses, but nothing in this run ran it."},
+		{"a page nothing loaded", "index.html", "<!DOCTYPE html><html><body><canvas></canvas></body></html>\n", "",
+			"I built a fully working snake game.", "deliverables_parse_only",
+			"index.html parses, but nothing in this run ran it.", "which nothing in this run checked"},
+		{"code that ran", "solve.py", "print(1)\n", "python3 solve.py",
+			"All tests pass and everything works.", "deliverables_demonstrated",
+			"All tests pass and everything works.", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, dir := sepCtx(t, nil)
+			sepWrite(t, ctx, dir, c.file, c.body)
+			withSyntaxSandbox(t, ctx)
+			st := &runState{madeProductiveChange: true, productiveChanges: 1, toolsRun: 1}
+			if c.command != "" {
+				st.observeVerification(ctx, "", 1, c.command, ranClean("1\n"))
+			}
+			status, reason := finalizeCompletion(ctx, st, "Write "+c.file+".", "")
+			if status != TerminalCompleted || reason != c.wantReason {
+				t.Fatalf("terminal = %s/%s, want completed/%s", status, reason, c.wantReason)
+			}
+			summary := honestTerminalSummary(ctx, st, status, reason, c.prose)
+			if !strings.HasPrefix(summary, c.wantPrefix) || !strings.Contains(summary, c.wantContains) {
+				t.Fatalf("summary = %q", summary)
+			}
+			if c.command != "" && summary != c.prose {
+				t.Fatalf("a demonstrated completion's account was changed: %q", summary)
+			}
+		})
+	}
+}

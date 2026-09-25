@@ -4036,8 +4036,10 @@ func TestExecutableDeliverablesDemandExecutionDeclarativeDoNot(t *testing.T) {
 		want     string
 		wantNot  string
 	}{
+		// A page is not demanded a run, and nothing loaded it either: the
+		// completion stands and its reason says it rests on a parse.
 		{"static html, no command", work([]string{"index.html"}, nil),
-			seq(write("index.html", goodHTML), done), "completed/deliverables_demonstrated", ""},
+			seq(write("index.html", goodHTML), done), "completed/deliverables_parse_only", ""},
 		{"json config, no command", work([]string{"config.json"}, nil),
 			seq(write("config.json", goodJSON), done), "completed/deliverables_demonstrated", ""},
 		{"yaml config, no command", work([]string{"config.yaml"}, nil),
@@ -4063,7 +4065,7 @@ func TestExecutableDeliverablesDemandExecutionDeclarativeDoNot(t *testing.T) {
 			"incomplete/verification_demanded_unmet", ""},
 		{"mixed: static asset plus exercised code", work([]string{"index.html", "app.py"}, nil),
 			seq(write("index.html", goodHTML), write("app.py", goodPy), cmd("python3 app.py"), done),
-			"completed/deliverables_demonstrated", ""},
+			"completed/deliverables_parse_only", ""},
 		{"mixed: static asset plus unexercised code", work([]string{"index.html", "app.py"}, nil),
 			seq(write("index.html", goodHTML), write("app.py", goodPy), done),
 			"incomplete/verification_demanded_unmet", ""},
@@ -4077,7 +4079,7 @@ func TestExecutableDeliverablesDemandExecutionDeclarativeDoNot(t *testing.T) {
 		{"declared command satisfied on a static deliverable",
 			work([]string{"index.html"}, []string{"htmlhint index.html"}),
 			seq(write("index.html", goodHTML), cmd("htmlhint index.html"), done),
-			"completed/deliverables_demonstrated", ""},
+			"completed/deliverables_parse_only", ""},
 		{"declared command mismatched spelling",
 			work([]string{"index.html"}, []string{"htmlhint index.html"}),
 			seq(write("index.html", goodHTML), cmd("htmlhint  index.html"), done),

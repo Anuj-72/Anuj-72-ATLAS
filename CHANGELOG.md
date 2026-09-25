@@ -30,6 +30,19 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: a completion that rests on a parse says so
+
+`completed` with reason `deliverables_demonstrated` could rest on a parse
+alone: without a work contract (VS Code, the bench drivers), and for HTML
+pages under one, nothing demands a run, and the model's own "All tests pass
+and everything works" was then shown word for word. The reason is now
+`deliverables_parse_only` when code or pages that could be run were not, and
+the summary names them ("solve.py parses, but nothing in this run ran it").
+When the model's account claims the code works or its tests pass, the
+server's sentence comes first and the account is labelled as unchecked.
+`deliverables_demonstrated` now means every runnable deliverable was shown
+working by a current run.
+
 ### Fixed: a bare test run never covered the files it ran
 
 Coverage came only from files a command named, so a bare `pytest`, `go test

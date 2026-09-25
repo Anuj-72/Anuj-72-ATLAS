@@ -318,7 +318,15 @@ A model-issued `done` is `completed` only when the run's file obligation —
 what it declared plus what it wrote — is demonstrably satisfied right now,
 through the same syntax contract the write path uses. If anything was deleted
 or moved, completion is refused with `delete_intent_unestablished`: whether
-removal was the task is not knowable here.
+removal was the task is not knowable here. The reason names what the
+completion rests on: `deliverables_demonstrated` when every deliverable that
+can be run (code in an executable language, and HTML pages) was shown working
+by a current run, or there is nothing to run; `deliverables_parse_only` when
+some of them are only current and parse. Without a work contract, and for
+pages, nothing demands the run, so `completed` can rest on a parse; the reason
+says so, and the summary says which files nothing ran. A model account that
+claims more than that ("all tests pass", "everything works") is shown after
+the server's sentence and labelled as unchecked.
 
 The session budget is server-owned: 600 s total, 30 s reserve, so work stops
 at 570 s. `ATLAS_AGENT_SESSION_TIMEOUT_SEC` overrides the total within

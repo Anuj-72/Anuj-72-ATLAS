@@ -2025,9 +2025,11 @@ func TestAValidDeliverableCanBeDemonstratedThroughAnAbsolutePath(t *testing.T) {
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.SandboxURL = srv.URL
 
+	// Claimable, and the reason says what the claim rests on: nothing ran
+	// solve.py, so it is current and parses (deliverables_parse_only).
 	ok, why := terminalCompletionAllowed(ctx, []string{"solve.py"})
-	if !ok || why != "deliverables_demonstrated" {
-		t.Fatalf("terminalCompletionAllowed = (%v,%q), want (true,\"deliverables_demonstrated\") — "+
+	if !ok || why != "deliverables_parse_only" {
+		t.Fatalf("terminalCompletionAllowed = (%v,%q), want (true,\"deliverables_parse_only\") — "+
 			"a correct artifact must be claimable; sandbox saw filenames %q", ok, why, seen)
 	}
 	// And it must still be SCOPED: the filename has to arrive, relativised,
