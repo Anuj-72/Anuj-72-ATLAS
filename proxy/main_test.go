@@ -3864,14 +3864,20 @@ func TestOneVerificationDemandSharedByBothExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(src)
-	if n := strings.Count(body, "decideVerificationDemand("); n != 1 {
-		t.Fatalf("agent.go calls decideVerificationDemand %d times; exactly one "+
-			"call site is required so both exits share one decision", n)
+	// Two call sites, both shared by the done and text exits: the finalizer
+	// decides the terminal, and exitGates asks the same owner earlier so the
+	// run is told what it still owes while it can act on it.
+	if n := strings.Count(body, "decideVerificationDemand("); n != 2 {
+		t.Fatalf("agent.go calls decideVerificationDemand %d times; want the finalizer "+
+			"and the exit gates, which both exits share", n)
 	}
 	i := strings.Index(body, "func finalizeCompletion")
 	if i < 0 || !strings.Contains(body[i:i+2500], "decideVerificationDemand(") {
 		t.Fatal("the demand is not evaluated inside finalizeCompletion, the single " +
 			"finalizer both the done and text exits call")
+	}
+	if g := guardCalls(t, "agent.go", "exitGates"); !g["decideVerificationDemand"] {
+		t.Fatal("the second call site is not the exit gates both exits run")
 	}
 	for _, marker := range []string{
 		`textStatus, textReason := finalizeCompletion(ctx, st, userMessage, "text_reply")`,

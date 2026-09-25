@@ -521,14 +521,8 @@ func baselineWitness(ctx *AgentContext, resolved string) (string, string) {
 	}
 	// Behavioral: some green run still covers exactly these bytes for this
 	// path. The command that covered them is the witness.
-	for _, rec := range ctx.VerificationEvidence {
-		covered, ok := evidenceIsCurrent(ctx, rec)
-		if !ok {
-			continue
-		}
-		if covered[resolveAgentPath(ctx, resolved)] == disk {
-			return "behavioral", contentSHA256(rec.Command)
-		}
+	if rec, ok := coverageRecord(ctx, resolveAgentPath(ctx, resolved), disk); ok {
+		return "behavioral", contentSHA256(rec.Command)
 	}
 	// Syntax: the ledger holds a pass about exactly these bytes. A structural
 	// pass has no command behind it, so there is no witness to name.

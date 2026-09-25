@@ -879,7 +879,7 @@ SIGTERM the process group, wait briefly, SIGKILL if still alive. Used by the pro
 
 ### POST /shell
 
-Run a shell command against the bind-mounted workspace. The proxy's `run_command` tool routes here so the agent's verification commands (`pytest`, `python app.py`, `npm run build`, `curl`, etc.) execute against the user's actual files with the full language matrix the proxy lacks.
+Run a shell command against the bind-mounted workspace. The proxy's `run_command` tool routes here so the agent's verification commands (`pytest`, `python app.py`, `npm test`, `curl -sf`, etc.) execute against the user's actual files with the full language matrix the proxy lacks.
 
 **Request:**
 ```json

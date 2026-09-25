@@ -105,9 +105,14 @@ func TestGuardCommandAndCoverageAreDistinctPredicates(t *testing.T) {
 	if command["pathCoverageSatisfied"] {
 		t.Error("the command predicate consults path coverage")
 	}
-	// Coverage reads Covered; the command predicate must not be able to.
-	if !cover["evidenceIsCurrent"] {
+	// Coverage reads Covered, through the replay that lets a later failure
+	// take back an earlier pass; the command predicate must not be able to.
+	replay := guardCalls(t, "guardrails.go", "coverageRecord")
+	if !cover["coverageRecord"] || !replay["evidenceIsCurrent"] {
 		t.Error("path coverage no longer reads the coverage map")
+	}
+	if replay["commandObligationSatisfied"] || replay["commandEvidenceCurrent"] {
+		t.Error("the coverage replay consults the command predicate")
 	}
 	demand := guardCalls(t, "guardrails.go", "decideVerificationDemand")
 	if !demand["pathCoverageSatisfied"] || !demand["commandObligationSatisfied"] {
@@ -173,7 +178,7 @@ func TestGuardSuccessfulExecutionAloneIsNeverArtifactProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	i := strings.Index(s, "func pathCoverageSatisfied(")
+	i := strings.Index(s, "func coverageRecord(")
 	fn := s[i:]
 	if j := strings.Index(fn[1:], "\nfunc "); j > 0 {
 		fn = fn[:j]

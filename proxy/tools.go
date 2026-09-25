@@ -5973,7 +5973,7 @@ func generateInputExample(toolName string) string {
 	case "delete_file":
 		return `{"path": "old_file.py"}`
 	case "run_command":
-		return `{"command": "python -m py_compile src/main.py", "timeout": 30}`
+		return `{"command": "python3 src/main.py", "timeout": 30}`
 	case "search_files":
 		return `{"pattern": "def main", "path": "src/", "glob": "*.py"}`
 	case "list_directory":

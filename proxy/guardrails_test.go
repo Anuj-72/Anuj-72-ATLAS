@@ -707,21 +707,53 @@ func TestIsVerificationCommand(t *testing.T) {
 		"python app.py",
 		"python3 -m pytest",
 		"go test ./...",
-		"go build",
 		"cargo test",
 		"npm test",
-		"npm run build",
-		"curl http://localhost:5000/",
+		"curl -sf http://localhost:5000/",
 		"make test",
+		// GB-4#3: these ran the program and were never counted.
+		"java App.java",
+		"javac App.java && java App",
+		"php index.php",
+		"bash run.sh",
+		"./solve.py",
+	}
+	for _, cmd := range verifies {
+		if !isVerificationCommand(cmd) {
+			t.Errorf("isVerificationCommand(%q) = false, want true", cmd)
+		}
+	}
+	// A build, a parse, a linter, a formatter or a version check shows the code
+	// is well formed, not that it works. Each of these used to discharge the
+	// work contract and clear a red test (P-guardrails/INTEGRITY#2).
+	static := []string{
+		"go build",
+		"npm run build",
 		"ruff check src/",
 		"mypy app.py",
 		"markdownlint README.md",
 		"shellcheck scripts/setup.sh",
 		"golangci-lint run ./...",
+		"python3 -m py_compile app.py",
+		"node --check app.js",
+		"python3 --version",
 	}
-	for _, cmd := range verifies {
-		if !isVerificationCommand(cmd) {
-			t.Errorf("isVerificationCommand(%q) = false, want true", cmd)
+	for _, cmd := range static {
+		if isVerificationCommand(cmd) {
+			t.Errorf("isVerificationCommand(%q) = true, want false (a static check)", cmd)
+		}
+	}
+	// The verifying part's exit status never reaches the line's
+	// (P-guardrails/INTEGRITY#1).
+	hidden := []string{
+		"pytest | tail -5",
+		"pytest || true",
+		"python3 app.py; echo done",
+		"curl http://localhost:5000/",
+	}
+	for _, cmd := range hidden {
+		if isVerificationCommand(cmd) {
+			t.Errorf("isVerificationCommand(%q) = true, want false (its result is hidden)", cmd)
 		}
 	}
 	recon := []string{
@@ -731,6 +763,7 @@ func TestIsVerificationCommand(t *testing.T) {
 		"find . -name '*.py'",
 		"echo hello",
 		"pip install flask",
+		"python3 -m pip install flask",
 	}
 	for _, cmd := range recon {
 		if isVerificationCommand(cmd) {
@@ -2021,9 +2054,18 @@ func TestHeadOnlyProbeIsNotVerification(t *testing.T) {
 			t.Errorf("header-only probe counted as verification: %q", c)
 		}
 	}
+	// curl without -f exits 0 on an error page, so it shows the server
+	// answered, not that the page works. A body check or -f makes it count.
+	for _, c := range []string{"curl http://localhost:8000", "curl -s http://localhost:5000/api"} {
+		if isVerificationCommand(c) {
+			t.Errorf("a probe that exits 0 on an HTTP error counted as verification: %q", c)
+		}
+	}
 	realVerification := []string{
-		"curl http://localhost:8000",
-		"curl -s http://localhost:5000/api",
+		"curl -sf http://localhost:8000",
+		"curl -s --fail http://localhost:5000/api",
+		"curl -s http://localhost:5000/api | grep -q ok",
+		"wget -qO- http://localhost:8000",
 		"python3 solve.py",
 		"pytest tests/",
 	}

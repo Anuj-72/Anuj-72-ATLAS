@@ -316,7 +316,7 @@ These 8 safety detectors run in place of a per-tier turn cap. Each fires indepen
 | Exploration-budget | 4 consecutive read-only calls → nudge; 5+ → skip | `proxy/agent.go` |
 | Path-aware error-loop | 3 consecutive failures on the **same** path (rotating paths don't trip) | `proxy/agent.go` (`consecutiveErrors >= 3` + path match) |
 | Action gate | Turn emits `done` but the user prompt has action-intent and no successful write/edit/structural_edit fired this loop | `proxy/agent.go` (action_gate) |
-| Verification gate | Turn emits `done` after a fix-intent prompt with no successful verification command this loop | `proxy/agent.go` (verification_gate) |
+| Verification gate | Turn emits `done` after a fix-intent prompt, or after a failed run, with no passing verification run since; or a work request's code has no current run showing it works. A parse, lint, build or a run whose exit status the command hides does not count | `proxy/agent.go` (verification_gate), `proxy/command_evidence.go` |
 | Claim-check gate | `done` summary makes universal claims (`works perfectly`, `tested all routes`) without backing evidence, OR the prompt asks for multi-issue work | `proxy/agent.go` + `proxy/gates.go` |
 
 ### Plan-mode auto-revision (plan_adherence)

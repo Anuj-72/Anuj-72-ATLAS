@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+### Fixed: "completed" resting on a check that never ran the program
+
+A run could end `completed` although nothing it ran showed the program
+working. The proxy counted any command whose first word was `python`, `node`,
+`mypy`, `ruff`, `go build`, `curl` and similar as verification, so a parse
+(`python -m py_compile app.py`), a linter, a build or a `--version` discharged
+the work contract, cleared a failed test and settled the ledger as "executed
+clean". It read only the exit status of the whole line, which the sandbox runs
+without `pipefail`, so `pytest | tail`, `pytest || true` and `app.py; echo`
+passed with the test failing, and so did `curl` against a page that answered
+HTTP 500. And a failed run after a passing one never took the pass back.
+
+`proxy/command_evidence.go` now classifies each command by what it
+demonstrates (execution, probe, static check, nothing) and by whether the
+command line reports that part's exit status. Only execution and probes count,
+from the segments whose status reaches the line; a probe counts when an HTTP
+error would fail it (`curl -f`, or the body piped into `grep`). A failed run is
+recorded and takes back an earlier pass over the same bytes. The exit gates
+name an uncounted command back to the model with the reason, and an unmet work
+contract is said at the exit, with the command that runs the file, instead of
+only in the final status. The system prompt and the `run_command` example no
+longer present a build, lint or `py_compile` as verification, and the
+server-start instruction no longer suggests the headers-only `curl -I`, which
+never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
+before they never did.
+
 ### Withdrawn: the V3.0 LiveCodeBench result (74.6%)
 
 The 74.6% LiveCodeBench "pass@1" published with V3.0, and the phase-by-phase

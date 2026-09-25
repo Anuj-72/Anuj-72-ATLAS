@@ -991,7 +991,8 @@ func staleServingJob(ctx *AgentContext) (jobID, path string) {
 // located, parsed and its module body executed -- which is precisely, and
 // only, what `python3 stats.py` proves. Neither shows a particular function
 // is correct; that was never this gate's claim. Code that nothing which ran
-// refers to stays uncovered, and a red run still records nothing at all.
+// refers to stays uncovered. A red run binds nothing: its record, marked
+// Failed, only takes back an earlier pass over the same bytes.
 func coverageForGreenCommand(ctx *AgentContext, command string) map[string]string {
 	covered := coverageFromLiveServer(ctx, command)
 	candidates := changedPathsForCoverage(ctx)
@@ -1102,6 +1103,8 @@ type verificationDemand struct {
 	// green evidence, or the first declared command that did not run against
 	// the final bytes. Empty when Met.
 	Missing string
+	// MissingCommand says Missing is a declared command rather than a path.
+	MissingCommand bool
 }
 
 // codeDeliverablesFor is the set this demand covers: paths the client declared
@@ -1237,7 +1240,7 @@ func decideVerificationDemand(ctx *AgentContext, tc *TaskContract, expected []st
 	}
 	for _, want := range obligation.Items {
 		if !commandObligationSatisfied(ctx, want) {
-			return verificationDemand{Required: true, Missing: want}
+			return verificationDemand{Required: true, Missing: want, MissingCommand: true}
 		}
 	}
 	return verificationDemand{Required: true, Met: true}
@@ -1248,13 +1251,35 @@ func decideVerificationDemand(ctx *AgentContext, tc *TaskContract, expected []st
 // Coverage comes from Covered and from nowhere else: a record that did not
 // name the path cannot vouch for its bytes, however green it was.
 func pathCoverageSatisfied(ctx *AgentContext, path, hash string) bool {
-	for _, rec := range ctx.VerificationEvidence {
-		covered, ok := evidenceIsCurrent(ctx, rec)
-		if ok && covered[path] == hash {
-			return true
-		}
+	if _, ok := coverageRecord(ctx, path, hash); ok {
+		return true
 	}
 	return stagedCoverageSatisfied(ctx, path, hash)
+}
+
+// coverageRecord replays the evidence over one path's bytes, in order, and
+// returns the record that vouches for them now. A run that showed the program
+// working binds the bytes it covered; a later failed run over the same bytes
+// takes that back, because the latest result on those bytes is the one that
+// describes them. A static check, or a declared command that runs nothing,
+// neither binds nor unbinds.
+func coverageRecord(ctx *AgentContext, path, hash string) (VerificationRecord, bool) {
+	var bound VerificationRecord
+	ok := false
+	if ctx == nil {
+		return bound, false
+	}
+	for _, rec := range ctx.VerificationEvidence {
+		if covered, current := evidenceIsCurrent(ctx, rec); current && covered[path] == hash {
+			switch {
+			case rec.Failed:
+				bound, ok = VerificationRecord{}, false
+			case rec.showsWorking():
+				bound, ok = rec, true
+			}
+		}
+	}
+	return bound, ok
 }
 
 // commandObligationSatisfied answers the command question and only that one.
@@ -1262,10 +1287,16 @@ func pathCoverageSatisfied(ctx *AgentContext, path, hash string) bool {
 // Exact identity, byte for byte: no normalisation, no equivalence, no shell
 // parsing. "python3  solve.py" is not "python3 solve.py".
 func commandObligationSatisfied(ctx *AgentContext, want string) bool {
+	// The latest current run of the command decides: a pass followed by a
+	// failure on the same workspace is a failure.
+	satisfied := false
 	for _, rec := range ctx.VerificationEvidence {
 		if rec.Command == want && commandEvidenceCurrent(ctx, rec) {
-			return true
+			satisfied = !rec.Failed
 		}
+	}
+	if satisfied {
+		return true
 	}
 	return stagedCommandSatisfied(ctx, want)
 }
@@ -1919,32 +1950,6 @@ func actionWithoutProductiveChangeMessage(userMsg string) string {
 	return "Cannot declare `done` yet — the user asked you to make a change on disk (rewrite/create/add/implement/refactor/etc.) and you haven't emitted any successful write_file / edit_file / structural_edit / delete_file in this loop. Verification (running the server, curling the page) is NOT the task — it's how you confirm AFTER the change. Re-read the user's request, identify what file needs to change, and emit the appropriate edit tool. Then verify, then done."
 }
 
-// verificationCommandRe matches the leading token of commands that
-// actually verify something (build, test, run, fetch). Used by the
-// verification gate to recognise when the model has done due
-// diligence before declaring done. ls/cat/grep/echo deliberately
-// excluded — those are recon, not verification.
-var verificationCommandRe = regexp.MustCompile(
-	`^\s*(` +
-		// Test runners
-		`pytest|python\s+-m\s+pytest|nose|tox|` +
-		// Build / type-check / static analysis
-		`mypy|ruff|pylint|tsc|eslint|gofmt|vet|markdownlint|stylelint|` +
-		`shellcheck|hadolint|flake8|rubocop|golangci-lint|` +
-		// Run-the-thing
-		`python|python3|node|deno|bun|ruby|cargo\s+run|cargo\s+test|cargo\s+check|cargo\s+build|` +
-		`go\s+run|go\s+test|go\s+build|go\s+vet|` +
-		`npm\s+(test|run|start)|yarn\s+(test|run|start)|pnpm\s+(test|run|start)|` +
-		`make(\s+|$)|just(\s+|$)|` +
-		// HTTP probes
-		`curl|wget|http\b|httpie\b` +
-		`)`)
-
-// isVerificationCommand returns true when a run_command call counts
-// as proof the agent verified its work. Recon (ls, cat, grep, find)
-// returns false — listing a directory doesn't tell you the code
-// works. Build/test/run/curl returns true: those exercise the code
-// path and a clean exit means something.
 // isHeadOnlyProbe reports a probe that fetches headers and no body. Such a
 // probe is not verification (see isVerificationCommand) — this says so out
 // loud instead of declining in silence.
@@ -1955,8 +1960,20 @@ var verificationCommandRe = regexp.MustCompile(
 // why, the run repeated it, and both sessions ended
 // verification_demanded_unmet with working code on disk.
 func isHeadOnlyProbe(cmd string) bool {
-	c := strings.TrimSpace(cmd)
-	return verificationCommandRe.MatchString(c) && headOnlyProbeRe.MatchString(c)
+	segs, _, _ := splitTopLevelShell(cmd)
+	for _, seg := range segs {
+		words := programWords(shellFields(strings.TrimSpace(seg)))
+		if len(words) == 0 {
+			continue
+		}
+		switch filepath.Base(words[0]) {
+		case "curl", "wget":
+			if headOnlyProbeRe.MatchString(seg) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // headOnlyProbeNote explains the decline in one sentence, without prescribing
@@ -1967,22 +1984,16 @@ func headOnlyProbeNote(cmd string) string {
 		"verification. Request the body instead and check what comes back.", truncateStr(strings.TrimSpace(cmd), 60))
 }
 
+// isVerificationCommand reports whether a command, when it exits green,
+// shows the program working: it ran the program or its tests, or fetched a
+// response body, and the line reports that part's exit status. A parse, a
+// lint, a build, a `--version`, a headers-only probe, and a test whose status
+// `| tail` or `|| true` replaced are not verification. A probe that never
+// retrieves a body proves the SERVER is up, not that the artifact works:
+// measured on a "build me a snake game" session, `curl -I` was recorded as
+// the verification and `done` shipped an index.html with no HTML in it.
 func isVerificationCommand(cmd string) bool {
-	c := strings.TrimSpace(cmd)
-	if !verificationCommandRe.MatchString(c) {
-		return false
-	}
-	// A probe that never retrieves a body proves the SERVER is up, not that
-	// the artifact works. Measured on a "build me a snake game" session:
-	// `curl -I http://localhost:8000` was recorded as the verification, the
-	// gate opened, and `done` shipped an index.html containing JavaScript
-	// and no HTML at all. A static file server answers 200 for a directory
-	// listing, so a HEAD request cannot distinguish a working page from a
-	// broken one.
-	if headOnlyProbeRe.MatchString(c) {
-		return false
-	}
-	return true
+	return classifyCommandEvidence(cmd).Kind.verifies()
 }
 
 // headOnlyProbeRe matches curl/wget invocations that fetch headers only:
@@ -2213,6 +2224,11 @@ var executorNames = map[string]bool{
 func executionAttempt(command, path string) bool {
 	base := filepath.Base(path)
 	for _, segment := range splitShellSegments(command) {
+		// A parse, lint or compile names the file without running it:
+		// `python -m py_compile app.py` is not an execution of app.py.
+		if segmentEvidenceKind(segment) != evidenceExecution {
+			continue
+		}
 		toks := strings.Fields(segment)
 		fileAt := -1
 		for i, tok := range toks {
@@ -2284,6 +2300,21 @@ func inlineCodePayload(segment string) (string, bool) {
 			return strings.Trim(strings.Join(toks[i+2:], " "), `"'`), true
 		}
 	}
+	// `python3 - <<'EOF'` runs the here-document on the lines after the
+	// command. `python3 app.py <<EOF` feeds app.py data, which is not code.
+	nl := strings.IndexByte(segment, '\n')
+	if nl < 0 {
+		return "", false
+	}
+	for _, tok := range strings.Fields(segment[:nl])[1:] {
+		t := strings.Trim(tok, `"'`)
+		if t == "-" || strings.HasPrefix(t, "<<") {
+			return segment[nl+1:], true
+		}
+		if !strings.HasPrefix(t, "-") {
+			return "", false
+		}
+	}
 	return "", false
 }
 
@@ -2299,23 +2330,31 @@ func workspaceFileReader(ctx *AgentContext) func(string) (string, bool) {
 	}
 }
 
-// interpreterFor names the interpreter that executes a warned file. The
-// warned mark exists only for syntax-gated languages, and python is the
-// historical default the gate always quoted.
-func interpreterFor(path string) string {
+// runCommandFor is the command that runs one file of a syntax-gated language
+// on its own, with the toolchains the sandbox image installs. Python is the
+// historical default the gate always quoted; it was also what the gate quoted
+// for Go, Java and Kotlin files, which python3 cannot run.
+func runCommandFor(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".js", ".mjs", ".cjs":
-		return "node"
+		return "node " + path
 	case ".ts":
-		return "npx tsx"
+		return "npx tsx " + path
 	case ".sh", ".bash":
-		return "bash"
+		return "bash " + path
 	case ".rb":
-		return "ruby"
+		return "ruby " + path
 	case ".php":
-		return "php"
+		return "php " + path
+	case ".go":
+		return "go run " + path
+	case ".java":
+		return "java " + path // JDK 11+ runs a single source file directly
+	case ".kt":
+		jar := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + ".jar"
+		return "kotlinc " + path + " -include-runtime -d " + jar + " && java -jar " + jar
 	}
-	return "python3"
+	return "python3 " + path
 }
 
 // runFirstInstruction is the one instruction every run-first gate quotes:
@@ -2326,7 +2365,7 @@ func interpreterFor(path string) string {
 // cannot resolve. Observed 2026-09-14: the gate demanded exactly that, the
 // redirect refused it, and the session ended with the broken file on disk.
 func runFirstInstruction(ctx *AgentContext, path string) string {
-	cmd := interpreterFor(path) + " " + path
+	cmd := runCommandFor(path)
 	if foregroundServerRejectionWithSource(cmd, workspaceFileReader(ctx)) != "" {
 		return fmt.Sprintf("start it with run_background {\"command\": %q} and read the traceback it returns (tail_background shows more), then stop_background", cmd)
 	}
@@ -2376,11 +2415,11 @@ func verificationRejectionFor(sawFailedVerification, serverBlocked bool, bgJobID
 func verificationRejection(sawFailedVerification, serverBlocked bool, bgJobID string) string {
 	if serverBlocked {
 		probe := "Start it with `run_background` (it returns a job_id), then probe it with " +
-			"`run_command(\"curl http://localhost:<port>/\")`."
+			"`run_command(\"curl -sf http://localhost:<port>/\")`."
 		if bgJobID != "" {
 			probe = "It is ALREADY running as background job " + bgJobID +
 				" — do not start another copy. Probe it now with " +
-				"`run_command(\"curl http://localhost:<port>/\")`, which is the command that verifies it."
+				"`run_command(\"curl -sf http://localhost:<port>/\")`, which is the command that verifies it."
 		}
 		return "Cannot declare `done` yet — nothing has verified this change. The command that " +
 			"failed is a long-running server: it did not exit because servers do not exit, so " +
@@ -2390,7 +2429,7 @@ func verificationRejection(sawFailedVerification, serverBlocked bool, bgJobID st
 	if sawFailedVerification {
 		return "Cannot declare `done` — a test or build command you ran in this session FAILED and nothing has passed since. You have already seen the failure output. Apply the fix with `edit_file`, `structural_edit`, or `write_file`, then re-run the same command and confirm it exits clean. Describing the fix is not applying it: if you know what the problem is, make the edit now. Declaring done over a red test reports a broken result as a working one."
 	}
-	return "Cannot declare `done` yet — this is a fix/repair request and you haven't verified the change works. Before emitting `done`, run a verification command and confirm it succeeded. Examples: `python app.py` to start a server, `curl http://localhost:5000/` to probe a route, `pytest tests/` to run tests, `npm test` for Node, `go test ./...` for Go. \"Done\" without a clean verification exit is a guess, not a fix."
+	return "Cannot declare `done` yet — this is a fix/repair request and you haven't verified the change works. Before emitting `done`, run a verification command and confirm it succeeded. Examples: `python3 app.py` to run a script, `pytest tests/` to run tests, `npm test` for Node, `go test ./...` for Go; for a server, start it with run_background and probe it with `curl -sf http://localhost:<port>/`. A syntax check or a linter does not count: it shows the code is well formed, not that it works. \"Done\" without a clean verification exit is a guess, not a fix."
 }
 
 // splitShellSegments splits a command line on `&&`, `||`, `;`, `|`
@@ -2857,7 +2896,7 @@ func foregroundServerRejectionWithSource(cmd string,
 			"and report a failure that says nothing about your code. Start it with "+
 			"run_background instead — it returns a job_id immediately:\n"+
 			"  run_background {\"command\": %q}\n"+
-			"Then probe it with run_command (`curl -I http://localhost:<port>/`), and "+
+			"Then probe it with run_command (`curl -sf http://localhost:<port>/`), and "+
 			"stop_background when you are done.",
 		truncateStr(cmd, 80), cmd)
 }

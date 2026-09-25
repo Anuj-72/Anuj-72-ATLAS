@@ -380,7 +380,7 @@ func TestTheSessionWriteMapIsUnchangedForItsOtherReaders(t *testing.T) {
 	// also cover the files its entry point imports. What must not move is
 	// where the candidate set comes from: the ledger-backed owner, in exactly
 	// one place. agent.go delegates and builds no path list of its own.
-	if n := strings.Count(string(agent), "coverageForGreenCommand(ctx, rc.Command)"); n != 1 {
+	if n := strings.Count(string(agent), "coverageForGreenCommand(ctx, strings.Join(segs, \" && \"))"); n != 1 {
 		t.Errorf("agent.go calls the coverage builder %d times, want 1", n)
 	}
 	if strings.Contains(string(agent), "changedPathsForCoverage(") {

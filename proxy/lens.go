@@ -295,10 +295,20 @@ func formatScoreSlice(s []float64) string {
 // the sha256 of its bytes at the moment the command passed — the bytes the
 // run vouched for, nothing else.
 type VerificationRecord struct {
-	Command  string            // the run_command line that exited green
+	Command  string            // the run_command line
 	Redirect string            // stdin redirect source ("" = ran standalone)
-	Covered  map[string]string // session-written path -> sha256 at pass time
+	Covered  map[string]string // session-written path -> sha256 when it ran
 	Turn     int
+
+	// Kind is what the run demonstrates (commandEvidenceKind.String):
+	// "execution" or "probe" show the program working; "static" (a parse,
+	// lint or build) and "none" are recorded only because the client declared
+	// the command, and bind no coverage. Empty is a record made before kinds
+	// existed, which only a verification command could produce.
+	Kind string
+	// Failed marks a run that exited non-zero. It is kept so a later failure
+	// on the same bytes takes back an earlier pass (coverageRecord).
+	Failed bool
 
 	// The workspace this run was about, stamped from workspaceIdentity after
 	// the command's own effects were reconciled into the ledger.
@@ -315,6 +325,19 @@ type VerificationRecord struct {
 	// command touched, and nothing here may satisfy a path obligation.
 	WorkspaceGeneration int
 	WorkspaceStateHash  string
+}
+
+// showsWorking reports a passing run of a kind that shows the program
+// working.
+func (r VerificationRecord) showsWorking() bool {
+	if r.Failed {
+		return false
+	}
+	switch r.Kind {
+	case "", "execution", "probe":
+		return true
+	}
+	return false
 }
 
 // Calibration status endpoint — surfaces lens + ASA compat for the TUI.

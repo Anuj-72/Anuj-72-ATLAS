@@ -1632,7 +1632,12 @@ func TestWhichMutatorsCanEverPromoteACheckpoint(t *testing.T) {
 // structural_edit steer no longer offer placeholder selectors; for this
 // fixture's solve.py, which defines nothing a selector can name, they point to
 // outline_file and replace_lines. Classification keys are still absent.
-const modelPromptBytesHash = "ec8f2ec30980c9ddd99e307545ccadc7aa3de37d9ec020a07467a11fca7336ed"
+//
+// Re-pinned at 5 requests / 6072 bytes: the system prompt grew from 15563 to
+// 15740 bytes because it stopped calling a build, lint or syntax check
+// verification, names `curl -sf` as the probe, and its run_command example
+// runs the program instead of py_compile. Every other byte is unchanged.
+const modelPromptBytesHash = "75e766d9648ba56b2dcfafbc50d1449a7e198c48c4be48e65eb8566a8a4d2abc"
 
 // conversationBytes keeps every message except the system prompt, whose tool
 // descriptions are rendered in Go map order and therefore differ between two

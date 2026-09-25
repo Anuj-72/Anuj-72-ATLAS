@@ -2298,6 +2298,7 @@ func TestC5RecoveryReachesAVerifiedCompletion(t *testing.T) {
 			// arrives double-escaped and matching it literally is escape-depth
 			// guesswork.
 			sentFix := strings.Contains(prompt, "fixed_marker")
+			reran := strings.Contains(prompt, "reran_marker")
 			switch {
 			case !sawSource:
 				return map[string]interface{}{"type": "tool_call", "name": "write_file",
@@ -2310,6 +2311,11 @@ func TestC5RecoveryReachesAVerifiedCompletion(t *testing.T) {
 			case !sentFix:
 				return map[string]interface{}{"type": "tool_call", "name": "write_file",
 					"args": map[string]string{"path": "solve.py", "content": c5Fixed}}
+			case !reran:
+				// The last run of solve.py failed. Until the corrected file
+				// runs, nothing shows it works, and completion waits for that.
+				return map[string]interface{}{"type": "tool_call", "name": "run_command",
+					"args": map[string]string{"command": "echo reran_marker; python3 solve.py"}}
 			default:
 				return map[string]interface{}{"type": "done", "summary": "fixed the bracket in solve.py"}
 			}

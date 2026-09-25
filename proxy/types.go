@@ -1132,12 +1132,6 @@ type AgentContext struct {
 	// DIFFERENT rejections is a model converging, not one looping.
 	LastRejectionClass string
 
-	// VerifiedThisRun mirrors runState.verifiedThisLoop onto the context, so
-	// the mechanical lens labelling at the end of the pass can tell a run
-	// that verified green from one that never did. Only the former's writes
-	// are worth recording as positives.
-	VerifiedThisRun bool
-
 	// LastStreamCut records why the proxy itself ended the generation, when
 	// it did. A cut lands mid-JSON, so the parse then fails — and the
 	// classifier was inferring a cause from the wreckage instead of using

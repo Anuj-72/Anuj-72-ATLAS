@@ -339,6 +339,11 @@ type runState struct {
 	// headOnlyProbe is the last successful headers-only probe this run made.
 	// Such a probe is not verification; naming it is how the run learns that.
 	headOnlyProbe string
+	// uncountedCheck explains, for the exit gates, the most recent passing
+	// command that did not count as verification: a parse, a lint or a
+	// `--version`, or a check whose result the line hid (`pytest | tail`).
+	// Naming it is how the run learns why, instead of repeating it.
+	uncountedCheck string
 	// lastVerifyWasLocalProbe records that the verification this loop holds
 	// came from probing a local service rather than from running the artifact.
 	// Such a probe only speaks for the process that answered it.
@@ -351,6 +356,12 @@ type runState struct {
 	// the model watched pytest fail 5/5 three times, diagnosed the fix
 	// in prose, and exited through a bare text narration).
 	sawFailedVerification bool
+	// failing holds the commands whose latest run failed since a run last
+	// verified, and sawFailedVerification is set exactly while it is not
+	// empty. A passing run, test or probe clears it all. A passing check that
+	// runs nothing (a parse, a lint, a declared command) clears only its own
+	// earlier failure, so a lint cannot clear a failed test.
+	failing map[string]bool
 	// The red verification command was a long-running server rather than a
 	// broken build — it never exited, or the port was already bound. Changes
 	// what the verification gate tells the model to do next, because
@@ -460,6 +471,171 @@ func (s *runState) bounceToolCall(ctx *AgentContext, toolName, rejection string)
 // was verified.
 func (s *runState) verificationDemandedAndUnmet() bool {
 	return (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop
+}
+
+// observeVerification updates the run's verification state from one finished
+// run_command.
+//
+// Only a run that ran the program or its tests, or fetched a page, and whose
+// exit status the line actually reports (classifyCommandEvidence) counts as
+// verification. A parse, a lint or a `--version` does not, and neither does a
+// test whose status `| tail` or `|| true` replaced; the exit gates name such a
+// command back to the run instead of counting it. Once a verification passes,
+// the fix-intent gate stops blocking `done`. A later failure takes that back:
+// the latest result on the latest bytes is the one that describes the
+// artifact.
+func (s *runState) observeVerification(ctx *AgentContext, userMessage string, turn int, command string, result *ToolResult) {
+	if ctx == nil || result == nil {
+		return
+	}
+	if result.Success && isHeadOnlyProbe(command) {
+		log.Printf("[agent] headers-only probe does not verify: %q", truncateStr(command, 60))
+		s.headOnlyProbe = command
+	}
+	ev := classifyCommandEvidence(command)
+	declared := contractRequiresCommand(ctx, command)
+	if ev.Kind == evidenceNone && !declared {
+		if result.Success && ev.Masked {
+			s.uncountedCheck = uncountedNote(command, ev.MaskNote)
+			log.Printf("[agent] result hidden, not verification: %q", truncateStr(command, 60))
+		}
+		return
+	}
+	switch {
+	case !result.Success && verificationNeverRan(result):
+		// The command failed before it could exercise anything. Not
+		// evidence the artifact is broken, so it must not latch -- and not
+		// evidence it works, so it does not clear either. Strictly neutral.
+		log.Printf("[agent] verification did not run: turn=%d cmd=%q — neither latching nor clearing",
+			turn, truncateStr(command, 60))
+	case !result.Success:
+		s.observeFailedCheck(ctx, turn, command, ev, result)
+	case ev.Kind.verifies() && silentRunWhenOutputPromised(ctx, userMessage, command, result.Data):
+		// Exit 0 with empty stdout is not verification of a task whose
+		// prompt demands printed output. Measured: a generation drifted into
+		// comment-reasoning, the tail of the file (including the solve()
+		// call) was swallowed by a comment, and the program parsed, ran,
+		// printed nothing and exited 0 — the session recorded that as
+		// verification and reported success on a program that provably
+		// produced no answer.
+		// Latch, don't just decline: a silent run IS a failed verification of
+		// a print-demanding task. Merely not counting it left done free to
+		// pass when nothing else demanded verification — measured: the gate
+		// fired three times in one night and three silent finals still
+		// shipped.
+		s.noteFailure(command)
+		s.verifiedThisLoop = false
+		log.Printf("[agent] run exited 0 with no stdout on a print-demanding task — latching the verification gate: %q",
+			truncateStr(command, 60))
+	case ev.Kind.verifies():
+		s.verifiedThisLoop = true
+		s.lastVerifyWasLocalProbe = isHTTPProbe(strings.Join(ev.Covering, " && "))
+		s.failing, s.sawFailedVerification = nil, false
+		s.redRunStreak = 0
+		s.uncountedCheck = ""
+		s.verifiedHashes = sessionWriteHashes(ctx)
+		// A program run as `prog < data` is verified under a contract the
+		// caller may not use. Tracked so the exit can tell the two apart.
+		// See stdinRedirectSource.
+		if src := stdinRedirectSource(command); src != "" {
+			s.verifiedByRedirect = src
+		} else {
+			s.verifiedStandalone = true
+		}
+		recordVerificationEvidence(ctx, turn, command, ev, false)
+	default:
+		// It passed and ran nothing: a static check, or a declared command
+		// that runs nothing. It clears only its own earlier failure, and it
+		// is recorded only when the client declared it, so the declaration
+		// can be discharged; the record binds no file (showsWorking).
+		if s.failing[command] {
+			delete(s.failing, command)
+			if len(s.failing) == 0 {
+				s.sawFailedVerification = false
+				s.redRunStreak = 0
+				log.Printf("[agent] %q passes again — its earlier failure no longer holds the gate", truncateStr(command, 60))
+			}
+		}
+		if declared {
+			recordVerificationEvidence(ctx, turn, command, ev, false)
+		}
+		switch {
+		case ev.Masked:
+			s.uncountedCheck = uncountedNote(command, ev.MaskNote)
+		case ev.Kind == evidenceStatic:
+			s.uncountedCheck = uncountedNote(command,
+				"it checks that the code is well formed, not that it works. Run the program or its tests.")
+			log.Printf("[agent] static check only, not verification: %q", truncateStr(command, 60))
+		}
+	}
+}
+
+// observeFailedCheck latches the verification gate on a red run and takes
+// back any earlier pass, because the latest result is the one that describes
+// what is on disk.
+func (s *runState) observeFailedCheck(ctx *AgentContext, turn int, command string, ev commandEvidence, result *ToolResult) {
+	s.noteFailure(command)
+	s.verifiedThisLoop = false
+	s.verifiedStandalone = false
+	s.verifiedByRedirect = ""
+	s.redRunStreak++
+	s.serverStartBlocked = blockedServerStart(result.Error + string(result.Data))
+	recordVerificationEvidence(ctx, turn, command, ev, true)
+	log.Printf("[agent] verification FAILED: turn=%d cmd=%q server_blocked=%v — done is gated until it passes",
+		turn, truncateStr(command, 60), s.serverStartBlocked)
+	// Advice at the crossing, not at the done-gate: waiting for the model to
+	// attempt `done` meant it kept nibbling edits for turns after the streak
+	// already proved the approach dead. Queue once, on the transition — the
+	// done-gate text repeats it if the model still tries to exit red.
+	if s.redRunStreak == rewriteThreshold+1 && !s.serverStartBlocked {
+		s.queueCorrective(freshRewriteAdvice(s.redRunStreak))
+		log.Printf("[agent] red streak crossed %d — fresh-rewrite advice injected now", rewriteThreshold)
+	}
+}
+
+// noteFailure latches the verification gate on command's failure.
+func (s *runState) noteFailure(command string) {
+	if s.failing == nil {
+		s.failing = map[string]bool{}
+	}
+	s.failing[command] = true
+	s.sawFailedVerification = true
+}
+
+// recordVerificationEvidence appends the evidence record for one run. A
+// passing run binds the files its covering segments exercised, at the exact
+// bytes they held. A failed run is charged to every segment whose result the
+// line reported, so it takes back an earlier pass over the same bytes
+// (coverageRecord).
+//
+// Stamped AFTER recordLedgerEffect ran for this call: executeToolCall
+// reconciles a shell effect into the ledger (invalidateTrackedValidation
+// rehashes every tracked path and bumps the generation where bytes moved)
+// before the result reaches the loop. So the identity below describes the
+// workspace the command LEFT, never the one it found.
+func recordVerificationEvidence(ctx *AgentContext, turn int, command string, ev commandEvidence, failed bool) {
+	segs := ev.Covering
+	if failed {
+		segs = ev.Honest
+	}
+	generation, state := workspaceIdentity(ctx)
+	ctx.VerificationEvidence = append(ctx.VerificationEvidence, VerificationRecord{
+		Command:             command,
+		Redirect:            stdinRedirectSource(command),
+		Covered:             coverageForGreenCommand(ctx, strings.Join(segs, " && ")),
+		Turn:                turn,
+		Kind:                ev.Kind.String(),
+		Failed:              failed,
+		WorkspaceGeneration: generation,
+		WorkspaceStateHash:  state,
+	})
+	log.Printf("[agent] verification recorded: turn=%d kind=%s failed=%v cmd=%q",
+		turn, ev.Kind, failed, truncateStr(command, 60))
+}
+
+// uncountedNote says why a passing command did not count as verification.
+func uncountedNote(command, why string) string {
+	return fmt.Sprintf("\n\n`%s` did not count as verification: %s", truncateStr(strings.TrimSpace(command), 60), why)
 }
 
 // actionDemandedAndUnmet reports a run that was asked to change something on
@@ -645,7 +821,9 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// is weakened: once verification lands, this gate fires, and
 	// finalizeCompletion still refuses completion while a job of the run's own
 	// is live.
-	verificationOwed := (s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop
+	contractDemand := decideVerificationDemand(ctx, ctx.TaskContract, s.expectedOutputs)
+	contractOwed := contractDemand.Required && !contractDemand.Met
+	verificationOwed := ((s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop) || contractOwed
 	if live := settleBackgroundHazard(ctx); len(live) > 0 && !verificationOwed && s.chargeBounce("background_gate") {
 		log.Printf("[agent] background gate: %d job(s) still running at exit (bounce %d/%d)",
 			len(live), s.gateBounces["background_gate"], maxGateBounces)
@@ -680,7 +858,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		}
 		return "verification_gate", verificationRejectionFor(
 			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak,
-			s.headOnlyProbe, staleJob, staleFile)
+			s.headOnlyProbe, staleJob, staleFile) + s.uncountedCheck
 	}
 	// Verified, but the work contract says the deliverable itself is not
 	// covered — and a job that predates the last change to it explains why.
@@ -695,6 +873,15 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 				staleJob, staleFile, s.gateBounces["verification_gate"], maxGateBounces)
 			return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
 		}
+	}
+	// The work contract owes evidence that what this run wrote works, and
+	// nothing current shows it. finalizeCompletion refuses the exit either
+	// way; this says so while the run can still act on it, out of the
+	// verification gate's own budget.
+	if contractOwed && s.continuationFits(ctx) && s.chargeBounce("verification_gate") {
+		log.Printf("[agent] contract verification gate: nothing current shows %q working (bounce %d/%d)",
+			contractDemand.Missing, s.gateBounces["verification_gate"], maxGateBounces)
+		return "verification_gate", contractDemandMessage(ctx, contractDemand) + s.uncountedCheck
 	}
 	// Steps the plan named and no tool call ever satisfied. Same shape as the
 	// verification gate: a fact the run already holds, used at the exit
@@ -734,6 +921,19 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		}
 	}
 	return "", ""
+}
+
+// contractDemandMessage names what a work request still owes: a passing run
+// of a command the client declared, or a run of a file this session wrote.
+func contractDemandMessage(ctx *AgentContext, d verificationDemand) string {
+	if d.MissingCommand {
+		return fmt.Sprintf("Cannot finish yet: the task requires `%s` to pass against the current files, "+
+			"and it has not. Run it now and fix what it reports.", d.Missing)
+	}
+	path := relativeToWorkspace(ctx, d.Missing)
+	return fmt.Sprintf("Cannot finish yet: nothing that ran since `%s` was last written shows it working. "+
+		"Run it — %s — or run tests that exercise it, and check the output before finishing.",
+		path, runFirstInstruction(ctx, path))
 }
 
 // chargeBounce spends one of gate's bounces and reports whether it had one
@@ -2410,103 +2610,14 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					st.verifiedThisLoop = false
 					st.verifiedStandalone = false
 					st.verifiedByRedirect = ""
-					st.sawFailedVerification = false
 				}
 			}
 
-			// Track verification — a successful run_command of a build /
-			// test / probe / runner. Recon (ls, cat, grep) doesn't count.
-			// Once any verification succeeds in this loop, the fix-intent
-			// gate stops blocking `done`.
+			// What this command demonstrated about the artifact.
 			if parsed.Name == "run_command" {
 				var rc RunCommandInput
-				if json.Unmarshal(parsed.Args, &rc) == nil && result.Success && isHeadOnlyProbe(rc.Command) {
-					log.Printf("[agent] headers-only probe does not verify: %q", truncateStr(rc.Command, 60))
-					st.headOnlyProbe = rc.Command
-				}
-				if json.Unmarshal(parsed.Args, &rc) == nil &&
-					(isVerificationCommand(rc.Command) || contractRequiresCommand(ctx, rc.Command)) {
-					if result.Success && silentRunWhenOutputPromised(ctx, userMessage, rc.Command, result.Data) {
-						// Exit 0 with empty stdout is not verification of a
-						// task whose prompt demands printed output. Measured:
-						// a generation drifted into comment-reasoning, the
-						// tail of the file (including the solve() call) was
-						// swallowed by a comment, and the program parsed, ran,
-						// printed nothing and exited 0 — the session recorded
-						// that as verification and reported success on a
-						// program that provably produced no answer.
-						// Latch, don't just decline: a silent run IS a failed
-						// verification of a print-demanding task. Merely not
-						// counting it left done free to pass when nothing
-						// else demanded verification — measured: the gate
-						// fired three times in one night and three silent
-						// finals still shipped.
-						st.sawFailedVerification = true
-						log.Printf("[agent] run exited 0 with no stdout on a print-demanding task — latching the verification gate: %q",
-							truncateStr(rc.Command, 60))
-					} else if result.Success {
-						st.verifiedThisLoop = true
-						st.lastVerifyWasLocalProbe = isHTTPProbe(rc.Command)
-						ctx.VerifiedThisRun = true
-						st.sawFailedVerification = false
-						st.redRunStreak = 0
-						st.verifiedHashes = sessionWriteHashes(ctx)
-						// Evidence record: bind this green run to the files it
-						// actually named and the exact bytes they held. Lens
-						// labeling reads these — never the session-wide flag.
-						covered := coverageForGreenCommand(ctx, rc.Command)
-						// Stamped AFTER recordLedgerEffect ran for this call:
-						// executeToolCall reconciles a shell effect into the
-						// ledger (invalidateTrackedValidation rehashes every
-						// tracked path and bumps the generation where bytes
-						// moved) before the result reaches this loop. So the
-						// identity below describes the workspace the command
-						// LEFT, never the one it found.
-						stampGeneration, stampState := workspaceIdentity(ctx)
-						ctx.VerificationEvidence = append(ctx.VerificationEvidence, VerificationRecord{
-							Command:             rc.Command,
-							Redirect:            stdinRedirectSource(rc.Command),
-							Covered:             covered,
-							Turn:                turn,
-							WorkspaceGeneration: stampGeneration,
-							WorkspaceStateHash:  stampState,
-						})
-						// A program run as `prog < data` is verified under a
-						// contract the caller may not use. Tracked so the exit
-						// can tell the two apart. See stdinRedirectSource.
-						if src := stdinRedirectSource(rc.Command); src != "" {
-							st.verifiedByRedirect = src
-						} else {
-							st.verifiedStandalone = true
-						}
-						log.Printf("[agent] verification recorded: turn=%d cmd=%q",
-							turn, truncateStr(rc.Command, 60))
-					} else if verificationNeverRan(result) {
-						// The command failed before it could exercise
-						// anything. Not evidence the artifact is broken, so it
-						// must not latch -- and not evidence it works, so it
-						// does not clear either. Strictly neutral.
-						log.Printf("[agent] verification did not run: turn=%d cmd=%q — neither latching nor clearing",
-							turn, truncateStr(rc.Command, 60))
-					} else {
-						// Red test/build. Latches the verification gate on
-						// for this loop until something verifies green.
-						st.sawFailedVerification = true
-						st.redRunStreak++
-						st.serverStartBlocked = blockedServerStart(result.Error + string(result.Data))
-						log.Printf("[agent] verification FAILED: turn=%d cmd=%q server_blocked=%v — done is gated until it passes",
-							turn, truncateStr(rc.Command, 60), st.serverStartBlocked)
-						// Advice at the crossing, not at the done-gate: waiting
-						// for the model to attempt `done` meant it kept nibbling
-						// edits for turns after the streak already proved the
-						// approach dead. Queue once, on the transition — the
-						// done-gate text repeats it if the model still tries to
-						// exit red.
-						if st.redRunStreak == rewriteThreshold+1 && !st.serverStartBlocked {
-							st.queueCorrective(freshRewriteAdvice(st.redRunStreak))
-							log.Printf("[agent] red streak crossed %d — fresh-rewrite advice injected now", rewriteThreshold)
-						}
-					}
+				if json.Unmarshal(parsed.Args, &rc) == nil {
+					st.observeVerification(ctx, userMessage, turn, rc.Command, result)
 				}
 			}
 
@@ -4652,8 +4763,8 @@ func buildSystemPrompt(ctx *AgentContext) string {
 	sb.WriteString("- JSON strings in tool args contain LITERAL characters: write `<` not `&lt;`, `>` not `&gt;`, `&` not `&amp;`. The file content goes verbatim onto disk — `&lt;!DOCTYPE&gt;` would write the literal text `&lt;!DOCTYPE&gt;` instead of `<!DOCTYPE>`. NEVER HTML-encode angle brackets inside `content`, `old_str`, or `new_str`.\n")
 	sb.WriteString("- The `content` you put in write_file / edit_file goes verbatim onto disk. **No markdown fences. No prose preamble (\"Looking at the task...\", \"Here's the file:\"). No trailing explanation.** Just the raw file contents. The agent layer strips fenced wrappers before writing, but the right move is to never emit them in the first place.\n")
 	sb.WriteString("- For CONTENT changes, prefer the dedicated tools — `edit_file` (one line), `replace_lines` (a line range), `insert_after` (adding at a line), `structural_edit` (a whole node), `write_file` (new files) — they go through the validation pipeline. The last three need no old_str at all, which is why they hold up on changes edit_file loses. For moving / renaming / reorganizing files you may use either `move_file` or shell `mv`/`cp` via run_command; both work. `run_command` runs a real shell (in an isolated sandbox confined to this project), so ordinary file operations (mv, cp, mkdir, rm of a specific file, chmod) are fine. Only catastrophic commands are blocked: wiping the whole project (`rm -rf /`, `rm -rf .`, `rm -rf *`), fork bombs, and device/filesystem destruction.\n")
-	sb.WriteString("- Use run_command to verify your changes (build, test, lint, curl). For \"fix\"/\"isn't working\" prompts, verify before `done`.\n")
-	sb.WriteString("- For LONG-RUNNING commands (servers): `run_background(cmd)` → `run_command(\"curl ...\")` → `stop_background(job_id)`. Don't use `timeout 5 ... || true` — server dies before probe hits.\n")
+	sb.WriteString("- Verify your changes by running them: run the program, its tests, or fetch the page with curl. A build, lint or syntax check (for example `python -m py_compile`) shows the code is well formed, not that it works, and does not count. For \"fix\"/\"isn't working\" prompts, verify before `done`.\n")
+	sb.WriteString("- For LONG-RUNNING commands (servers): `run_background(cmd)` → `run_command(\"curl -sf http://localhost:<port>/\")` → `stop_background(job_id)`. Don't use `timeout 5 ... || true` — server dies before probe hits.\n")
 	sb.WriteString("- When creating a project from scratch: create config/build files FIRST, verify they work (e.g., npm install, cargo check), THEN create feature code\n")
 	sb.WriteString("- Respond with {\"type\":\"done\",\"summary\":\"...\"} when the task is complete\n")
 	sb.WriteString("- If a command fails, read the error output, fix the issue, and try again\n")
@@ -4669,7 +4780,11 @@ func buildSystemPrompt(ctx *AgentContext) string {
 			sb.WriteString(fmt.Sprintf("Framework: %s\n", ctx.Project.Framework))
 		}
 		if ctx.Project.BuildCommand != "" {
-			sb.WriteString(fmt.Sprintf("Build command: %s\n", ctx.Project.BuildCommand))
+			if classifyCommandEvidence(ctx.Project.BuildCommand).Kind.verifies() {
+				sb.WriteString(fmt.Sprintf("Build command: %s\n", ctx.Project.BuildCommand))
+			} else {
+				sb.WriteString(fmt.Sprintf("Build/syntax check: %s (does not run the program)\n", ctx.Project.BuildCommand))
+			}
 		}
 		if ctx.Project.DevCommand != "" {
 			sb.WriteString(fmt.Sprintf("Dev command: %s\n", ctx.Project.DevCommand))
@@ -8798,8 +8913,11 @@ func settleDebtByExecution(ctx *AgentContext, st *runState, command string, succ
 	if !succeeded || st == nil || len(st.mutationDebt) == 0 {
 		return
 	}
+	// Only a segment whose result the line reports can have come up clean:
+	// `python app.py | tail` exits 0 whatever app.py did.
+	honest := strings.Join(classifyCommandEvidence(command).Honest, " && ")
 	for key, e := range st.mutationDebt {
-		if e.Kind != debtContent || !executionAttempt(command, e.Rel) {
+		if e.Kind != debtContent || !executionAttempt(honest, e.Rel) {
 			continue
 		}
 		data, err := os.ReadFile(key)

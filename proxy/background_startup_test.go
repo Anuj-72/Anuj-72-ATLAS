@@ -486,7 +486,7 @@ func TestAProbeAgainstCurrentCodeFinishesTheTask(t *testing.T) {
 		toolCall("read_file", map[string]interface{}{"path": "app.py"}),
 		toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause\n"}),
 		toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
-		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -sf http://127.0.0.1:5001/", "timeout": 10}),
 		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
 		toolCall("stop_background", map[string]interface{}{"job_id": "job1"}),
 		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
@@ -499,16 +499,39 @@ func TestAProbeAgainstCurrentCodeFinishesTheTask(t *testing.T) {
 	}
 }
 
+// A probe that exits 0 whatever the server answers does not finish the task,
+// and the run is told why and what to send instead. `curl -s` against a page
+// that returns HTTP 500 exits 0 (P-guardrails/INTEGRITY#1).
+func TestAProbeBlindToHTTPErrorsDoesNotFinishTheTask(t *testing.T) {
+	w := serverWorld(t, []string{
+		toolCall("read_file", map[string]interface{}{"path": "app.py"}),
+		toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause\n"}),
+		toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		toolCall("stop_background", map[string]interface{}{"job_id": "job1"}),
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+		`{"type":"done","summary":"the pause toggle works; the app serves"}`,
+	})
+	if w.terminal["reason"] != "verification_demanded_unmet" {
+		t.Errorf("a probe that cannot see an HTTP error discharged the contract: %v", w.terminal)
+	}
+	if !w.told("exits 0 even when the server answers with an error page") {
+		t.Error("the run was never told why its probe did not count")
+	}
+}
+
 // A probe against a server that predates the last edit does not finish it: the
 // run is told the job is stale and why, and completion is still refused.
 func TestAProbeAgainstStaleCodeDoesNotFinishTheTask(t *testing.T) {
 	w := serverWorld(t, []string{
 		toolCall("read_file", map[string]interface{}{"path": "app.py"}),
 		toolCall("run_background", map[string]interface{}{"command": "python app.py"}),
-		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -sf http://127.0.0.1:5001/", "timeout": 10}),
 		// the edit the task actually needed, made after the server started
 		toolCall("insert_after", map[string]interface{}{"path": "app.py", "line": 1, "content": "# pause honoured\n"}),
-		toolCall("run_command", map[string]interface{}{"command": "curl -s http://127.0.0.1:5001/", "timeout": 10}),
+		toolCall("run_command", map[string]interface{}{"command": "curl -sf http://127.0.0.1:5001/", "timeout": 10}),
 		`{"type":"done","summary":"the pause toggle works"}`,
 		`{"type":"done","summary":"the pause toggle works"}`,
 		`{"type":"done","summary":"the pause toggle works"}`,
