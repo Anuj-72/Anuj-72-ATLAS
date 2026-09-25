@@ -154,17 +154,35 @@ def _parse_plan_json(raw: str) -> Optional[dict]:
         return None
 
 
-# Verification-command pattern. Mirrors proxy/guardrails.go:verificationCommandRe
-# so the plan scorer agrees with the agent loop on what counts as "verifies".
+# What a plan's verify step has to do to earn the verification credit: run
+# the program or its tests, or fetch a page. The agent loop counts nothing
+# else as verification, and proxy/command_evidence.go is the authority on
+# that; this is only a heuristic for ranking plans. A build, a parse or a
+# linter shows the code is well formed, not that it works, so a step made of
+# nothing else earns no credit.
 _VERIFY_CMD_RE = re.compile(
-    r"\b(pytest|python\b|python3\b|node\b|deno\b|bun\b|"
-    r"cargo\s+(run|test|check|build)|go\s+(run|test|build|vet)|"
-    r"npm\s+(test|run|start)|yarn\s+(test|run|start)|pnpm\s+(test|run|start)|"
-    r"make\b|just\b|curl\b|wget\b|http\b|httpie\b|"
-    r"mypy\b|ruff\b|pylint\b|tsc\b|eslint\b|"
-    r"markdownlint\b|stylelint\b|shellcheck\b|hadolint\b|flake8\b|"
-    r"rubocop\b|golangci-lint\b)"
+    r"\b(pytest|python3?|node|deno|bun|java|php|ruby|bash|curl|wget|https?|httpie)\b"
+    r"|\b(cargo|go|dotnet|swift)\s+(run|test)\b"
+    r"|\b(npm|yarn|pnpm)\s+(test|start)\b"
+    r"|\bmake\s+(test|check|run)\b"
+    r"|(^|\s)\./"
 )
+_STATIC_CHECK_RE = re.compile(
+    r"py_compile|compileall|--check\b|--version\b"
+    r"|\b(mypy|ruff|pylint|flake8|pyflakes|black|isort|tsc|eslint|prettier|stylelint"
+    r"|markdownlint|shellcheck|hadolint|rubocop|golangci-lint|gofmt|javac|kotlinc|gcc|clang)\b"
+    r"|\b(go|cargo)\s+(build|vet|check|fmt)\b"
+    r"|\b(npm|yarn|pnpm)\s+(run\s+)?(build|lint)\b"
+    r"|\bphp\s+-l\b|\bbash\s+-n\b"
+)
+
+
+def _verify_step_verifies(action: str) -> bool:
+    """A segment of the step runs something, and is not itself a static check."""
+    for seg in re.split(r"&&|\|\||;|\|", action.lower()):
+        if _VERIFY_CMD_RE.search(seg) and not _STATIC_CHECK_RE.search(seg):
+            return True
+    return False
 
 
 # Plan actions that CREATE a file. A step that creates something already on
@@ -357,9 +375,11 @@ def _score_plan(plan: dict, user_message: str,
         if plan.get("verify_is_setup_only"):
             score -= 0.3
             reasons.append("verify_step only starts a server — setup, not verification")
-        elif _VERIFY_CMD_RE.search(action.lower()):
+        elif _verify_step_verifies(action):
             score += 0.2
             reasons.append("verify_step references a real verification command")
+        elif _STATIC_CHECK_RE.search(action.lower()):
+            reasons.append("verify_step only checks that the code is well formed — not verification")
         else:
             reasons.append("verify_step doesn't reference a verification command")
     else:

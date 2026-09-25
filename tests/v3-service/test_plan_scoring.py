@@ -24,15 +24,40 @@ def _plan(command):
     }
 
 
-def test_plan_scorer_recognizes_language_specific_linters():
+def test_plan_scorer_credits_running_the_program():
+    for command in (
+        "pytest -q",
+        "python3 solve.py",
+        "curl -sf http://localhost:8000/",
+        "npm test",
+        "go test ./...",
+        "java App.java",
+        "./run.sh",
+        "pytest -q && ruff check .",
+    ):
+        _, reasons = v3main._score_plan(_plan(command), "fix solve.py")
+        assert "verify_step references a real verification command" in reasons, command
+
+
+def test_plan_scorer_does_not_credit_a_static_check_as_verification():
+    # The agent loop does not count these as verification
+    # (proxy/command_evidence.go), so a plan whose verify step is one of them
+    # must not outrank a plan that runs the program.
     for command in (
         "markdownlint README.md",
         "shellcheck scripts/setup.sh",
         "golangci-lint run ./...",
+        "python3 -m py_compile solve.py",
+        "npm run build",
+        "go build ./...",
+        "node --check app.js",
     ):
-        score, reasons = v3main._score_plan(_plan(command), "fix README.md")
-        assert score >= 0.9 - 1e-9
-        assert "verify_step references a real verification command" in reasons
+        _, reasons = v3main._score_plan(_plan(command), "fix README.md")
+        assert "verify_step references a real verification command" not in reasons, command
+        assert any("well formed" in r for r in reasons), (command, reasons)
+    lint, _ = v3main._score_plan(_plan("ruff check solve.py"), "fix solve.py")
+    run, _ = v3main._score_plan(_plan("python3 solve.py"), "fix solve.py")
+    assert run == pytest.approx(lint + 0.2)
 
 
 def test_plan_scorer_does_not_treat_recon_as_verification():
