@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+### Withdrawn: the V3.0 LiveCodeBench result (74.6%)
+
+The 74.6% LiveCodeBench "pass@1" published with V3.0, and the phase-by-phase
+gains derived from it, are withdrawn. The benchmark runner never ran
+LiveCodeBench's hidden tests: its loader cannot decode the private test suite
+and silently falls back to the 1-5 examples printed in each problem, which
+were then both the in-loop tests and the final grade. It counted a task as
+passed when any of three candidates passed those examples, so lens selection
+could not change the count, and repair prompts received the examples'
+expected output. A re-grade of a 130-task sample against the hidden tests
+found that 14 of its 90 published passes fail them. The report
+(`docs/reports/V3_ABLATION_STUDY.md`) now carries a withdrawal notice and is
+otherwise kept as a historical record; the claims in README, SUPPORT_MATRIX,
+the bench README and the translated READMEs are removed.
+
+Also withdrawn, as unsupported: the 66.9% CxGx gate comparison cited in
+ARCHITECTURE (measured on another model, with a patched runner not in the
+repository, on tasks the lens was trained on, and within noise of the other
+arms); ADR 0009's "54% to 75% task-success improvement", which no run in the
+repository supports; the README's "reliability has improved" and the ~51
+tok/s throughput figure, both from configurations that no longer exist.
+ATLAS will be re-measured on held-out tasks once the current product is
+re-verified.
+
 ### Removed: the lens training corpus and its capture
 
 The proxy recorded every file the model wrote, stashed each pass's writes by
@@ -1387,6 +1411,10 @@ are uncapped). Fixes:
 ## [3.0] - 2026-03-05
 
 ### V3.0 Benchmark Release
+> Withdrawn 2026-09-25: the figures in this entry are not LiveCodeBench
+> pass@1, and "self-verified" is inaccurate; repair also saw, and was accepted
+> on, the examples printed in each problem. See [Unreleased].
+
 - **74.6% LCB pass@1** (447/599) on frozen Qwen3-14B
 - Full ablation study: conditions A–D with per-task results
 - Phase 1 (PlanSearch/DivSampling): +12.4pp

@@ -644,9 +644,10 @@ class V3Pipeline:
             #
             # The bench has no outer wall-clock cap (the live pipeline's
             # ATLAS_V3_TIMEOUT has no counterpart here), so no budget cap
-            # is passed: this is the arm the four-way triangulation
-            # measured — 66.9% gated vs 64.6% fixed-k=3 vs 61.7% for the
-            # same tier mix shuffled across tasks, n=175/arm.
+            # is passed. An earlier four-way comparison of this arm ran on a
+            # patched out-of-tree runner and another model, on tasks the lens
+            # was trained on; its arms were within noise, so it is not
+            # evidence for the gate.
             alloc = cxgx_gate.allocate(
                 cx_normalized=probe_scores["cx_normalized"],
                 cx_calibrated=probe_scores["cx_calibrated"],

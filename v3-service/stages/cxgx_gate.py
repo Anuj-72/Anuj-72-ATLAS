@@ -19,11 +19,11 @@ rather than the task, and it handed k=1 to 60% of tasks whose probe had
 just FAILED the sandbox — it starved generation on exactly the tasks that
 needed candidates. With the floor, the allocator can only ADD candidates
 to today's pinned k=3, never remove them, so its worst case equals current
-behavior. The G(x) escalation is what makes the added compute land on the
-right tasks: at n=175/arm the gate measured 66.9% against 64.6% for fixed
-k=3 and 61.7% for a shuffled-assignment arm carrying the SAME tier mix, so
-5.1 pp of the gain comes from where the compute goes rather than how much
-of it is spent.
+behavior. The G(x) escalation is meant to put the added compute on the
+right tasks. That is unmeasured: an earlier comparison (Qwen3.5-9B, a
+patched out-of-tree runner, thinking enabled on escalation, on tasks the
+G(x) head was trained on) found the gated, fixed-k=3 and shuffled arms
+within noise of each other at n=175/arm.
 
 Both orchestrators call `allocate()`: the bench runner (no wall-clock cap,
 `remaining_ms=None`) and the live V3 service (capped by ATLAS_V3_TIMEOUT,

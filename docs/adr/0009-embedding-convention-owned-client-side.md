@@ -75,7 +75,9 @@ it returns, not only in a log line — `n_tokens: 0` and `latency_ms: 0`
 were in the response the whole time and nothing was reading them.
 
 Every benchmark number recorded before this change was produced with the
-lens contributing nothing. The 54% to 75% task-success improvement came
-from harness fixes alone; it is not evidence for or against the lens.
+lens contributing nothing, so none of them is evidence for or against the
+lens. [Ed. 2026-09-25: an earlier version of this paragraph cited a "54% to
+75% task-success improvement" from harness fixes. No run in the repository
+supports that figure, and it is withdrawn.]
 Whether the lens earns its keep is now an open measurement, not a
 settled one.

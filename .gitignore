@@ -141,7 +141,7 @@ manifests/
 benchmark/datasets/.cache/
 benchmark/results/
 
-# ----- V3 ablation results: COMMITTED (raw evidence behind 74.6% claim) -----
+# ----- V3 ablation results: COMMITTED (raw traces of the withdrawn V3.0 result, kept for audit) -----
 # v3_ablation_results/ is NOT gitignored — it contains per-task pass/fail data
 # for all ablation conditions (A-F) needed to verify published numbers.
 

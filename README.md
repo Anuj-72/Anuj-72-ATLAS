@@ -48,7 +48,7 @@
 - **2026-06-17** - **[V3.1.2 "Maia" released](https://github.com/itigges22/ATLAS/releases/tag/v3.1.2)** - broader hardware reach (ROCm / Metal / Vulkan), bring-your-own-model Lens + ASA training, in-the-loop lens retraining from your own workloads, and an agent-reliability pass
 - **2026-05-12** - **[V3.1.0 "Maia" released](https://github.com/itigges22/ATLAS/releases/tag/v3.1.0)** - native Bubbletea TUI, one-command bootstrap, streaming Lens + ASA activation steering, AST-aware surgical edits
 - **2026-03-26** - [Hacker News front page](https://news.ycombinator.com/item?id=47533297) - 489 points, 285 comments
-- **2026-03-05** - **[V3.0 released](docs/reports/V3_ABLATION_STUDY.md)** - 74.6% LiveCodeBench pass@1-v(k=3) on frozen Qwen3-14B (pass@1 with k=3 generated candidates, Lens selection, and repair - not single-generation pass@1; [methodology](docs/reports/V3_ABLATION_STUDY.md))
+- **2026-03-05** - **V3.0 released** - the multi-phase V3 pipeline on frozen Qwen3-14B. *The 74.6% LiveCodeBench figure published with this release is withdrawn: the benchmark runner never ran LiveCodeBench's hidden tests, and it counted a task as passed when any of three candidates, or a repair shown the failing output, passed the examples printed in the problem ([withdrawal notice](docs/reports/V3_ABLATION_STUDY.md)). ATLAS will be re-measured once the current product is re-verified.*
 - **2026-02-18** - **[V2.0 released](CHANGELOG.md)** - benchmark infrastructure, HumanEval/MBPP/LiveCodeBench/GPQA/SciCode evaluation suite
 
 ## ⭐ Star History
@@ -83,11 +83,11 @@
    - [Safety limits](docs/ARCHITECTURE.md#safety-limits) - turn caps, token budgets, timeouts
 
 3. **[V3 Pipeline](docs/ARCHITECTURE.md#4-v3-pipeline-inner-layer)** - multi-phase code generation; turns a single prompt into a verified candidate.
-   - [PlanSearch](docs/reports/V3_ABLATION_STUDY.md#phase-1-constraint-driven-generation-124pp) - constraint-driven structured planning
-   - [DivSampling](docs/reports/V3_ABLATION_STUDY.md#phase-1-constraint-driven-generation-124pp) - diverse candidates across temperature and strategy
-   - [Budget Forcing](docs/reports/V3_ABLATION_STUDY.md#phase-1-constraint-driven-generation-124pp) - per-phase thinking-token allocation
-   - [PR-CoT Repair](docs/reports/V3_ABLATION_STUDY.md#pr-cot-repair-36-rescues) - self-generated test cases for iterative fixes
-   - [Refinement Loops](docs/reports/V3_ABLATION_STUDY.md#refinement-loop-6-rescues) - sandbox verify and correct, then repeat
+   - [PlanSearch](docs/ARCHITECTURE.md#pipeline-flow) - constraint-driven structured planning
+   - [DivSampling](docs/ARCHITECTURE.md#pipeline-flow) - diverse candidates across temperature and strategy
+   - [Budget tiers](docs/ARCHITECTURE.md#pipeline-flow) - the allocator picks a compute tier per task; today the tier sets how many candidates are generated, not thinking depth
+   - [PR-CoT Repair](docs/ARCHITECTURE.md#pipeline-flow) - repairs failing candidates from the sandbox's error output
+   - [Refinement Loops](docs/ARCHITECTURE.md#pipeline-flow) - sandbox verify and correct, then repeat
 
 4. **[Geometric Lens](docs/ARCHITECTURE.md#5-geometric-lens)** - energy-based scoring over the model's own embeddings, no external oracle. ([What is a "Geometric Lens"?](docs/ARCHITECTURE.md#why-geometric-lens))
    - [C(x) Cost Field](docs/ARCHITECTURE.md#scoring-models) - model-hidden-dim→512→128→1 MLP that scores candidate quality
@@ -147,9 +147,9 @@ Apple Silicon runs natively through the macOS hybrid Metal path (native llama-se
 ## ⚠️ Known Limitations
 
 - **Linux Docker stack, plus a native macOS path.** NVIDIA (Supported), AMD ROCm (Community-tested), and Vulkan (Preview) Docker paths exist today; Apple Silicon (Supported) runs via the native macOS hybrid Metal path ([#32](https://github.com/itigges22/ATLAS/issues/32)). Intel Arc / SYCL is Roadmap. Level definitions: [SUPPORT_MATRIX.md](SUPPORT_MATRIX.md).
-- **Current registry models are not formally benchmarked yet.** The canonical 74.6% LiveCodeBench score is from the frozen 14B reference build. New model-specific numbers are tracked in [#28](https://github.com/itigges22/ATLAS/issues/28). The reference methodology and ablations live in [`docs/reports/V3_ABLATION_STUDY.md`](docs/reports/V3_ABLATION_STUDY.md); raw traces are on [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS).
-- **Complex feature additions can be inconsistent.** Compact models sometimes spend agent turns exploring an unfamiliar codebase before writing code. Reliability has improved through the V3.1.2 agent-reliability pass; fresh model-specific numbers are tracked in [#28](https://github.com/itigges22/ATLAS/issues/28).
-- **Grammar-constrained decoding is slow.** Around 51 tok/s on llama-server.
+- **ATLAS has no current benchmark result.** The V3.0 LiveCodeBench figure is withdrawn (see Latest News), and no capability or reliability figure has been measured for the current release. Numbers will be published only after a re-measurement on held-out tasks; model-specific results are tracked in [#28](https://github.com/itigges22/ATLAS/issues/28).
+- **Complex feature additions can be inconsistent.** Compact models sometimes spend agent turns exploring an unfamiliar codebase before writing code.
+- **Grammar-constrained decoding is slower than unconstrained decoding.**
 
 ---
 

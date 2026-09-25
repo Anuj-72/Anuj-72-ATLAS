@@ -912,7 +912,7 @@ atlas bench --run-id <your-run-id> --tasks 200
 2. `-ngl 99`（`--n-gpu-layers`）—— 所有层是否已卸载到 GPU？
 3. NVIDIA Container Toolkit —— 容器运行时是否已配置 GPU 访问？
 
-**预期性能：** 在 RTX 5060 Ti 16GB 上启用语法强制执行时约 51 tok/s。
+**预期性能：** 目前没有参考数值；吞吐量取决于模型、量化方式和语法模式。此前约 51 tok/s 的数字来自一个已不存在的配置。
 
 ### V3 Pipeline 需要几分钟
 

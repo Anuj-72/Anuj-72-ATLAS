@@ -75,8 +75,8 @@ map of the repository itself, see [MAP.md](MAP.md).
   loop, inner V3 pipeline, Geometric Lens, sandbox.
 - [PLAN_MODE.md](PLAN_MODE.md) — per-turn pre-flight planning.
 - [SOURCES.md](SOURCES.md) — the research papers behind each component.
-- [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md) — where
-  the headline benchmark number comes from, phase by phase.
+- [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md) — the
+  V3.0 ablation report; its 74.6% result is withdrawn (notice at the top).
 - [reports/CALL_GRAPH_REASONING_V3.md](reports/CALL_GRAPH_REASONING_V3.md)
   — structural call-graph reasoning design notes.
 - [adr/](adr/README.md) — architecture decision records (trust model,
@@ -123,7 +123,7 @@ whole first hour; keep [TROUBLESHOOTING.md](TROUBLESHOOTING.md) open in a tab.
   with any GGUF, no per-model training ([ARCHITECTURE.md](ARCHITECTURE.md)).
 - **V3 pipeline / inner layer** — multi-candidate generation, scoring,
   sandbox verification, and repair for non-trivial files
-  ([ARCHITECTURE.md](ARCHITECTURE.md), [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md)).
+  ([ARCHITECTURE.md](ARCHITECTURE.md)).
 - **Tiers (T0–T3)** — two separate classifications. The per-file tier gates
   V3: T1 writes directly, T2/T3 use the pipeline. The per-message tier only
   distinguishes T0 (conversational: 5-turn cap, no plan) from everything
@@ -157,7 +157,7 @@ In order, each building on the last:
 9. [PLAN_MODE.md](PLAN_MODE.md) — pre-flight planning
 10. [PROTOCOL.md](PROTOCOL.md) — the event contract
 11. [API.md](API.md) — the full HTTP surface
-12. [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md) — evidence
+12. [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md) — historical V3.0 ablation report (result withdrawn)
 13. [reports/CALL_GRAPH_REASONING_V3.md](reports/CALL_GRAPH_REASONING_V3.md)
 14. [SOURCES.md](SOURCES.md) — the research it stands on
 15. [adr/](adr/README.md) — decisions 0001 through 0007, in order

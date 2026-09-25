@@ -990,7 +990,7 @@ The model is running on CPU instead of GPU. Check:
 2. `-ngl 99` (`--n-gpu-layers`) — are all layers offloaded?
 3. NVIDIA Container Toolkit — is the container runtime configured for GPU access?
 
-**Expected performance:** ~51 tok/s on RTX 5060 Ti 16GB with grammar enforcement.
+**Expected performance:** there is no current reference figure; throughput depends on the model, quantization and grammar mode. An earlier ~51 tok/s figure came from a configuration that no longer exists.
 
 ### V3 Pipeline Takes Several Minutes
 
