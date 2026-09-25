@@ -1005,6 +1005,22 @@ func coverageForGreenCommand(ctx *AgentContext, command string) map[string]strin
 			}
 		}
 	}
+	// A runner that names no file still ran the ones it discovers: a bare
+	// `pytest` imports every test file, and `go test ./...` builds and tests
+	// every package with tests. Without this, a work request verified only by
+	// a bare `pytest` could never meet its contract: nothing named the module
+	// or its tests.
+	if ctx != nil {
+		for _, p := range runnerEntries(command, ctx.WorkingDir, candidates) {
+			if _, already := covered[p]; already {
+				continue
+			}
+			if h := fileSHA256(ctx, p); h != "" {
+				covered[p] = h
+				entries = append(entries, p)
+			}
+		}
+	}
 	// Breadth-first, bounded by the candidate set: each file is admitted at
 	// most once, so an import cycle terminates and nothing outside the set of
 	// files this session already tracks can be pulled in.

@@ -68,8 +68,9 @@ type commandEvidence struct {
 	Honest []string
 	// Covering is the part of Honest that a passing line binds files from: the
 	// segments that ran or probed something, and a compile step whose output a
-	// later segment ran (`javac App.java && java App`). A parse or a lint in
-	// the same chain names a file it never ran, and binds nothing.
+	// later segment ran (`javac App.java && java App`), each preceded by the
+	// `cd` that set where it ran. A parse or a lint in the same chain names a
+	// file it never ran, and binds nothing.
 	Covering []string
 	// Masked is set when a verifying segment's result cannot reach the line's
 	// status: `pytest | tail`, `pytest || true`, `python app.py; echo`,
@@ -100,11 +101,15 @@ func classifyCommandEvidence(command string) commandEvidence {
 	// makes a pipeline report its first failure, so neither hides one.
 	errexit, pipefail := shellOptions(segs)
 	var ev commandEvidence
-	var bare []string
+	var bare, cdBefore []string
 	var kinds []commandEvidenceKind
+	lastCd := ""
 	for i, seg := range segs {
 		kind := segmentEvidenceKind(seg)
 		if kind == evidenceNone {
+			if w := shellFields(strings.TrimSpace(seg)); len(w) > 0 && w[0] == "cd" {
+				lastCd = seg
+			}
 			continue
 		}
 		hiddenBy, asserted := "", false
@@ -157,6 +162,7 @@ func classifyCommandEvidence(command string) commandEvidence {
 		}
 		ev.Honest = append(ev.Honest, honest)
 		bare = append(bare, seg)
+		cdBefore = append(cdBefore, lastCd)
 		kinds = append(kinds, kind)
 		if kind > ev.Kind {
 			ev.Kind = kind
@@ -168,8 +174,14 @@ func classifyCommandEvidence(command string) commandEvidence {
 			lastRun = i
 		}
 	}
+	placed := ""
 	for i, k := range kinds {
 		if k.verifies() || (i < lastRun && compileStep(bare[i])) {
+			// Where it ran decides what a runner discovers (runnerEntries).
+			if cdBefore[i] != "" && cdBefore[i] != placed {
+				ev.Covering = append(ev.Covering, cdBefore[i])
+				placed = cdBefore[i]
+			}
 			ev.Covering = append(ev.Covering, ev.Honest[i])
 		}
 	}
@@ -1065,6 +1077,198 @@ func makeTargetKind(args []string) commandEvidenceKind {
 		return evidenceStatic
 	}
 	return evidenceStatic // the default target, which conventionally builds
+}
+
+// runnerEntries returns the candidate files a test runner or package run
+// executes without naming them. A bare `pytest`, or `pytest tests/`, imports
+// every test file it discovers; `python -m unittest` does the same for
+// test*.py; `go run .` builds and runs a package, and `go test ./...` the
+// packages that have tests (without tests it only compiles); `npm test`,
+// `jest` and `vitest` run the files their default patterns match. Named files
+// are commandNamesPath's job and are left to it. Only candidates are
+// returned, so nothing outside what this session changed is claimed, and the
+// caller follows their imports as it does for a named entry point.
+func runnerEntries(command, workDir string, candidates []string) []string {
+	segs, _, _ := splitTopLevelShell(command)
+	dir := workDir
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, seg := range segs {
+		words := programWords(shellFields(strings.TrimSpace(seg)))
+		if len(words) == 0 {
+			continue
+		}
+		prog, args := filepath.Base(words[0]), words[1:]
+		if prog == "cd" && len(args) > 0 {
+			dir = joinDir(dir, args[0])
+			continue
+		}
+		var roots []string
+		var match func(path string) bool
+		recursive := true
+		switch {
+		case prog == "pytest" || prog == "py.test" || (isPythonProgram(prog) && pythonModule(args) == "pytest"):
+			roots, match = runnerRoots(dir, pathArgs(args, "pytest")), isPytestFile
+		case isPythonProgram(prog) && pythonModule(args) == "unittest":
+			roots, match = []string{dir}, func(p string) bool {
+				b := filepath.Base(p)
+				return strings.HasPrefix(b, "test") && strings.HasSuffix(b, ".py")
+			}
+		case prog == "go" && len(args) > 0 && (args[0] == "test" || args[0] == "run"):
+			for _, pkg := range goPackages(args[1:]) {
+				pkgDir, all := joinDir(dir, strings.TrimSuffix(pkg, "/...")), strings.HasSuffix(pkg, "...")
+				for _, c := range candidates {
+					if !strings.HasSuffix(c, ".go") || !underDir(c, pkgDir, workDir, all) {
+						continue
+					}
+					if args[0] == "test" && !dirHasGoTests(filepath.Dir(absUnder(c, workDir))) {
+						continue // compiled, and nothing ran
+					}
+					add(c)
+				}
+			}
+			continue
+		case (prog == "npm" || prog == "yarn" || prog == "pnpm") && len(args) > 0 && (args[0] == "test" || args[0] == "t"),
+			prog == "jest" || prog == "vitest" || prog == "mocha",
+			(prog == "npx" || prog == "pnpx" || prog == "bunx") && len(args) > 0 && (args[0] == "jest" || args[0] == "vitest" || args[0] == "mocha"):
+			roots, match = []string{dir}, isJSTestFile
+		default:
+			continue
+		}
+		for _, root := range roots {
+			for _, c := range candidates {
+				if match(c) && underDir(c, root, workDir, recursive) {
+					add(c)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// pythonModule is the module `python -m MODULE` runs, or "".
+func pythonModule(args []string) string {
+	for i, a := range args {
+		if a == "-m" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if !strings.HasPrefix(a, "-") {
+			return ""
+		}
+	}
+	return ""
+}
+
+// pytestValueFlags are pytest options whose value is the next word.
+var pytestValueFlags = map[string]bool{
+	"-k": true, "-m": true, "-p": true, "-c": true, "-o": true, "--maxfail": true,
+	"--deselect": true, "--ignore": true, "--rootdir": true, "-n": true, "--tb": true,
+	"--junitxml": true, "--basetemp": true, "--confcutdir": true,
+}
+
+// pathArgs are a runner's directory arguments: its non-flag words that do not
+// name a file. `pytest -k slow tests/` → [tests/].
+func pathArgs(args []string, runner string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-m" && i+1 < len(args) && args[i+1] == runner {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			if pytestValueFlags[a] {
+				i++
+			}
+			continue
+		}
+		if filepath.Ext(strings.SplitN(a, "::", 2)[0]) == "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// runnerRoots is where discovery starts: the runner's directory arguments,
+// or the directory it ran in.
+func runnerRoots(dir string, args []string) []string {
+	if len(args) == 0 {
+		return []string{dir}
+	}
+	roots := make([]string, 0, len(args))
+	for _, a := range args {
+		roots = append(roots, joinDir(dir, a))
+	}
+	return roots
+}
+
+// goPackages are the package patterns of `go test` / `go run`, "." when none.
+// A .go file argument is a file, which commandNamesPath already covers.
+func goPackages(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || strings.HasSuffix(a, ".go") {
+			continue
+		}
+		if a == "." || a == "./..." || strings.HasPrefix(a, "./") || strings.HasPrefix(a, "../") {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"."}
+	}
+	return out
+}
+
+func isPytestFile(p string) bool {
+	b := filepath.Base(p)
+	return strings.HasSuffix(b, ".py") && (strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py"))
+}
+
+var jsTestFileRe = regexp.MustCompile(`\.(test|spec)\.[cm]?[jt]sx?$`)
+
+func isJSTestFile(p string) bool {
+	return jsTestFileRe.MatchString(filepath.Base(p)) ||
+		strings.Contains(filepath.ToSlash(p), "/__tests__/")
+}
+
+// joinDir resolves a `cd` target or a runner argument against dir.
+func joinDir(dir, rel string) string {
+	if filepath.IsAbs(rel) {
+		return filepath.Clean(rel)
+	}
+	return filepath.Join(dir, rel)
+}
+
+// absUnder makes a candidate path absolute against the workspace.
+func absUnder(p, workDir string) string {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(workDir, p)
+}
+
+// underDir reports whether candidate p sits in dir, or anywhere below it when
+// recursive.
+func underDir(p, dir, workDir string, recursive bool) bool {
+	abs := absUnder(p, workDir)
+	if !recursive {
+		return filepath.Dir(abs) == filepath.Clean(dir)
+	}
+	rel, err := filepath.Rel(dir, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// dirHasGoTests reports whether a Go package directory holds a test file.
+func dirHasGoTests(dir string) bool {
+	matches, _ := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	return len(matches) > 0
 }
 
 // compileStep reports a segment that compiles source into something a later

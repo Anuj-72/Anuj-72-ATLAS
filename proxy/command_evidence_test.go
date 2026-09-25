@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -432,5 +434,74 @@ func TestRunCommandForEachExecutableLanguage(t *testing.T) {
 		if !isVerificationCommand(runCommandFor(path)) {
 			t.Errorf("the command quoted for %s does not count as verification", path)
 		}
+	}
+}
+
+// --- runners that name no file ------------------------------------------------
+
+// A bare test runner covers the session's files it discovers, and what they
+// import, so a run verified only by `pytest`, `go test ./...` or `npm test`
+// can meet a work contract.
+func TestARunnerCoversWhatItDiscovers(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   map[string]string
+		command string
+		covered []string
+		not     []string
+	}{
+		{"bare pytest", map[string]string{
+			"stats.py":      "def median(xs):\n    return sorted(xs)[len(xs)//2]\n",
+			"test_stats.py": "from stats import median\n\ndef test_m():\n    assert median([3,1,2]) == 2\n",
+			"notes.py":      "print('unrelated')\n",
+		}, "pytest -q", []string{"stats.py", "test_stats.py"}, []string{"notes.py"}},
+		{"pytest on a directory", map[string]string{
+			"tests/test_a.py": "def test_a():\n    assert True\n",
+			"test_b.py":       "def test_b():\n    assert True\n",
+		}, "python3 -m pytest -k a tests/", []string{"tests/test_a.py"}, []string{"test_b.py"}},
+		{"cd then pytest", map[string]string{
+			"sub/test_a.py": "def test_a():\n    assert True\n",
+			"test_b.py":     "def test_b():\n    assert True\n",
+		}, "cd sub && pytest", []string{"sub/test_a.py"}, []string{"test_b.py"}},
+		{"go test with tests", map[string]string{
+			"main.go":      "package main\n\nfunc add(a, b int) int { return a + b }\n\nfunc main() {}\n",
+			"main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {}\n",
+		}, "go test ./...", []string{"main.go", "main_test.go"}, nil},
+		{"go test without tests only compiles", map[string]string{
+			"main.go": "package main\n\nfunc main() {}\n",
+		}, "go test ./...", nil, []string{"main.go"}},
+		{"go run of a package", map[string]string{
+			"main.go": "package main\n\nfunc main() {}\n",
+		}, "go run .", []string{"main.go"}, nil},
+		{"npm test", map[string]string{
+			"app.js":      "module.exports = (a, b) => a + b\n",
+			"app.test.js": "const add = require('./app')\ntest('adds', () => expect(add(1, 2)).toBe(3))\n",
+		}, "npm test", []string{"app.js", "app.test.js"}, nil},
+		{"a hidden runner result covers nothing", map[string]string{
+			"test_a.py": "def test_a():\n    assert True\n",
+		}, "pytest | tail -3", nil, []string{"test_a.py"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, dir := sepCtx(t, nil)
+			for name, body := range c.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				sepWrite(t, ctx, dir, name, body)
+			}
+			st := &runState{}
+			st.observeVerification(ctx, "", 1, c.command, ranClean("ok\n"))
+			for _, name := range c.covered {
+				if !pathCoverageSatisfied(ctx, resolveAgentPath(ctx, name), fileSHA256(ctx, name)) {
+					t.Errorf("%q did not cover %s", c.command, name)
+				}
+			}
+			for _, name := range c.not {
+				if pathCoverageSatisfied(ctx, resolveAgentPath(ctx, name), fileSHA256(ctx, name)) {
+					t.Errorf("%q covered %s, which it never ran", c.command, name)
+				}
+			}
+		})
 	}
 }

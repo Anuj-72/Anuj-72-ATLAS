@@ -30,6 +30,15 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: a bare test run never covered the files it ran
+
+Coverage came only from files a command named, so a bare `pytest`, `go test
+./...`, `go run .` or `npm test` covered nothing, and a work request verified
+that way could never meet its contract. A runner now covers the files this
+session changed that it discovers (pytest and unittest test files, Go
+packages, JS test files), plus what they import. `go test` covers only
+packages that contain tests; without them it only compiles.
+
 ### Fixed: a spent exit gate no longer reads as a clean completion
 
 Every exit gate stops sending the run back after three bounces. Seven of them

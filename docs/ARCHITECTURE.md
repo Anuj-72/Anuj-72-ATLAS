@@ -362,6 +362,12 @@ validation still settles mutation debt. Only a segment that ran the program or
 its tests, or fetched a page, binds coverage, and only when the command line
 reports that segment's exit status (`classifyCommandEvidence`): a parse, a
 lint or a build binds nothing, and neither does a test piped into `tail`. A
+runner that names no file binds the session's files it discovers
+(`runnerEntries`): a bare `pytest` or `pytest tests/` its test files,
+`python -m unittest` its `test*.py`, `go run .` its package, `go test ./...`
+the packages that contain tests (without tests it only compiles), and `npm
+test`, `jest` or `vitest` the files their default patterns match; imports are
+followed from there as from a named entry point. A
 failed run is recorded as well, and a failure over the same bytes takes back an
 earlier pass, so the latest result decides. When the demand is unmet at the
 exit, the verification gate says so, with the command that would run the file,
