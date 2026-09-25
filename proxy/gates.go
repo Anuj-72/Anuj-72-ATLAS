@@ -409,8 +409,11 @@ func quoteNames(names []string) string {
 // proceeds — the gate only blocks KNOWN-broken content.
 
 // syntaxGateLanguages maps extensions to the sandbox's language names.
-// Only types the sandbox's /syntax-check actually verifies are listed —
-// anything else passes through ungated.
+// Only types the sandbox's /syntax-check has a checker for are listed —
+// anything else passes through ungated. The checkers judge syntax only, one
+// file at a time, and the HTML one is lenient: it requires markup and a
+// document that does not end inside a tag, a comment or a <script>, and
+// nothing more.
 // syntaxLanguage is what this registry knows about an extension: which language
 // the sandbox checker uses, and whether the artifact is something a command can
 // meaningfully EXECUTE.
@@ -660,11 +663,19 @@ func sandboxSyntaxOutcome(ctx *AgentContext, path, content string) checkOutcome 
 		return checkOutcome{Status: ValidationNotRun, Detail: "sandbox returned a non-200", ProducerUnavailable: true}
 	}
 	var out struct {
-		Valid  bool     `json:"valid"`
-		Errors []string `json:"errors"`
+		Valid   bool     `json:"valid"`
+		Errors  []string `json:"errors"`
+		Status  string   `json:"status"`
+		Outcome string   `json:"outcome"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&out) != nil {
 		return checkOutcome{Status: ValidationNotRun, Detail: "sandbox response was undecodable", ProducerUnavailable: true}
+	}
+	// The sandbox answered, and its checker was stopped before a verdict (a
+	// wall-clock or memory ceiling, or it never started). Not a pass, not a
+	// syntax error, and not the service being down.
+	if out.Status == "not_run" {
+		return checkOutcome{Status: ValidationNotRun, Detail: "the syntax checker stopped before a verdict (" + out.Outcome + ")"}
 	}
 	if out.Valid {
 		return checkOutcome{Status: ValidationPassed}

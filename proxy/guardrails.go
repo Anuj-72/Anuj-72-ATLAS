@@ -3034,7 +3034,17 @@ func deliverablesDemonstrablyValid(ctx *AgentContext, expected []string) bool {
 		if err != nil {
 			return false
 		}
-		status := fallbackSyntaxOutcomeFor(ctx, resolved, string(content)).WholeFile.Status
+		checked := fallbackSyntaxOutcomeFor(ctx, resolved, string(content))
+		// A script the file embeds that the harness found broken is a
+		// demonstrated failure, whatever the whole-file parse says: a Flask
+		// app whose HTML_TEMPLATE has a stray `)` in its <script> compiles,
+		// serves, and breaks in the browser. Only a demonstrated one: an
+		// embedded check that could not run is no finding (the documented
+		// fail-soft).
+		if checked.Embedded.Status == ValidationFailed {
+			return false
+		}
+		status := checked.WholeFile.Status
 		if status == ValidationPassed {
 			continue
 		}

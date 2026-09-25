@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import resource
+import sys
 import signal
 import subprocess
 import threading
@@ -60,6 +61,13 @@ ALL_OUTCOMES = (
 
 # The outcomes under which the command reached its own end. Only this one.
 COMPLETED_OUTCOMES = frozenset({OUTCOME_COMPLETED})
+
+
+# ru_maxrss is in kilobytes on Linux and in bytes on macOS. Scaling a macOS
+# figure by 1024 put every command at gigabytes, so each one -- `print(1)`
+# included -- ended memory_exhausted on a developer's machine. Production runs
+# on Linux; this only makes a local run of the sandbox mean what it says.
+_MAXRSS_UNIT = 1 if sys.platform == "darwin" else 1024
 
 
 def outcome_is_complete(outcome: str) -> bool:
@@ -505,7 +513,7 @@ def run_bounded(cmd: List[str], contract: ResourceContract,
         if done:
             status = st
             if usage is not None:
-                child_peak = usage.ru_maxrss * 1024
+                child_peak = usage.ru_maxrss * _MAXRSS_UNIT
             outcome = OUTCOME_COMPLETED
             break
         rss, procs = group_usage(pgid, token)
@@ -535,7 +543,7 @@ def run_bounded(cmd: List[str], contract: ResourceContract,
             done, st, usage = os.wait4(proc.pid, 0)
             status = st
             if usage is not None:
-                child_peak = usage.ru_maxrss * 1024
+                child_peak = usage.ru_maxrss * _MAXRSS_UNIT
         except (ChildProcessError, OSError):
             pass
     out_pump.join(timeout=2)

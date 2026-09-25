@@ -9173,6 +9173,14 @@ func settleDebtByExecution(ctx *AgentContext, st *runState, command string, succ
 		h := hashBytes(data)
 		ctx.LedgerMu.Lock()
 		d := ledgerEntry(ctx, key)
+		// Running the file cannot see a defect in a script it embeds for the
+		// browser: the server starts and serves the broken <script> fine. A
+		// current embedded-script failure stands, and the debt with it.
+		if d.ValidationStatus == ValidationFailed && d.ValidatedHash == h &&
+			strings.HasPrefix(d.ValidationDetail, embeddedScriptErrPrefix) {
+			ctx.LedgerMu.Unlock()
+			continue
+		}
 		d.CurrentHash, d.CurrentSize = h, len(data)
 		d.Tombstoned, d.TombstoneReason = false, ""
 		d.ValidationKind, d.ValidationStatus = ValidationKindExecution, ValidationPassed

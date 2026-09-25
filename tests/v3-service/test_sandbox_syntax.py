@@ -1,4 +1,5 @@
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -406,3 +407,177 @@ def test_jinja2_is_a_baked_sandbox_verify_dependency():
     assert "jinja2" in req, (
         "jinja2 must be in sandbox/requirements-verify.txt — the Jinja template "
         "syntax check imports it, and without it the check fails open")
+
+
+# --- a checker that did not finish is not a pass ------------------------------
+#
+# Audit S-sandbox/INTEGRITY#1, S-sandbox/DEAD#2: a checker stopped at its wall
+# clock or memory ceiling, or one that never started, exits non-zero with empty
+# stderr. Every branch read its errors out of stderr, so the check came back
+# with no errors and valid: true.
+
+def _ended(sandbox, outcome, returncode=-15, stdout="", stderr=""):
+    def run(cmd, timeout, cwd=None, env=None, stdin=None, cancelled=None):
+        return {"success": False, "stdout": stdout, "stderr": stderr,
+                "returncode": returncode, "timed_out": outcome == sandbox.OUTCOME_TIMED_OUT,
+                "outcome": outcome, "peak_memory_bytes": 0, "peak_processes": 0,
+                "survivors": 0}
+    return run
+
+
+@pytest.mark.parametrize("lang,code", [
+    ("python", "def broken(:\n"),
+    ("javascript", "const x = (1 + 2;\n"),
+    ("typescript", "const x = (1 + 2;\n"),
+    ("go", "package main\nfunc main( {\n"),
+    ("java", "public class Main { void f( }\n"),
+    ("kotlin", "fun main( {\n"),
+    ("rust", "fn main( {\n"),
+    ("c", "int main( {\n"),
+    ("ruby", "def f(\n"),
+    ("php", "<?php function f( {\n"),
+    ("bash", "if then\n"),
+])
+@pytest.mark.parametrize("outcome", ["timed_out", "memory_exhausted", "spawn_failed"])
+def test_a_stopped_checker_is_not_a_pass(tmp_path, monkeypatch, lang, code, outcome):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_run_cmd", _ended(sandbox, outcome))
+    monkeypatch.setattr(sandbox, "WORKSPACE_BASE", str(tmp_path))
+
+    resp = sandbox.syntax_check(sandbox.SyntaxCheckRequest(code=code, language=lang))
+
+    assert resp.valid is False
+    assert resp.status == "not_run"
+    assert resp.outcome == outcome
+    assert "unavailable" in resp.errors[0]
+
+
+def test_a_checker_that_finished_still_gives_its_verdict(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_run_cmd", _ended(sandbox, "completed", returncode=0))
+    monkeypatch.setattr(sandbox, "WORKSPACE_BASE", str(tmp_path))
+
+    resp = sandbox.syntax_check(sandbox.SyntaxCheckRequest(code="x = 1\n", language="python"))
+
+    assert resp.valid is True and resp.status == "checked" and resp.errors == []
+
+
+# --- a JavaScript verdict does not depend on how Node guesses the module type --
+#
+# Audit GB-4#1: from Node 20.19 a typeless .js file with import/export is
+# detected as a module and `node --check` compiles nothing, so garbage and
+# truncated modules exited 0; before 20.19 every valid module was rejected.
+
+_requires_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+
+
+@_requires_node
+@pytest.mark.parametrize("code,valid", [
+    ('import fs from "fs";\nthis is not javascript at all ###\n', False),
+    ('import fs from "fs";\nexport function add(a, b) {\n  return a +\n', False),
+    ('export const a = 1; }}}}}\n', False),
+    ('import fs from "fs";\nexport const a = await Promise.resolve(1);\n'
+     'console.log(import.meta.url, fs);\n', True),
+    ('const fs = require("fs");\nmodule.exports = { a: 1 };\n', True),
+    ('const x = (1 + 2;\n', False),
+])
+def test_javascript_module_type_does_not_decide_the_verdict(tmp_path, code, valid):
+    sandbox = _load_sandbox_module()
+
+    errors = sandbox._syntax_check_impl("javascript", code, tmp_path, "src/index.js")
+
+    assert (errors == []) is valid, errors
+
+
+@_requires_node
+def test_a_javascript_error_names_the_file_the_caller_sent(tmp_path):
+    sandbox = _load_sandbox_module()
+
+    errors = sandbox._syntax_check_impl("javascript", "const x = (1 + 2;\n", tmp_path, "src/app.js")
+
+    assert errors and "app.js" in errors[0] and ".cjs" not in errors[0] and ".mjs" not in errors[0]
+
+
+# --- a syntax check judges syntax ---------------------------------------------
+#
+# Audit GB-4#2: the file is checked alone, so references to a sibling class,
+# module or package cannot resolve. javac, kotlinc and tsc reported those as
+# errors, and valid multi-file code was refused as a syntax error.
+
+def test_typescript_counts_only_syntax_diagnostics(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    unresolvable = ("a.ts(1,21): error TS2307: Cannot find module './math' or its corresponding type declarations.\n"
+                    "a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+                    "a.ts(5,12): error TS7006: Parameter 'a' implicitly has an 'any' type.\n")
+    monkeypatch.setattr(sandbox, "_run_cmd", _ended(sandbox, "completed", returncode=2, stdout=unresolvable))
+    assert sandbox._syntax_check_impl("typescript", "import { add } from './math';\n", tmp_path) == []
+
+    syntax = unresolvable + "a.ts(4,17): error TS1005: ')' expected.\n"
+    monkeypatch.setattr(sandbox, "_run_cmd", _ended(sandbox, "completed", returncode=2, stdout=syntax))
+    assert sandbox._syntax_check_impl("typescript", "const x = (1 + 2;\n", tmp_path) == [
+        "a.ts(4,17): error TS1005: ')' expected."]
+
+    crashed = "Error: Cannot find module 'typescript'"
+    monkeypatch.setattr(sandbox, "_run_cmd", _ended(sandbox, "completed", returncode=1, stderr=crashed))
+    assert sandbox._syntax_check_impl("typescript", "const x = 1;\n", tmp_path) == [crashed]
+
+
+_requires_javac = pytest.mark.skipif(shutil.which("javac") is None, reason="javac not available")
+_requires_kotlinc = pytest.mark.skipif(shutil.which("kotlinc") is None, reason="kotlinc not available")
+
+
+@_requires_javac
+def test_java_references_to_siblings_are_not_syntax_errors(tmp_path):
+    sandbox = _load_sandbox_module()
+    app = ("import com.example.model.User;\n"
+           "public class App {\n"
+           "    public static void main(String[] args) {\n"
+           "        Calculator c = new Calculator();\n"
+           "        System.out.println(c.add(2, 3));\n"
+           "    }\n"
+           "}\n")
+    assert sandbox._syntax_check_impl("java", app, tmp_path / "a") == []
+
+    broken = "public class Broken {\n    void f() {\n        int x = 5\n    }\n}\n"
+    errors = sandbox._syntax_check_impl("java", broken, tmp_path / "b")
+    assert errors and "';' expected" in errors[0]
+
+
+@_requires_kotlinc
+def test_kotlin_unresolved_references_are_not_syntax_errors(tmp_path):
+    sandbox = _load_sandbox_module()
+    uses_sibling = "fun main() {\n    val c = Calculator()\n    println(c.add(2, 3))\n}\n"
+    assert sandbox._syntax_check_impl("kotlin", uses_sibling, tmp_path / "a", "Main.kt") == []
+
+    broken = 'fun main() {\n    println("hi"\n}\n'
+    errors = sandbox._syntax_check_impl("kotlin", broken, tmp_path / "b", "Main.kt")
+    assert errors and "syntax error" in errors[0].lower()
+
+
+# --- the HTML check can fail ----------------------------------------------------
+#
+# Audit S-sandbox/INTEGRITY#2, P-gates/INTEGRITY#2: html.parser accepts any
+# text, so a page with no HTML in it, or one cut off inside its <script>, was
+# a syntax pass, and that pass alone completed an HTML deliverable.
+
+@pytest.mark.parametrize("code,valid", [
+    ("<!DOCTYPE html><html><body><canvas></canvas>"
+     "<script>let a = 1;</script></body></html>\n", True),
+    ("<div>hi", True),                                     # HTML closes it implicitly
+    ("<template><p>{{ msg }}</p></template>\n", True),     # a Vue template
+    ("{% extends 'base.html' %}{% block content %}Hello{% endblock %}\n", True),
+    ("<p>a < b and c</p>\n", True),
+    ("const x = 1; // no html at all\n", False),
+    ("def f():\n    return 1\n", False),
+    ("", False),
+    ("<!DOCTYPE html>\n<html><body><script>\nfunction loop( {", False),
+    ("<html><body><div class='x", False),
+    ("<html><!-- unterminated", False),
+    ("<html><head><style>body { color: red;", False),
+])
+def test_the_html_check_can_fail(tmp_path, code, valid):
+    sandbox = _load_sandbox_module()
+
+    errors = sandbox._syntax_check_impl("html", code, tmp_path, "index.html")
+
+    assert (errors == []) is valid, errors

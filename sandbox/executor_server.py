@@ -173,6 +173,8 @@ app.add_middleware(_ServiceTokenMiddleware)
 app.add_middleware(_CorrelationIDMiddleware)
 
 
+from html.parser import HTMLParser  # noqa: E402
+
 from resource_contract import (  # noqa: E402
     OUTCOME_CANCELLED, OUTCOME_COMPLETED, OUTCOME_MEMORY_EXHAUSTED,
     OUTCOME_OUTPUT_LIMIT, OUTCOME_PROCESS_LIMIT, OUTCOME_SPAWN_FAILED,
@@ -1163,6 +1165,14 @@ class SyntaxCheckResponse(BaseModel):
     errors: List[str]
     language: str
     check_time_ms: int
+    # "checked": the checker ran to its own conclusion and `valid` is its
+    # verdict. "not_run": the resource contract stopped it, or it never
+    # started, so there is no verdict; `valid` is false and `outcome` says how
+    # it ended. A stopped checker exits non-zero with empty stderr, and every
+    # branch below builds its errors from stderr, so it used to read as a clean
+    # parse (valid: true).
+    status: str = "checked"
+    outcome: str = OUTCOME_COMPLETED
 
 
 @app.post("/syntax-check", response_model=SyntaxCheckResponse)
@@ -1180,6 +1190,16 @@ def syntax_check(request: SyntaxCheckRequest):
             errors=errors,
             language=lang,
             check_time_ms=elapsed,
+        )
+    except _CheckNotFinished as stopped:
+        elapsed = int((time.time() - start) * 1000)
+        return SyntaxCheckResponse(
+            valid=False,
+            errors=[f"syntax verification unavailable: the checker ended {stopped.outcome}"],
+            language=lang,
+            check_time_ms=elapsed,
+            status="not_run",
+            outcome=stopped.outcome,
         )
     except HTTPException:
         raise
@@ -1263,6 +1283,126 @@ def _jinja_template_errors(code: str, filename: Optional[str]) -> List[str]:
         return []  # not a confident syntax verdict -- stay silent
 
 
+class _CheckNotFinished(Exception):
+    """A syntax checker stopped before it reached a verdict."""
+
+    def __init__(self, outcome: str):
+        super().__init__(outcome)
+        self.outcome = outcome
+
+
+def _run_check(cmd: List[str], timeout: int, cwd: Path) -> Dict:
+    """Run one syntax checker to a verdict, or raise _CheckNotFinished.
+
+    A checker killed at its wall clock or memory ceiling, or one that never
+    started, exits non-zero with empty stderr. Every branch of
+    _syntax_check_impl reads errors out of stderr, so such a run used to come
+    back with no errors -- valid -- for python, typescript, go, java, kotlin,
+    rust, c/cpp, ruby and php alike.
+    """
+    result = _run_cmd(cmd, timeout=timeout, cwd=cwd)
+    if not outcome_is_complete(result["outcome"]):
+        raise _CheckNotFinished(result["outcome"])
+    return result
+
+
+# What a CommonJS parse says about code that is wrong only because it is an
+# ES module.
+_ESM_ONLY_ERRORS = (
+    "Cannot use import statement outside a module",
+    "Unexpected token 'export'",
+    "Cannot use 'import.meta' outside a module",
+    "await is only valid in async functions and the top level bodies of modules",
+)
+
+
+def _javascript_syntax_errors(code: str, workspace: Path, filename: Optional[str]) -> List[str]:
+    """`node --check` JavaScript as the module type its name fixes.
+
+    Checking a typeless .js name left the module type to Node. From Node
+    20.19, a file with import/export is detected as a module and `--check`
+    then compiles nothing, so garbage or a truncated module exited 0; before
+    20.19 every valid module was rejected. A .cjs name is always CommonJS and
+    a .mjs name always a module, on every Node version: a .js file is checked
+    as CommonJS, and again as a module when that parse failed only on module
+    syntax.
+    """
+    name = filename or "check.js"
+    reported = _contained_path(workspace, name)
+    suffix = reported.suffix.lower()
+    order = [suffix] if suffix in (".cjs", ".mjs") else [".cjs", ".mjs"]
+    for i, ext in enumerate(order):
+        path = reported.with_suffix(ext)
+        path.write_text(code)
+        result = _run_check(["node", "--check", str(path)], timeout=5, cwd=workspace)
+        if result["returncode"] == 0:
+            return []
+        stderr = result.get("stderr", "").strip()
+        if i + 1 < len(order) and any(m in stderr for m in _ESM_ONLY_ERRORS):
+            continue
+        return [stderr.replace(str(path), str(reported)) or "SyntaxError"]
+    return []
+
+
+# tsc's diagnostic codes 1000-1999 are syntax and grammar errors. Everything
+# else it reports about one file checked alone is about what that file refers
+# to: a sibling module or a package it cannot see (TS2307), types (TS2322),
+# strictness (TS7006). A few 1xxx codes are about compiler options, not the
+# text, and are left out too.
+_TS_ERROR_RE = re.compile(r"error TS(\d+)")
+_TS_OPTION_CODES = {1208, 1259, 1343, 1375, 1378, 1470, 1479}
+
+
+def _is_ts_syntax_code(code: int) -> bool:
+    return 1000 <= code < 2000 and code not in _TS_OPTION_CODES
+
+
+class _StructureParser(HTMLParser):
+    """Counts the markup html.parser saw."""
+
+    def __init__(self):
+        super().__init__()
+        self.markup = 0
+
+    def handle_starttag(self, tag, attrs):
+        self.markup += 1
+
+    def handle_startendtag(self, tag, attrs):
+        self.markup += 1
+
+    def handle_decl(self, decl):
+        self.markup += 1
+
+
+def _html_structure_errors(code: str) -> List[str]:
+    """What can be said of HTML without rejecting what HTML allows.
+
+    html.parser accepts any text -- JavaScript, Python, an empty string, a
+    page cut off inside its <script> -- so a clean parse proved nothing, and
+    it was counted as a syntax pass for completion. Two checks can fail: the
+    text has markup at all (a template made only of {% %} or {{ }} blocks is
+    exempt), and it does not end inside a tag, a comment, or a <script> or
+    <style> element, which is what a cut-off generation leaves. Unclosed
+    ordinary elements, fragments and Vue or Angular templates still pass.
+    """
+    parser = _StructureParser()
+    try:
+        parser.feed(code)
+    except Exception as e:
+        return [str(e)]
+    errors = []
+    unclosed = getattr(parser, "cdata_elem", None)
+    leftover = getattr(parser, "rawdata", "")
+    if unclosed:
+        errors.append(f"the document ends inside an unclosed <{unclosed}> element")
+    elif re.match(r"<[!/?A-Za-z]", leftover.lstrip()):
+        errors.append("the document ends inside an unfinished tag or comment: "
+                      + leftover.lstrip()[:60])
+    if parser.markup == 0 and "{%" not in code and "{{" not in code:
+        errors.append("no HTML markup: the text has no tags")
+    return errors
+
+
 def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional[str] = None) -> List[str]:
     """Language-specific syntax checking. Returns list of error strings."""
     # Reject path-traversal filenames (absolute, .., backslash escapes)
@@ -1275,7 +1415,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
         # Use py_compile for fast AST parse
         fpath = _contained_path(workspace, filename or "check.py")
         fpath.write_text(code)
-        result = _run_cmd(["python3", "-m", "py_compile", str(fpath)], timeout=5, cwd=workspace)
+        result = _run_check(["python3", "-m", "py_compile", str(fpath)], timeout=5, cwd=workspace)
         if result["returncode"] != 0:
             # py_compile reports the location and the error on separate lines:
             #
@@ -1309,28 +1449,30 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
                 errors.append(stderr.strip().split("\n")[-1])
 
     elif lang == "javascript":
-        fpath = _contained_path(workspace, filename or "check.js")
-        fpath.write_text(code)
-        result = _run_cmd(["node", "--check", str(fpath)], timeout=5, cwd=workspace)
-        if result["returncode"] != 0:
-            errors.append(result.get("stderr", "").strip())
+        errors.extend(_javascript_syntax_errors(code, workspace, filename))
 
     elif lang == "typescript":
         fpath = _contained_path(workspace, filename or "check.ts")
         fpath.write_text(code)
-        # tsc --noEmit for type checking; fall back to tsx parse
-        result = _run_cmd(["tsc", "--noEmit", "--strict", str(fpath)], timeout=10, cwd=workspace)
+        # tsc on the one file; only its syntax diagnostics count (see
+        # _is_ts_syntax_code). A lone-file check cannot see the modules the
+        # file imports, so its other errors are about the check, not the code.
+        result = _run_check(["tsc", "--noEmit", "--strict", str(fpath)], timeout=10, cwd=workspace)
         if result["returncode"] != 0:
-            for line in result.get("stderr", "").splitlines() + result.get("stdout", "").splitlines():
-                line = line.strip()
-                if line and ("error TS" in line or "Error" in line):
-                    errors.append(line)
+            output = result.get("stdout", "") + "\n" + result.get("stderr", "")
+            for line in output.splitlines():
+                match = _TS_ERROR_RE.search(line)
+                if match and _is_ts_syntax_code(int(match.group(1))):
+                    errors.append(line.strip())
+            # tsc failed without a diagnostic of its own: say what it said.
+            if not errors and not _TS_ERROR_RE.search(output) and output.strip():
+                errors.append(output.strip().splitlines()[-1])
 
     elif lang == "go":
         fpath = _contained_path(workspace, filename or "main.go")
         fpath.write_text(code)
         # Use gofmt -e for fast syntax-only checking (no compilation, no go.mod needed)
-        result = _run_cmd(["gofmt", "-e", str(fpath)], timeout=5, cwd=workspace)
+        result = _run_check(["gofmt", "-e", str(fpath)], timeout=5, cwd=workspace)
         if result["returncode"] != 0:
             stderr = result.get("stderr", "")
             for line in stderr.splitlines():
@@ -1351,8 +1493,12 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
             fpath = _contained_path(workspace, f"{class_name}.java")
 
         fpath.write_text(code)
-        result = _run_cmd(
-            ["javac", "-d", str(workspace), str(fpath)],
+        # Parse only (-XDshould-stop.ifNoError=PARSE): compiling the file alone
+        # reported every reference to a sibling class or a package it could
+        # not see ("cannot find symbol", "package ... does not exist") as a
+        # syntax error, so valid multi-file code was refused.
+        result = _run_check(
+            ["javac", "-XDshould-stop.ifNoError=PARSE", "-d", str(workspace), str(fpath)],
             timeout=10, cwd=workspace
         )
         if result["returncode"] != 0:
@@ -1371,27 +1517,35 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
 
         # No syntax-only check in kotlinc. Full compile to temp
         # output dir is the check, same approach as Java
-        result = _run_cmd(
+        result = _run_check(
             ["kotlinc", "-d", str(classes_dir), str(fpath)],
             timeout=30, cwd=workspace
         )
         if result["returncode"] != 0:
             stderr = result.get("stderr", "")
+            diagnosed = False
             for line in stderr.splitlines():
                 # kotlinc emits errors as either an `e:`-prefixed line or a
                 # `file.kt:L:C: error:` line. Match both — but NOT a bare
                 # "error" substring, which also hits `w:` warning lines that
                 # merely mention the word (false-positive syntax failures).
                 if line.strip().startswith("e:") or ": error:" in line:
-                    errors.append(line.strip())
-            if not errors and stderr.strip():
+                    diagnosed = True
+                    # Only parse errors, which Kotlin 2 labels "syntax
+                    # error:". kotlinc has no parse-only mode; compiling the
+                    # file alone makes every sibling class and library an
+                    # "unresolved reference", and a type mismatch is not a
+                    # syntax error either.
+                    if "syntax error" in line.lower():
+                        errors.append(line.strip())
+            if not diagnosed and stderr.strip():
                 errors.append(stderr.strip().split("\n")[-1])
 
     elif lang == "rust":
         fpath = _contained_path(workspace, filename or "check.rs")
         fpath.write_text(code)
         # rustc --edition 2021 with no codegen for syntax-only
-        result = _run_cmd(
+        result = _run_check(
             ["rustc", "--edition", "2021", "--crate-type", "bin", str(fpath), "-o", "/dev/null"],
             timeout=10, cwd=workspace
         )
@@ -1410,7 +1564,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
         compiler = "gcc" if lang == "c" else "g++"
         flags = ["-std=c17"] if lang == "c" else ["-std=c++17"]
         # -fsyntax-only: parse and type-check only, no codegen
-        result = _run_cmd(
+        result = _run_check(
             [compiler] + flags + ["-fsyntax-only", str(fpath)],
             timeout=10, cwd=workspace
         )
@@ -1426,7 +1580,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
         fpath = _contained_path(workspace, filename or "main.rb")
         fpath.write_text(code)
         # Use ruby -c for syntax-only checking (no execution)
-        result = _run_cmd(["ruby", "-c", str(fpath)], timeout=5, cwd=workspace)
+        result = _run_check(["ruby", "-c", str(fpath)], timeout=5, cwd=workspace)
         if result["returncode"] != 0:
             stderr = result.get("stderr", "")
             for line in stderr.splitlines():
@@ -1439,7 +1593,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
         fpath = _contained_path(workspace, filename or "main.php")
         fpath.write_text(code)
         # Use php -l for lint/syntax-only checking (no execution)
-        result = _run_cmd(["php", "-l", str(fpath)], timeout=5, cwd=workspace)
+        result = _run_check(["php", "-l", str(fpath)], timeout=5, cwd=workspace)
         if result["returncode"] != 0:
             # The real "PHP Parse error: ..." detail goes to stderr (with
             # display_errors=Off, the Debian CLI default); stdout carries
@@ -1459,7 +1613,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
     elif lang == "bash":
         fpath = _contained_path(workspace, filename or "check.sh")
         fpath.write_text(code)
-        result = _run_cmd(["bash", "-n", str(fpath)], timeout=5, cwd=workspace)
+        result = _run_check(["bash", "-n", str(fpath)], timeout=5, cwd=workspace)
         if result["returncode"] != 0:
             errors.append(result.get("stderr", "").strip())
 
@@ -1484,13 +1638,7 @@ def _syntax_check_impl(lang: str, code: str, workspace: Path, filename: Optional
             errors.append(str(e))
 
     elif lang in ("html", "htm"):
-        from html.parser import HTMLParser
-        try:
-            parser = HTMLParser()
-            parser.feed(code)
-            parser.close()
-        except Exception as e:
-            errors.append(str(e))
+        errors.extend(_html_structure_errors(code))
         # A Jinja template can parse cleanly as HTML and still 500 on EVERY
         # render: `{% for x in xs %)` closes the tag with `)` instead of `}`.
         # html.parser sees only text and passes it; Flask compiles the template

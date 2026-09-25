@@ -140,3 +140,12 @@ def test_an_unreachable_sandbox_is_still_reported_as_unavailable(monkeypatch):
     ok, _, err = A.SandboxAdapter().syntax_check("x = 1\n", "python", "app.py")
     assert ok is False
     assert "syntax verification unavailable" in err
+
+
+def test_a_stopped_checker_is_unavailable_not_a_syntax_error(capture):
+    """The sandbox says its checker ended at a ceiling: no verdict. The
+    candidate is not passed, and its code is not blamed for a syntax error."""
+    capture["reply"] = {"valid": False, "status": "not_run", "outcome": "timed_out", "errors": []}
+    ok, _, err = A.SandboxAdapter().syntax_check("x = 1\n", "python", "app.py")
+    assert ok is False
+    assert err == "syntax verification unavailable: the checker ended timed_out"

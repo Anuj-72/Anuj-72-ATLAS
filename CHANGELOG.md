@@ -30,6 +30,36 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: the sandbox's syntax check passed what it never checked, and failed valid code
+
+`/syntax-check` built its errors from the checker's stderr and ignored how the
+checker ended, so one stopped at its time or memory ceiling, or that never
+started, came back `valid: true` for nine languages. It now answers `status:
+"not_run"` with the `outcome`, and the proxy and V3 record that as not run
+rather than a pass or a syntax error. Other checks judged the wrong thing:
+
+- HTML could not fail. html.parser accepts any text, so a page with no markup,
+  or one cut off inside its `<script>`, was a pass that completed an HTML
+  deliverable. It now needs markup and a document that does not end inside a
+  tag, a comment, a `<script>` or a `<style>`.
+- JavaScript left the module type to Node. From Node 20.19 `node --check` on a
+  typeless `.js` file with `import` compiles nothing, so garbage and truncated
+  modules passed; before 20.19 every valid module failed. It is now checked as
+  `.cjs`, then as `.mjs` when that fails only on module syntax.
+- Java, Kotlin and TypeScript compiled the file alone, so a reference to a
+  sibling class or an installed package was reported as a syntax error and
+  valid multi-file code was refused. Java is now parsed only, and Kotlin and
+  TypeScript count only syntax diagnostics.
+
+Completion also ignored a broken `<script>` embedded in a served file (the
+Flask `HTML_TEMPLATE` shape) that the harness had just found, and a clean run
+of the server then settled it as "executed clean"; a demonstrated
+embedded-script failure now blocks both.
+
+On macOS the resource contract read `ru_maxrss` as kilobytes (it is bytes
+there), so every sandbox command in a local test run ended
+`memory_exhausted`. Production runs on Linux and is unchanged.
+
 ### Fixed: a completion that rests on a parse says so
 
 `completed` with reason `deliverables_demonstrated` could rest on a parse

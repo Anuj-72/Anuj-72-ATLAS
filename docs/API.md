@@ -1018,9 +1018,13 @@ Check syntax without executing code.
   "valid": false,
   "errors": ["SyntaxError: invalid syntax (line 1)"],
   "language": "python",
-  "check_time_ms": 12
+  "check_time_ms": 12,
+  "status": "checked",
+  "outcome": "completed"
 }
 ```
+
+The verdict is about syntax only, for the one file sent. `status` is `checked` when the checker ran to its own conclusion, and `not_run` when the resource contract stopped it or it never started; then `valid` is `false`, `outcome` says how it ended (`timed_out`, `memory_exhausted`, `spawn_failed`, ...), and `errors` holds one `syntax verification unavailable` line rather than a syntax error.
 
 ### GET /languages
 

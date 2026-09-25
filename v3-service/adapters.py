@@ -798,6 +798,11 @@ class SandboxAdapter:
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read())
+            if data.get("status") == "not_run":
+                # The checker was stopped before a verdict: not a pass, and
+                # not a syntax error in the candidate either.
+                return False, "", ("syntax verification unavailable: the checker ended "
+                                   f"{data.get('outcome', 'early')}")
             errors = data.get("errors", [])
             error_text = "\n".join(str(error) for error in errors)
             return bool(data.get("valid", False)), "", error_text
