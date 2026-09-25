@@ -465,6 +465,7 @@ services:
       # a generation that would have produced it. Raise per deployment.
       - ATLAS_FENCED_FIRST_CONTENT_SEC=${ATLAS_FENCED_FIRST_CONTENT_SEC:-}
       - ATLAS_FENCED_IDLE_SEC=${ATLAS_FENCED_IDLE_SEC:-}
+      - ATLAS_FENCED_STALL_SEC=${ATLAS_FENCED_STALL_SEC:-}
       # Repetition-control sampling. llama-server defaults every one of
       # these off, so the proxy sets DRY on outgoing requests; these let
       # a .env override reach the container. Empty means the in-code
