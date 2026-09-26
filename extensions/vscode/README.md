@@ -19,7 +19,7 @@ The extension is a thin SSE client over the proxy HTTP API (see `docs/API.md`):
 * `POST /cancel` — cancels the in-flight turn
 * `GET /ready` — status bar connectivity polling
 
-The TUI (`tui/`) is the reference client; the extension mirrors its session conventions (client-minted `session_id` per turn, `session_allowed_tools` re-sent each turn, cancel = abort + best-effort `POST /cancel`).
+The TUI (`tui/`) is the reference client; the extension mirrors its session conventions (client-minted `session_id` per turn, `session_allowed_tools` re-sent each turn, cancel = abort + best-effort `POST /cancel`). A deletion (`one_time_only`) is never answered automatically and offers no "Allow for Session"; a command is shown whole in the chat card.
 
 ## Settings
 

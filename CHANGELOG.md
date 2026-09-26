@@ -24,11 +24,13 @@
 - Approval prompts cut a command at 100 characters, so the end of a chain
   was never shown. The proxy sends the whole command, and `stop_background`
   names its job.
-- In the TUI, one "allow for session" answer on a deletion approved every
-  later deletion without showing which file. Each deletion is now asked
-  about on its own, and a new session starts with no approvals. The prompt
-  shows the whole command, wrapped; one too long for the screen keeps its
-  first and last lines in view and says how many are not shown.
+- In the TUI and the VS Code extension, one "allow for session" answer on a
+  deletion approved every later deletion without showing which file. Each
+  deletion is now asked about on its own, and a new TUI session starts with
+  no approvals. Both show the whole command: the TUI prompt wraps it (one
+  too long for the screen keeps its first and last lines in view and says
+  how many are not shown), and the VS Code card no longer cuts it at 117
+  characters.
 - The TUI's chat stream, events stream and raw demo lane never sent the
   service token, so on an install with one every message failed with 401.
   Every request to the proxy now sends it, ahead of an api-keys token.
