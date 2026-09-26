@@ -23,9 +23,9 @@
 # Idempotent — safe to re-run. Each step checks "already done" before acting.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/itigges22/ATLAS/main/scripts/atlas-bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/main/scripts/atlas-bootstrap.sh | bash
 #   # pinned to a release (script AND checkout at the same tag):
-#   curl -fsSL https://raw.githubusercontent.com/itigges22/ATLAS/vX.Y.Z/scripts/atlas-bootstrap.sh \
+#   curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/vX.Y.Z/scripts/atlas-bootstrap.sh \
 #     | ATLAS_BOOTSTRAP_REF=vX.Y.Z bash
 #   # or, from a checkout:
 #   ./scripts/atlas-bootstrap.sh
@@ -83,7 +83,7 @@ die() {
     log_err "$*"
     echo
     echo -e "${RED}${BOLD}Bootstrap failed.${NC} Re-run after addressing the issue above."
-    echo -e "${DIM}For help: https://github.com/itigges22/ATLAS/issues${NC}"
+    echo -e "${DIM}For help: https://github.com/inferstep/ATLAS/issues${NC}"
     exit 1
 }
 
@@ -782,7 +782,7 @@ ensure_repo_and_env() {
     # If we're not in a checkout, clone to ATLAS_INSTALL_DIR
     if [[ ! -f "./docker-compose.yml" || ! -d "./proxy" ]]; then
         local install_dir="${ATLAS_INSTALL_DIR:-/opt/atlas}"
-        local repo_url="${ATLAS_REPO_URL:-https://github.com/itigges22/ATLAS.git}"
+        local repo_url="${ATLAS_REPO_URL:-https://github.com/inferstep/ATLAS.git}"
 
         local pin_ref="${ATLAS_BOOTSTRAP_REF:-}"
         log_info "Not in a checkout. Cloning $repo_url to $install_dir…"
@@ -1406,7 +1406,7 @@ build_asa_steering_vector() {
     # no GPU to run it on (CPU-only Vulkan hosts).
     local -a gpu_run_args=()
     local image_tag="${ATLAS_IMAGE_TAG:-latest}"
-    local ghcr_owner="${ATLAS_GHCR_OWNER:-itigges22}"
+    local ghcr_owner="${ATLAS_GHCR_OWNER:-inferstep}"
     local image=""
     case "$GPU_VENDOR" in
         nvidia)
@@ -1602,8 +1602,8 @@ print_ready_banner() {
     echo -e "    ${CYAN}docker compose ps${NC}       ${DIM}# raw container status${NC}"
     echo -e "    ${CYAN}docker compose logs -f${NC}  ${DIM}# stream logs across all services${NC}"
     echo
-    echo -e "  ${BOLD}Docs${NC}: https://github.com/itigges22/ATLAS/tree/main/docs"
-    echo -e "  ${BOLD}Issues${NC}: https://github.com/itigges22/ATLAS/issues"
+    echo -e "  ${BOLD}Docs${NC}: https://github.com/inferstep/ATLAS/tree/main/docs"
+    echo -e "  ${BOLD}Issues${NC}: https://github.com/inferstep/ATLAS/issues"
     echo
 }
 

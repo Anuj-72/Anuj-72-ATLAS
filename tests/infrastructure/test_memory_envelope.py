@@ -136,9 +136,9 @@ def test_the_assumptions_are_written_down(compose_text):
 # --- verification builds may not claim a deployable tag ----------------------
 
 
-DEPLOYABLE_TAGS = ("ghcr.io/itigges22/atlas-proxy:dev",
-                   "ghcr.io/itigges22/atlas-sandbox:dev",
-                   "ghcr.io/itigges22/atlas-v3:dev")
+DEPLOYABLE_TAGS = ("ghcr.io/inferstep/atlas-proxy:dev",
+                   "ghcr.io/inferstep/atlas-sandbox:dev",
+                   "ghcr.io/inferstep/atlas-v3:dev")
 
 
 def test_compose_build_writes_the_deployable_tag(compose_text):
@@ -151,7 +151,7 @@ def test_compose_build_writes_the_deployable_tag(compose_text):
     points at something the running container is not. Verification builds
     belong under throwaway tags: `docker build -t atlas-proxy:<slice>-check`.
     """
-    assert "image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-proxy:" in compose_text
+    assert "image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-proxy:" in compose_text
     # The tag is a variable, so an operator CAN point a build somewhere else.
     assert "${ATLAS_IMAGE_TAG:-" in compose_text
 

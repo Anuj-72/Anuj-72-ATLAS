@@ -12,7 +12,7 @@ services:
     # Default behavior: pull prebuilt image from GHCR (PC-052). To rebuild
     # locally for dev, run: docker compose build llama-server
     # Tag is overridable via ATLAS_IMAGE_TAG (default: latest from main).
-    image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-llama:${ATLAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-llama:${ATLAS_IMAGE_TAG:-latest}
     restart: unless-stopped
     build:
       context: ./inference
@@ -118,7 +118,7 @@ services:
     # (GH #146). Harmless when the bundled llama-server is in use.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-lens:${ATLAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-lens:${ATLAS_IMAGE_TAG:-latest}
     restart: unless-stopped
     # Part of the memory envelope; measured peak 1.56 GiB.
     mem_limit: ${ATLAS_LENS_MEM:-1792m}
@@ -182,7 +182,7 @@ services:
     # (GH #146). Harmless when the bundled llama-server is in use.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-v3:${ATLAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-v3:${ATLAS_IMAGE_TAG:-latest}
     restart: unless-stopped
     # Part of the memory envelope; measured peak 52 MiB: it orchestrates, the executor runs.
     mem_limit: ${ATLAS_V3_MEM:-512m}
@@ -240,7 +240,7 @@ services:
     # (GH #146). Harmless when the bundled llama-server is in use.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-sandbox:${ATLAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-sandbox:${ATLAS_IMAGE_TAG:-latest}
     restart: unless-stopped
     build:
       context: ./sandbox
@@ -405,7 +405,7 @@ services:
     # (GH #146). Harmless when the bundled llama-server is in use.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: ghcr.io/${ATLAS_GHCR_OWNER:-itigges22}/atlas-proxy:${ATLAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${ATLAS_GHCR_OWNER:-inferstep}/atlas-proxy:${ATLAS_IMAGE_TAG:-latest}
     restart: unless-stopped
     # Part of the memory envelope; measured peak 33 MiB.
     mem_limit: ${ATLAS_PROXY_MEM:-256m}

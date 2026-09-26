@@ -66,7 +66,7 @@ the exclusion rule above is the primary control.
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately via [GitHub Security Advisories](https://github.com/itigges22/ATLAS/security/advisories/new) rather than opening a public issue.
+Please report vulnerabilities privately via [GitHub Security Advisories](https://github.com/inferstep/ATLAS/security/advisories/new) rather than opening a public issue.
 
 Include what you can of: the affected component (proxy, TUI, CLI, v3-service, geometric-lens, sandbox, install scripts), reproduction steps, and the impact under the single-user local model above.
 

@@ -63,7 +63,7 @@ Follow [SETUP.md](SETUP.md) (Linux) or [SETUP_MACOS.md](SETUP_MACOS.md)
 (Apple Silicon). For most Linux + GPU machines it is one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/itigges22/ATLAS/main/scripts/atlas-bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/main/scripts/atlas-bootstrap.sh | bash
 ```
 
 ## First launch

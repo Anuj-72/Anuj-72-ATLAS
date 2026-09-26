@@ -249,7 +249,7 @@ request is per-request, so a reused file descriptor cannot cancel a later one.
 
 ## Building for verification without claiming the deployable tag
 
-`docker compose build atlas-proxy` writes `ghcr.io/itigges22/atlas-proxy:dev` —
+`docker compose build atlas-proxy` writes `ghcr.io/inferstep/atlas-proxy:dev` —
 the same tag the running stack was started from. Nothing restarts, so the
 running container keeps its image; but the deployable **name** now points at
 the new build, and the previous image becomes untagged. If it is later pruned,

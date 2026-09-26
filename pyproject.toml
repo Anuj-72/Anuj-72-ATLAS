@@ -37,10 +37,10 @@ train = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/itigges22/ATLAS"
-Repository = "https://github.com/itigges22/ATLAS"
-Issues = "https://github.com/itigges22/ATLAS/issues"
-Changelog = "https://github.com/itigges22/ATLAS/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/inferstep/ATLAS"
+Repository = "https://github.com/inferstep/ATLAS"
+Issues = "https://github.com/inferstep/ATLAS/issues"
+Changelog = "https://github.com/inferstep/ATLAS/blob/main/CHANGELOG.md"
 
 [project.scripts]
 atlas = "atlas.__main__:main"

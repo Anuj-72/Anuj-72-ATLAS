@@ -36,12 +36,12 @@ def _compose(atlas_root: str, args: List[str], timeout: int = 600) -> None:
 # GHCR image the base compose file deploys.
 _IMAGES = ["atlas-proxy", "atlas-v3", "atlas-lens", "atlas-sandbox",
            "atlas-llama"]
-_OWNER = os.environ.get("ATLAS_GHCR_OWNER", "itigges22")
+_OWNER = os.environ.get("ATLAS_GHCR_OWNER", "inferstep")
 # Images are built + signed on both branch pushes (refs/heads/…) and tag
 # pushes (refs/tags/vX.Y.Z), so the identity must accept either ref type
 # — matching only refs/heads would reject a validly-signed release image.
 _COSIGN_IDENTITY = (
-    r"https://github.com/itigges22/ATLAS/.github/workflows/"
+    r"https://github.com/inferstep/ATLAS/.github/workflows/"
     r"build-images.yml@refs/(heads|tags)/.*")
 _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 

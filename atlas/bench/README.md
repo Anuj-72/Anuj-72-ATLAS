@@ -70,4 +70,4 @@ the raw traces stay indexed in
 [docs/reports/ablation/README.md](../../docs/reports/ablation/README.md) so
 the withdrawal can be checked. Numbers from this runner are not LiveCodeBench
 pass@1 until those are fixed. Per-registry-model numbers will be tracked in
-[#28](https://github.com/itigges22/ATLAS/issues/28).
+[#28](https://github.com/inferstep/ATLAS/issues/28).

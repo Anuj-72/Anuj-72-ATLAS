@@ -1,8 +1,8 @@
 # ATLAS VS Code Extension
 
-A VS Code client for the [ATLAS](https://github.com/itigges22/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop (chat, tool calls, permission gating, diffs) with no agent logic in the extension itself.
+A VS Code client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop (chat, tool calls, permission gating, diffs) with no agent logic in the extension itself.
 
-**Status: Work in progress.** Tracking [issue #35](https://github.com/itigges22/ATLAS/issues/35). Chat, permission flow, diff review, status bar, and the workspace-mismatch warning are implemented.
+**Status: Work in progress.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35). Chat, permission flow, diff review, status bar, and the workspace-mismatch warning are implemented.
 
 ## Diff review
 

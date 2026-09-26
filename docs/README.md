@@ -66,7 +66,7 @@ map of the repository itself, see [MAP.md](MAP.md).
 3. `atlas doctor` for a one-shot health report, and
    `atlas diagnostics collect` for a shareable, redacted support bundle
    (both documented in [CLI.md](CLI.md)).
-4. Still stuck? [Open an issue](https://github.com/itigges22/ATLAS/issues)
+4. Still stuck? [Open an issue](https://github.com/inferstep/ATLAS/issues)
    — paste the doctor output.
 
 ### Understand how it works
