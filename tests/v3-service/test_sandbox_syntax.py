@@ -12,7 +12,25 @@ from fastapi import HTTPException
 SANDBOX_DIR = Path(__file__).parents[2] / "sandbox"
 
 
+_SANDBOX_MODULE = None
+
+
 def _load_sandbox_module():
+    """executor_server, imported once per session.
+
+    Every import starts the module's background-job janitor thread, which
+    never exits; importing per test left one per test running for the rest of
+    the session, and thread-count assertions in tests/v3 then failed when the
+    suites ran together. Tests that change module attributes restore them
+    (try/finally or monkeypatch), so sharing the module is safe.
+    """
+    global _SANDBOX_MODULE
+    if _SANDBOX_MODULE is None:
+        _SANDBOX_MODULE = _import_sandbox_module()
+    return _SANDBOX_MODULE
+
+
+def _import_sandbox_module():
     # executor_server imports its sibling `structured_log`, which only
     # resolves when sandbox/ is importable. In the container that holds
     # because the module runs from its own directory; loading it by path
