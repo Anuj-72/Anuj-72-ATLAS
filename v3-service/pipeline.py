@@ -1224,11 +1224,14 @@ def _make_output_probe(code: str, tc, task_input_file: str = ""):
     inp = tc.input_str.strip()
     name = _entry_function(code)
     if name and _entry_takes_case_input(code, name):
+        # The pair every caller unpacks. A bare string here made the unpack
+        # raise, the caller's except turned that into "no answer", and a
+        # function-shaped candidate could never join a cluster.
         return (code + "\nimport ast as _a\n"
                 + f"_i={repr(inp)}\n"
                 + "try:\n _p=_a.literal_eval(_i)\nexcept:\n _p=_i\n"
                 + f"_r={name}(*_p) if isinstance(_p,tuple) else {name}(_p)\n"
-                + f"print({repr(_CONSENSUS_MARK)}+repr(str(_r).strip()))\n")
+                + f"print({repr(_CONSENSUS_MARK)}+repr(str(_r).strip()))\n"), {}
     infile = task_input_file or _reads_input_file(code)
     header, run, files = _staged_candidate_run(code, inp, infile)
     # The marker is emitted ONLY on clean completion, and only for non-empty
@@ -1256,6 +1259,15 @@ def _make_output_probe(code: str, tc, task_input_file: str = ""):
             + f"elif _out:\n    print({repr(_CONSENSUS_MARK)}+repr(_out))\n"), files
 
 
+def _failed_a_project_check(candidate) -> bool:
+    """The candidate failed a check the generated cases did not write: the
+    project's own build command, or importing where the submitted baseline
+    imports. Candidates agreeing with each other does not outweigh that."""
+    return any(ev.get("verifier") in ("build_command", "python_import_comparison")
+               and ev.get("status") == "failed"
+               for ev in candidate.get("verification_evidence") or [])
+
+
 def _consensus_winners(candidates, test_cases, sandbox, emit,
                        task_input_file=""):
     """CodeT agreement: candidates whose outputs match the largest cluster.
@@ -1270,6 +1282,13 @@ def _consensus_winners(candidates, test_cases, sandbox, emit,
     candidates that crashed on most cases but happened to match on one could
     form the winning cluster, promoting code proven broken on the majority of
     the very inputs the consensus ran (third-party audit finding).
+
+    A cluster is sized by its DISTINCT programs. Byte-identical candidates
+    are one program agreeing with itself, and counting them twice let two
+    copies of a wrong program outvote one correct program.
+
+    Agreement is not verification: the caller marks winners `consensus`, not
+    `passed`.
     """
     if len(candidates) < 2 or not test_cases:
         return []
@@ -1294,11 +1313,15 @@ def _consensus_winners(candidates, test_cases, sandbox, emit,
             sigs.setdefault(tuple(outs), []).append(c)
     if not sigs:
         return []
-    best = max(sigs.values(), key=len)
-    if len(best) < 2:
+
+    def distinct(cluster):
+        return len({contract.content_hash(c["code"]) for c in cluster})
+
+    best = max(sigs.values(), key=distinct)
+    if distinct(best) < 2:
         return []
-    emit("consensus", f"{len(best)}/{len(candidates)} candidates agree",
-         cluster=len(best), clusters=len(sigs))
+    emit("consensus", f"{distinct(best)}/{len(candidates)} distinct candidates agree",
+         cluster=distinct(best), clusters=len(sigs))
     return best
 
 
@@ -2233,17 +2256,22 @@ class V3PipelineService:
             # that produced the same answers. Narrow on purpose — this only
             # runs where the oracle has already condemned everything, so a
             # working suite keeps deciding.
-            if not passing and self_tests and self_tests.test_cases:
+            #
+            # Agreement is not verification. Winners are marked `consensus`,
+            # never `passed`: a candidate that failed the project's own build
+            # command is still one that failed it. And a trusted oracle is not
+            # overruled by candidates agreeing with each other.
+            if not passing and self_tests and self_tests.test_cases and not _has_oracle:
                 agreed = _consensus_winners(
-                    candidates, self_tests.test_cases, sandbox, emit,
-                    task_input_file)
+                    [c for c in candidates if not _failed_a_project_check(c)],
+                    self_tests.test_cases, sandbox, emit, task_input_file)
                 for c in agreed:
-                    c["passed"] = True
+                    c["consensus"] = True
                     passing.append(c)
                 if agreed:
                     emit("sandbox_done",
-                         f"{len(passing)}/{len(candidates)} by consensus",
-                         passed=len(passing), total=len(candidates))
+                         f"0/{len(candidates)} passed; {len(agreed)} agree, selectable by consensus",
+                         passed=0, agreed=len(agreed), total=len(candidates))
 
             # ===== LENS VETO =====
             # PC-207 alignment fix: hard-reject sandbox-passing candidates whose
@@ -2445,7 +2473,8 @@ class V3PipelineService:
             # lens min-energy pick, so it carried zero discriminating signal.)
             if passing:
                 ci_list = [
-                    CandidateInfo(c["index"], c["code"], c["energy"], c["passed"])
+                    CandidateInfo(c["index"], c["code"], c["energy"],
+                                  bool(c["passed"] or c.get("consensus")))
                     for c in passing
                 ]
                 selected = select_candidate(ci_list, strategy="lens")
@@ -2518,7 +2547,10 @@ class V3PipelineService:
                     winner = _candidate_by_index(passing, selected.index)
                     lens_scored = getattr(selected, "energy", None) is not None
                     lens_failure = (winner or {}).get("lens_failure")
-                    if lens_scored:
+                    if (winner or {}).get("consensus"):
+                        detail = (f"Lens selected candidate {selected.index} from candidates "
+                                  f"that agree — no candidate passed verification")
+                    elif lens_scored:
                         detail = f"Lens selected candidate {selected.index}"
                     else:
                         # The only verified candidate carries no score. It
@@ -2533,7 +2565,12 @@ class V3PipelineService:
                          lens_scored=lens_scored, lens_failure=lens_failure)
                     result["passed"] = True
                     result["code"] = selected.code
-                    result["phase_solved"] = "phase1"
+                    if (winner or {}).get("consensus"):
+                        # A phase the proxy's verifiedPhase does not list: the
+                        # pick rests on agreement, not on a check it passed.
+                        result["phase_solved"] = "consensus"
+                    else:
+                        result["phase_solved"] = "phase1"
                     result["total_time_ms"] = (time.time() - start) * 1000
                     result["verification_evidence"] = (winner or {}).get("verification_evidence", [])
                     result["winning_score"] = (winner or {}).get("energy_norm", 0.0)

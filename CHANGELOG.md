@@ -30,6 +30,26 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: the model was told V3 had verified code nothing had run
+
+After V3 delivered a write or edit whose phase name sounded like success, the
+proxy told the model "V3 verified this edit ... The fix is on disk and
+build-checked ... respond NOW with done ... do not re-read the file". The
+phase could be `phase1` reached by agreement between candidates, or rest on a
+compile, with nothing ever running the code. The message now comes from the
+proxy's own evidence: it says the edit works only when a current run on those
+bytes shows it (including evidence V3's delivery staged), and otherwise says
+V3's checks are not a run and asks for one.
+
+In V3 itself, candidates picked by agreement when none passed were marked
+`passed`. They are now marked `consensus` and reported with `phase_solved:
+"consensus"`, which the proxy does not treat as verified. Agreement is counted
+in distinct programs, so two byte-identical copies no longer outvote a
+different one; a candidate that failed the project's build command or its
+import comparison cannot agree its way in; a trusted oracle is no longer
+overruled by agreement; and function-shaped candidates, which the probe
+silently excluded, now take part.
+
 ### Fixed: V3 judged Python with a different interpreter than the one that runs it
 
 v3-service ran on Python 3.11 while the sandbox runs 3.13, so every

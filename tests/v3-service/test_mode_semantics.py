@@ -8,6 +8,7 @@ the record decides closure, `contract.select` fills the envelope's selection,
 and the lens chooses the delivered bytes.
 """
 
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -783,3 +784,40 @@ def test_interactive_repair_still_runs_when_the_baseline_does_not_compile(monkey
     stages = [e["stage"] for e in result["events"]]
     assert "repair_skip_baseline_ok" not in stages, stages
     assert "phase3" in stages, "repair must run when nothing compiles"
+
+
+def test_a_consensus_pick_is_not_a_pass(monkeypatch):
+    """Nothing passed; three distinct candidates agree on the generated inputs.
+    The pick is returned, its phase says it rests on agreement (a phase the
+    proxy does not treat as verified), no candidate is marked passed, and the
+    envelope still describes the returned bytes."""
+    service, _ = _service(monkeypatch)
+
+    class _Sandbox:
+        def __init__(self, project_files=None):
+            pass
+
+        def __call__(self, code, test_input="", **_):
+            if P._CONSENSUS_MARK in code:
+                return True, P._CONSENSUS_MARK + repr("42") + "\n", ""
+            if "SELF_TEST_PASS" in code:
+                return True, "WRONG", ""
+            return False, "", "EOFError: EOF when reading a line"
+
+    monkeypatch.setattr(adapters, "SandboxAdapter", _Sandbox)
+    generated = [SimpleNamespace(input_str="1", expected_output="1",
+                                 provenance=P.PROVENANCE_GENERATED)
+                 for _ in range(2)]
+    service.self_test_gen = SimpleNamespace(
+        generate=lambda problem, llm, task_id: SimpleNamespace(
+            test_cases=generated, generation_tokens=0))
+
+    result = _run(service, "solve.py")
+
+    env = _assert_envelope_describes_delivery(result, "consensus")
+    assert result["code"] in ALT_CODES + [PROBE_CODE]
+    assert env["evaluation"]["closure_eligible"] is False
+    details = [e.get("detail", "") for e in result["events"]]
+    assert any("no candidate passed verification" in d for d in details), details
+    # The old wording counted agreeing candidates as passing: "3/3 by consensus".
+    assert not any(re.fullmatch(r"\d+/\d+ by consensus", d) for d in details), details

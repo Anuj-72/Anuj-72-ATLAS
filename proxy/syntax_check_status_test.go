@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,32 @@ func TestACleanRunDoesNotSettleAnEmbeddedScriptFailure(t *testing.T) {
 	}
 	if d := ctx.Ledger[key]; d.ValidationKind == ValidationKindExecution {
 		t.Fatal("the embedded-script failure was overwritten with execution/passed")
+	}
+}
+
+// V-pipeline/INTEGRITY#2: the run was told "V3 verified this edit ... The
+// fix is on disk and build-checked ... respond NOW with done" whenever V3's
+// phase name sounded like success, including a phase1 reached by agreement
+// between candidates or a compile, with nothing ever running the code.
+func TestTheV3NudgeSaysWhatARunShowed(t *testing.T) {
+	ctx, dir := sepCtx(t, nil)
+	h := sepWrite(t, ctx, dir, "app.py", "print('ok')\n")
+
+	msg, shown := v3DeliveryNudge(ctx, "phase1", 3, 0.42, "app.py", "")
+	if shown || strings.Contains(msg, "respond with") || strings.Contains(msg, "build-checked") ||
+		!strings.Contains(msg, "python3 app.py") {
+		t.Fatalf("nothing ran app.py, and the nudge says: %q", msg)
+	}
+
+	ctx.VerificationEvidence = append(ctx.VerificationEvidence,
+		sepStamp(ctx, "python3 app.py", map[string]string{resolveAgentPath(ctx, "app.py"): h}))
+	msg, shown = v3DeliveryNudge(ctx, "phase1", 3, 0.42, "app.py", "")
+	if !shown || !strings.Contains(msg, "shows it working") {
+		t.Fatalf("a current run shows app.py working, and the nudge says: %q", msg)
+	}
+
+	msg, _ = v3DeliveryNudge(ctx, "phase1", 3, 0.42, "app.py", "app.py")
+	if !strings.Contains(msg, "ITS OWN version of app.py") || strings.Contains(msg, "respond with") {
+		t.Fatalf("a superseded delivery is told to finish: %q", msg)
 	}
 }

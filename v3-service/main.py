@@ -261,8 +261,15 @@ class V3Handler(BaseHTTPRequestHandler):
 
         Response format (V3GenerateResponse):
             code: str               — winning candidate
-            passed: bool            — whether it passed verification
-            phase_solved: str       — which phase solved it
+            passed: bool            — whether a candidate is returned: it passed
+                                      V3's own check (which may be a compile or
+                                      an input-less run), or, when none did, it
+                                      was picked by agreement; phase_solved says
+                                      which. Not proof the task is done; the
+                                      evidence envelope says what was shown.
+            phase_solved: str       — how it was chosen: probe, phase1, pr_cot,
+                                      refinement or budget after a check it
+                                      passed, consensus by agreement alone
             candidates_tested: int
             winning_score: float
             total_tokens: int

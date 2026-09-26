@@ -278,3 +278,39 @@ def test_the_probe_body_reaches_the_sandbox_with_its_files(monkeypatch):
     for body in captured:
         assert body["files"]["input.txt"] == "1\n2\n3"
         assert "'w'" not in body["code"]
+
+
+# --- agreement is counted in programs, and is not a pass ----------------------
+#
+# Audit V-pipeline/INTEGRITY#1: winners were marked passed, byte-identical
+# copies counted as agreement, and a candidate that failed the project's build
+# command could be promoted by consensus.
+
+def test_identical_copies_are_one_program():
+    """Two copies of a wrong program do not outvote one correct program."""
+    winners = pipeline._consensus_winners(
+        _cands(WRONG, WRONG, CORRECT_A), [_case()], _sandbox, lambda *a, **k: None)
+    assert winners == []
+
+
+def test_distinct_agreeing_programs_still_win():
+    winners = pipeline._consensus_winners(
+        _cands(CORRECT_A, CORRECT_A, CORRECT_B), [_case()], _sandbox, lambda *a, **k: None)
+    assert sorted(c["index"] for c in winners) == [0, 1, 2]
+
+
+def test_a_function_shaped_probe_returns_its_pair():
+    code = "def solve(n):\n    return n * 2\n"
+    probe, files = pipeline._make_output_probe(code, _case3("6"))
+    assert pipeline._CONSENSUS_MARK in probe and files == {}
+
+
+def test_a_candidate_that_failed_a_project_check_cannot_agree_its_way_in():
+    failed_build = {"verification_evidence": [{"verifier": "build_command", "status": "failed"}]}
+    failed_import = {"verification_evidence": [{"verifier": "python_import_comparison",
+                                                "status": "failed"}]}
+    unavailable = {"verification_evidence": [{"verifier": "build_command", "status": "unavailable"}]}
+    assert pipeline._failed_a_project_check(failed_build)
+    assert pipeline._failed_a_project_check(failed_import)
+    assert not pipeline._failed_a_project_check(unavailable)
+    assert not pipeline._failed_a_project_check({})

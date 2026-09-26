@@ -1093,6 +1093,37 @@ func (s *runState) chargeBounce(gate string) bool {
 	return true
 }
 
+// v3DeliveryNudge is what the run is told after V3 delivered a write or an
+// edit, and whether a current run already shows the landed bytes working. It
+// reads the proxy's own evidence (pathCoverageSatisfied, which includes the
+// evidence V3's delivery staged), never the service's phase name: phase1 can
+// be reached by agreement between candidates, or on a compile, with nothing
+// ever running the code. supersededRel is set when V3 delivered its own
+// version instead of the model's bytes.
+func v3DeliveryNudge(ctx *AgentContext, phase string, candidates int, score float64,
+	path, supersededRel string) (string, bool) {
+	shown := false
+	if path != "" {
+		resolved := resolveAgentPath(ctx, path)
+		if h := fileSHA256(ctx, resolved); h != "" {
+			shown = pathCoverageSatisfied(ctx, resolved, h)
+		}
+	}
+	switch {
+	case supersededRel != "":
+		return fmt.Sprintf(
+			"V3 delivered ITS OWN version of %s through its %s pipeline (%d candidates, score=%.2f) — the bytes on disk are not the ones you sent. V3's checks are not evidence that the user's request is finished. Read %s and judge it against what was asked before you claim anything is done; if it is short of the request, change it from what is there.",
+			supersededRel, phase, candidates, score, supersededRel), shown
+	case shown:
+		return fmt.Sprintf(
+			"V3 delivered this edit through its %s pipeline (%d candidates, score=%.2f), and a run on these exact bytes shows it working. If this resolves the user's original request, respond with {\"type\":\"done\",\"summary\":\"<one sentence describing the fix>\"}. Only continue if you have a specific, concrete additional change to make — do not edit unrelated code.",
+			phase, candidates, score), shown
+	}
+	return fmt.Sprintf(
+		"V3 delivered this edit through its %s pipeline (%d candidates, score=%.2f). V3's checks are not a run of the program, and nothing has run what is on disk yet. Run it — %s — or its tests, check the output, and finish only if it does what was asked. Do not edit unrelated code.",
+		phase, candidates, score, runFirstInstruction(ctx, path)), shown
+}
+
 func runAgentLoop(ctx *AgentContext, userMessage string) error {
 	// One snapshot per validated request, before any turn runs. Only the
 	// immutable inputs: the live decision belongs to the gate records.
@@ -3054,13 +3085,17 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				}
 			}
 
-			// Trust V3-verified edits — strongly nudge toward done.
-			// When V3 ran the edit through its sandbox/probe pipeline and
-			// the result came back successful (V3Used && PhaseSolved
-			// non-empty), the edit is build-verified. Compact models can otherwise
-			// keeps grinding: re-reads the file, edits unrelated functions,
-			// runs another V3 cycle (~110s each). Inject an explicit
-			// "you're done unless you have a specific reason" message.
+			// Say what V3's delivery established, from the proxy's own
+			// evidence. Compact models otherwise keep grinding after V3
+			// delivers: re-read the file, edit unrelated functions, run
+			// another V3 cycle (~110s each), so the run is told where it
+			// stands. But a phase name is not a run: phase1 can be reached by
+			// agreement between candidates, or on a compile, with nothing ever
+			// running the code. The nudge used to say "verified ...
+			// build-checked ... respond NOW with done" on those too. It now
+			// says the edit works only when a current run shows it
+			// (pathCoverageSatisfied, which also reads the evidence V3's
+			// delivery staged), and otherwise asks for that run.
 			// "none" is the phase a run reports when nothing passed, and it
 			// is not the empty string — so this fired on every unverified
 			// fallback and told the model its code was build-checked when
@@ -3078,17 +3113,16 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// never seen. Measured: both sessions that adopted a candidate
 				// were sent the second situation's context with the first
 				// situation's instruction.
-				nudge := fmt.Sprintf(
-					"V3 verified this edit passed its %s pipeline (%d candidates, score=%.2f). The fix is on disk and build-checked. If this resolves the user's original request, respond NOW with {\"type\":\"done\",\"summary\":\"<one sentence describing the fix>\"}. Only continue if you have a specific, concrete additional change to make — do not re-read the file to double-check, and do not edit unrelated code.",
-					result.PhaseSolved, result.CandidatesTested, result.WinningScore,
-				)
-				if wasSuperseded {
-					nudge = fmt.Sprintf(
-						"V3 verified this edit passed its %s pipeline (%d candidates, score=%.2f) and delivered ITS OWN version of %s — the bytes on disk are not the ones you sent. That check is a build check, not evidence that the user's request is finished. Read %s and judge it against what was asked before you claim anything is done; if it is short of the request, change it from what is there.",
-						result.PhaseSolved, result.CandidatesTested, result.WinningScore,
-						superseded.Rel, superseded.Rel,
-					)
+				var landed struct {
+					Path string `json:"path"`
 				}
+				_ = json.Unmarshal(parsed.Args, &landed)
+				supersededRel := ""
+				if wasSuperseded {
+					supersededRel = superseded.Rel
+				}
+				nudge, shown := v3DeliveryNudge(ctx, result.PhaseSolved, result.CandidatesTested,
+					result.WinningScore, landed.Path, supersededRel)
 				ctx.Messages = append(ctx.Messages, AgentMessage{
 					Role:    "user",
 					Content: nudge,
@@ -3098,11 +3132,11 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				// candidate replaced them saw the superseded content's hash
 				// and size described as the thing V3 verified.
 				if wasSuperseded {
-					log.Printf("[agent] V3-verified %s delivered its own %s (%dB, not the %dB submitted) — pointing the model at what landed",
+					log.Printf("[agent] V3 %s delivered its own %s (%dB, not the %dB submitted) — pointing the model at what landed",
 						parsed.Name, logPath(superseded.Path),
 						len(superseded.Delivered), len(superseded.Submitted))
 				} else {
-					log.Printf("[agent] V3-verified %s on %s — nudging toward done", parsed.Name, safeArgsSummary(parsed.Name, parsed.Args))
+					log.Printf("[agent] V3 delivered %s on %s (shown working: %v)", parsed.Name, safeArgsSummary(parsed.Name, parsed.Args), shown)
 				}
 			}
 
