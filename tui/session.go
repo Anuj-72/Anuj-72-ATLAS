@@ -214,4 +214,6 @@ func (m *tuiModel) startNewSession() {
 	// A new session starts at the default policy, strict, and says so on the
 	// wire. The previous selection belonged to the work of the previous one.
 	m.candidatePolicy = candidatePolicyStrict
+	// Nor does it inherit the previous session's "allow for session" answers.
+	m.sessionAllowedTools = map[string]bool{}
 }
