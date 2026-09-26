@@ -30,6 +30,18 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Changed: a file no check applies to is named in the summary
+
+A run that writes a file of a kind the syntax registry does not cover and
+that is not prose (`style.css`, `.gitignore`, `Dockerfile`, `.rs`, `.toml`)
+cannot demonstrate it, so the run ends `incomplete` /
+`deliverables_not_demonstrated`. The summary used to say "the run ended
+without finishing the task"; it now names the files ATLAS has no check for.
+`.mjs` and `.cjs` are now checked as JavaScript. Rust and C/C++ are not yet:
+the sandbox compiles the lone file, so a sibling header or module would read
+as a syntax error. What to do about assets no check applies to is an open
+decision.
+
 ### Fixed: completion did not see what shell commands did to files
 
 A shell command reached the deliverable ledger only by rehashing files the

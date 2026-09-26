@@ -442,6 +442,13 @@ var syntaxGateLanguages = map[string]syntaxLanguage{
 	".rb":   {Language: "ruby", Executable: true},
 	".php":  {Language: "php", Executable: true},
 	".sh":   {Language: "bash", Executable: true},
+	// Unrouted, a run that wrote one could never demonstrate it (audit
+	// GB-4#5). The check keeps the module type through the filename it is
+	// sent with. Rust and C/C++ stay out until their checks judge syntax
+	// alone: the sandbox compiles the lone file, so a sibling header or
+	// module would read as a syntax error, as it did for Java.
+	".mjs":  {Language: "javascript", Executable: true},
+	".cjs":  {Language: "javascript", Executable: true},
 	".json": {Language: "json"},
 	".yaml": {Language: "yaml"},
 	".yml":  {Language: "yaml"},

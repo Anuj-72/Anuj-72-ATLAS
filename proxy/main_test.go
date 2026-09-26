@@ -4112,6 +4112,7 @@ func TestSyntaxRegistryOwnsExecutability(t *testing.T) {
 	wantExecutable := map[string]bool{
 		".py": true, ".js": true, ".ts": true, ".go": true, ".java": true,
 		".kt": true, ".rb": true, ".php": true, ".sh": true,
+		".mjs": true, ".cjs": true,
 		".json": false, ".yaml": false, ".yml": false,
 		".html": false, ".htm": false, ".xml": false,
 	}

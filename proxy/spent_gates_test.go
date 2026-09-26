@@ -227,3 +227,25 @@ func TestAParseOnlyCompletionSaysSo(t *testing.T) {
 		})
 	}
 }
+
+// GB-4#5 part 1: a run whose deliverable no check applies to cannot
+// complete, and the summary said "the run ended without finishing the task".
+// It now says which file has no check.
+func TestAFileWithNoCheckIsNamed(t *testing.T) {
+	ctx, dir := sepCtx(t, nil)
+	withSyntaxSandbox(t, ctx)
+	sepWrite(t, ctx, dir, "index.html", "<!DOCTYPE html><html><body>hi</body></html>\n")
+	if err := os.WriteFile(filepath.Join(dir, "style.css"), []byte("body { color: red; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	observeDeliverable(ctx, "style.css", []byte("body { color: red; }\n"), ValidationKindNone, ValidationNotApplicable, "")
+	st := &runState{madeProductiveChange: true}
+	status, reason := finalizeCompletion(ctx, st, "Build the page.", "")
+	if status != TerminalIncomplete || reason != "deliverables_not_demonstrated" {
+		t.Fatalf("terminal = %s/%s", status, reason)
+	}
+	summary := honestTerminalSummary(ctx, st, status, reason, "")
+	if !strings.Contains(summary, "no check for style.css") || strings.Contains(summary, "ended without finishing") {
+		t.Fatalf("summary does not name the unchecked file: %q", summary)
+	}
+}

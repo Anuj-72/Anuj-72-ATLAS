@@ -7981,6 +7981,9 @@ func serverTerminalFallback(ctx *AgentContext, st *runState, status TerminalStat
 	case reason == "investigation_handed_back":
 		sb.WriteString("Stopped: the reply asks you to find something in the project files instead of reading " +
 			"them, so the task is not reported as finished.")
+	case reason == "deliverables_not_demonstrated" && len(uncheckableDeliverables(ctx, st)) > 0:
+		sb.WriteString("Stopped: ATLAS has no check for " + strings.Join(uncheckableDeliverables(ctx, st), ", ") +
+			", so this run could not confirm the task was complete.")
 	case unresolvedFinding(st, reason) != "":
 		sb.WriteString("Stopped: a check at the end still failed after the agent was sent back to fix it — " +
 			unresolvedFinding(st, reason) + ".")
@@ -8018,6 +8021,29 @@ func serverTerminalFallback(ctx *AgentContext, st *runState, status TerminalStat
 	sb.WriteString(" This run did not confirm the task was complete.")
 	sb.WriteString(liveBackgroundJobNote(ctx))
 	return sb.String()
+}
+
+// uncheckableDeliverables names the deliverables no check applies to and that
+// are not prose: a file of a kind outside the syntax registry, which
+// completion cannot demonstrate (audit GB-4#5). The reason stays
+// deliverables_not_demonstrated; this only says why, instead of "the run
+// ended without finishing the task".
+func uncheckableDeliverables(ctx *AgentContext, st *runState) []string {
+	var expected []string
+	if st != nil {
+		expected = st.expectedOutputs
+	}
+	var out []string
+	for _, rel := range declaredOrOwnedDeliverables(ctx, expected) {
+		if _, gated := syntaxGateLanguages[strings.ToLower(filepath.Ext(rel))]; gated || isDocumentAsset(rel) {
+			continue
+		}
+		out = append(out, rel)
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
 }
 
 // unresolvedFinding is the finding of the spent gate a terminal reason names,

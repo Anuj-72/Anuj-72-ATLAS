@@ -427,6 +427,7 @@ func TestRunCommandForEachExecutableLanguage(t *testing.T) {
 		"Main.kt":   "kotlinc Main.kt -include-runtime -d Main.jar && java -jar Main.jar",
 		"run.sh":    "bash run.sh",
 		"index.php": "php index.php",
+		"mod.mjs":   "node mod.mjs",
 	} {
 		if got := runCommandFor(path); got != want {
 			t.Errorf("runCommandFor(%q) = %q, want %q", path, got, want)
