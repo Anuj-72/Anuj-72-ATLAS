@@ -20,97 +20,10 @@ import (
 // Permission system — controls which tool calls require user confirmation
 // ---------------------------------------------------------------------------
 
-// extractMatchValue extracts the path/command value from a tool call's
-// args for the built-in safety deny-list below.
-func extractMatchValue(toolName string, args json.RawMessage) string {
-	switch toolName {
-	case "run_command":
-		var input RunCommandInput
-		if err := json.Unmarshal(args, &input); err == nil {
-			return input.Command
-		}
-	case "write_file":
-		var input WriteFileInput
-		if err := json.Unmarshal(args, &input); err == nil {
-			return input.Path
-		}
-	case "edit_file":
-		var input EditFileInput
-		if err := json.Unmarshal(args, &input); err == nil {
-			return input.Path
-		}
-	case "structural_edit":
-		var input StructuralEditInput
-		if err := json.Unmarshal(args, &input); err == nil {
-			return input.Path
-		}
-	}
-	return ""
-}
-
-// shellSegmentSplitter marks the boundaries between commands in a shell line
-// (operators and grouping/substitution punctuation) so each segment's leading
-// word can be inspected. Redirect targets (> file) are not command positions,
-// so `>`/`<` are deliberately excluded.
-var shellSegmentSplitter = strings.NewReplacer(
-	";", "\n", "|", "\n", "&", "\n", "(", "\n", ")", "\n", "`", "\n",
-)
-
-// commandPrefixWords are leading words that wrap the real command word.
-var commandPrefixWords = map[string]bool{
-	"sudo": true, "doas": true, "env": true, "command": true, "nice": true,
-	"nohup": true, "time": true, "exec": true, "builtin": true,
-}
-
 // denyCommandReason reports why a shell command is blocked, or "" if allowed.
-// Matching is anchored to the command position of each shell segment so only
-// the destructive form is blocked — `rm -rf /` but not `rm -rf /workspace`,
-// `mkfs.ext4 /dev/sda` but not `grep mkfs notes.txt`, `dd of=/dev/sda` but not
-// `dd of=out.bin`.
+// It is validateShellCommand: one policy for every tool that runs a command.
 func denyCommandReason(cmd string) string {
-	for _, seg := range strings.Split(shellSegmentSplitter.Replace(cmd), "\n") {
-		fields := strings.Fields(seg)
-		i := 0
-		for i < len(fields) && commandPrefixWords[fields[i]] {
-			i++
-		}
-		if i >= len(fields) {
-			continue
-		}
-		head := fields[i]
-		rest := fields[i+1:]
-		switch {
-		case head == "rm" && rmTargetsRoot(rest):
-			return "blocked by safety rule: recursive removal of /"
-		case head == "mkfs" || strings.HasPrefix(head, "mkfs."):
-			return "blocked by safety rule: mkfs"
-		case head == "dd":
-			for _, a := range rest {
-				if strings.HasPrefix(a, "of=/dev/") {
-					return "blocked by safety rule: dd to a device"
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// rmTargetsRoot reports whether an `rm` argument list recursively targets the
-// filesystem root (`/` or `/*`).
-func rmTargetsRoot(args []string) bool {
-	recursive, rootTarget := false, false
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			if a == "--recursive" || (!strings.HasPrefix(a, "--") && strings.ContainsAny(a, "rR")) {
-				recursive = true
-			}
-			continue
-		}
-		if a == "/" || a == "/*" {
-			rootTarget = true
-		}
-	}
-	return recursive && rootTarget
+	return validateShellCommand(cmd)
 }
 
 // denyWritePathReason reports why writing to a path is blocked, or "" if
@@ -138,7 +51,7 @@ func denyWritePathReason(path string) string {
 // denyReadPathReason reports why READING a path into model context is
 // blocked, or "" if allowed. Credential stores are excluded from model
 // context by default: their contents would otherwise flow into prompts,
-// logs, session files, and lens training samples. Matching is on base
+// logs and session files. Matching is on base
 // name (plus the .ssh/.aws/.kube parent-dir cases) so templates
 // (.env.example) and unrelated names stay readable. Explicit override:
 // ATLAS_ALLOW_CREDENTIAL_READS=1 (the refusal message says so).
@@ -187,36 +100,40 @@ func denyReadPathReason(path string) string {
 
 // shouldDenyToolCall checks if a tool call is blocked by the built-in safety
 // rules. These apply in every permission mode.
+//
+// The rules follow what a tool does, not its name. Keyed on names, they
+// missed run_background (a command), insert_after and replace_lines (writes),
+// and a move_file whose source was a credential file.
 func shouldDenyToolCall(toolName string, args json.RawMessage) (bool, string) {
-	switch toolName {
-	case "run_command":
-		var input RunCommandInput
-		if json.Unmarshal(args, &input) != nil {
-			return false, ""
-		}
-		if reason := denyCommandReason(input.Command); reason != "" {
+	tool := getTool(toolName)
+	if tool == nil {
+		return false, ""
+	}
+	switch {
+	case tool.Effect == ToolEffectCommandUnobserved:
+		if reason := denyCommandReason(ledgerArgPath(args, "command")); reason != "" {
 			return true, reason
 		}
-	case "write_file", "edit_file", "structural_edit":
-		if reason := denyWritePathReason(extractMatchValue(toolName, args)); reason != "" {
-			return true, reason
-		}
-	case "read_file", "outline_file":
-		var input struct {
-			Path string `json:"path"`
-		}
-		if json.Unmarshal(args, &input) != nil {
-			return false, ""
-		}
-		if reason := denyReadPathReason(input.Path); reason != "" {
-			return true, reason
-		}
-	case "move_file":
+	case toolName == "move_file":
 		var input MoveFileInput
 		if json.Unmarshal(args, &input) != nil {
 			return false, ""
 		}
+		// Moving a credential file would let it be read under another name.
+		if denyReadPathReason(input.Source) != "" || denyWritePathReason(input.Source) != "" {
+			return true, "blocked by safety rule: moving a credential file (" +
+				filepath.Base(filepath.Clean(input.Source)) + ")"
+		}
 		if reason := denyWritePathReason(input.Destination); reason != "" {
+			return true, reason
+		}
+	case tool.Effect == ToolEffectDirectMutation && toolName != "delete_file":
+		// delete_file has its own per-object approval.
+		if reason := denyWritePathReason(ledgerArgPath(args, "path")); reason != "" {
+			return true, reason
+		}
+	case toolName == "read_file" || toolName == "outline_file":
+		if reason := denyReadPathReason(ledgerArgPath(args, "path")); reason != "" {
 			return true, reason
 		}
 	}
@@ -226,10 +143,21 @@ func shouldDenyToolCall(toolName string, args json.RawMessage) (bool, string) {
 // describeToolCall generates a human-readable description of a tool call.
 func describeToolCall(toolName string, args json.RawMessage) string {
 	switch toolName {
+	// A command is shown whole. Approval is the only per-command control, and
+	// a prompt cut at 100 bytes hid the tail of a chain (`... && rm -rf src`).
 	case "run_command":
 		var input RunCommandInput
 		if json.Unmarshal(args, &input) == nil {
-			return "Run command: " + truncateStr(input.Command, 100)
+			return "Run command: " + input.Command
+		}
+	case "run_background":
+		var input RunBackgroundInput
+		if json.Unmarshal(args, &input) == nil {
+			return "Run in the background: " + input.Command
+		}
+	case "stop_background":
+		if id := ledgerArgPath(args, "job_id"); id != "" {
+			return "Stop background job " + id
 		}
 	case "write_file":
 		var input WriteFileInput
