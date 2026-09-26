@@ -696,6 +696,9 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	s.replyOutstanding, s.replyDeclaredIncomplete = false, false
 	s.replyAwaitsUser, s.replyHandedBack, s.replyScopeUnmet = false, false, false
 	s.unresolvedGates = nil
+	if ctx != nil && ctx.ShellEffectsUnobserved {
+		s.gateUnresolved("shell_observation", "the workspace was too large to observe every file the shell commands changed")
+	}
 	if promisesMoreContent(claimText) {
 		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
 			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
@@ -1013,7 +1016,8 @@ var unresolvedReasons = []struct{ gate, reason string }{
 // interface is stdin, a drift or a stale probe the verification demand
 // already judges. The run may complete, and the summary says what was not
 // confirmed.
-var caveatGates = []string{"artifact_gate", "contract_gate", "orphan_gate", "plan_gate", "route_contract_gate", "stale_probe"}
+var caveatGates = []string{"artifact_gate", "contract_gate", "orphan_gate", "plan_gate",
+	"route_contract_gate", "shell_observation", "stale_probe"}
 
 // unresolvedGateCaveats is the part of a completed run's summary that names
 // what the spent heuristic gates still found.
@@ -1134,6 +1138,9 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 	// I asked" (the V3 bridge above all) must not confuse those with this.
 	ctx.HumanTask = userMessage
 	ctx.LiteralBlocks = extractLiteralBlocks(userMessage)
+	// What the user's workspace held before this request: a shell command
+	// that removes one of these files removes the user's work.
+	ctx.InitialWorkspace = snapshotWorkspace(ctx.WorkingDir)
 	if n := len(ctx.LiteralBlocks); n > 0 {
 		log.Printf("[agent] %d literal content contract(s) extracted from the request", n)
 	}
@@ -4939,7 +4946,7 @@ func buildSystemPrompt(ctx *AgentContext) string {
 	sb.WriteString("- WHEN write_file IS REJECTED for an existing file: if the file is `.py`, `.html`, or `.htm` and you're replacing the whole thing (e.g. swapping the entire body, replacing the dashboard function), use `structural_edit` next, not edit_file. structural_edit doesn't need `old_str` so it doesn't hit the max_tokens truncation that kills long edit_file calls. Use edit_file ONLY for surgical inline string changes (one line, one expression). For a change that spans several lines but is not a whole node, use `replace_lines` with the line numbers read_file printed — you assert only the FIRST and LAST line of the range, so there is no multi-line old_str to reproduce. This rule applies even when conversation trimming has dropped the original rejection message — re-derive the intent from the file extension and the size of your replacement.\n")
 	sb.WriteString("- JSON strings in tool args contain LITERAL characters: write `<` not `&lt;`, `>` not `&gt;`, `&` not `&amp;`. The file content goes verbatim onto disk — `&lt;!DOCTYPE&gt;` would write the literal text `&lt;!DOCTYPE&gt;` instead of `<!DOCTYPE>`. NEVER HTML-encode angle brackets inside `content`, `old_str`, or `new_str`.\n")
 	sb.WriteString("- The `content` you put in write_file / edit_file goes verbatim onto disk. **No markdown fences. No prose preamble (\"Looking at the task...\", \"Here's the file:\"). No trailing explanation.** Just the raw file contents. The agent layer strips fenced wrappers before writing, but the right move is to never emit them in the first place.\n")
-	sb.WriteString("- For CONTENT changes, prefer the dedicated tools — `edit_file` (one line), `replace_lines` (a line range), `insert_after` (adding at a line), `structural_edit` (a whole node), `write_file` (new files) — they go through the validation pipeline. The last three need no old_str at all, which is why they hold up on changes edit_file loses. For moving / renaming / reorganizing files you may use either `move_file` or shell `mv`/`cp` via run_command; both work. `run_command` runs a real shell (in an isolated sandbox confined to this project), so ordinary file operations (mv, cp, mkdir, rm of a specific file, chmod) are fine. Only catastrophic commands are blocked: wiping the whole project (`rm -rf /`, `rm -rf .`, `rm -rf *`), fork bombs, and device/filesystem destruction.\n")
+	sb.WriteString("- For CONTENT changes, prefer the dedicated tools — `edit_file` (one line), `replace_lines` (a line range), `insert_after` (adding at a line), `structural_edit` (a whole node), `write_file` (new files) — they go through the validation pipeline. The last three need no old_str at all, which is why they hold up on changes edit_file loses. For moving / renaming / reorganizing files you may use either `move_file` or shell `mv`/`cp` via run_command; both work. `run_command` runs a real shell (in an isolated sandbox confined to this project), so ordinary file operations (mv, cp, mkdir, rm of a file you created, chmod) are fine. To delete a file that was already here, use `delete_file`, which asks the user: a shell `rm` of one leaves the task unfinished. Only catastrophic commands are blocked: wiping the whole project (`rm -rf /`, `rm -rf .`, `rm -rf *`), fork bombs, and device/filesystem destruction.\n")
 	sb.WriteString("- Verify your changes by running them: run the program, its tests, or fetch the page with curl. A build, lint or syntax check (for example `python -m py_compile`) shows the code is well formed, not that it works, and does not count. For \"fix\"/\"isn't working\" prompts, verify before `done`.\n")
 	sb.WriteString("- For LONG-RUNNING commands (servers): `run_background(cmd)` → `run_command(\"curl -sf http://localhost:<port>/\")` → `stop_background(job_id)`. Don't use `timeout 5 ... || true` — server dies before probe hits.\n")
 	sb.WriteString("- When creating a project from scratch: create config/build files FIRST, verify they work (e.g., npm install, cargo check), THEN create feature code\n")

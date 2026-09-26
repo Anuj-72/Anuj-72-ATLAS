@@ -30,6 +30,20 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: completion did not see what shell commands did to files
+
+A shell command reached the deliverable ledger only by rehashing files the
+ledger already tracked. A module written with `cat > tool.py <<EOF`, broken,
+was never checked, and a user's file removed with `rm` left no trace; both
+runs ended `completed`. The proxy now walks the workspace before and after
+each `run_command`: source and document files the command created or changed
+become the session's deliverables and are checked like any other, and a file
+that was there when the request started and that a command removed is an
+unapproved deletion (`delete_intent_unestablished`). Dependency, cache and
+build directories are not walked, and a file the run created and later
+removed does not block. The system prompt now says deleting a pre-existing
+file goes through `delete_file`.
+
 ### Fixed: harness refusals that stopped correct work
 
 - Outside yolo mode, a server started with `run_background` was refused with

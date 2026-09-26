@@ -1642,7 +1642,12 @@ func TestWhichMutatorsCanEverPromoteACheckpoint(t *testing.T) {
 // 15740 bytes because it stopped calling a build, lint or syntax check
 // verification, names `curl -sf` as the probe, and its run_command example
 // runs the program instead of py_compile. Every other byte is unchanged.
-const modelPromptBytesHash = "75e766d9648ba56b2dcfafbc50d1449a7e198c48c4be48e65eb8566a8a4d2abc"
+//
+// Re-pinned at 5 requests / 6072 bytes: the system prompt grew from 15740 to
+// 15871 bytes because it now says a shell `rm` is for files the run created,
+// and that deleting a file that was already here goes through delete_file.
+// Every other byte is unchanged.
+const modelPromptBytesHash = "47e39feb5a8be623e1e1bdaf420dc1727f705b563dbd7436dad126cee98fa3ad"
 
 // conversationBytes keeps every message except the system prompt, whose tool
 // descriptions are rendered in Go map order and therefore differ between two

@@ -196,7 +196,7 @@ treatment.
 |--------|------------------|
 | direct mutation (`write_file`, `edit_file`, `structural_edit`, `insert_after`, `replace_lines`) | the file is re-read and hashed after the call, so the recorded hash names the bytes on disk rather than the bytes the tool proposed |
 | `delete_file`, `move_file` | a tombstone once the path is actually gone, retaining any checkpoint bytes and prohibiting automatic restoration; a move observes its destination fresh and transfers no verdict |
-| `run_command` | every tracked path is rehashed: unchanged files keep their verdict, changed ones lose it |
+| `run_command` | every tracked path is rehashed: unchanged files keep their verdict, changed ones lose it. The workspace is also walked before and after (`applyShellChanges`, stat-only, skipping dependency, cache and build directories): a file of a kind completion can judge that the command created or changed enters the ledger as the session's work; a file that was there when the request started and that the command removed is tombstoned `deleted:shell`, so completion reads it as a deletion nobody approved; a file the run created and a later command removed leaves the ledger. A walk that hits its cap leaves a caveat in the summary |
 | `run_background`, `stop_background` | a workspace hazard is raised on start and lowered only on a reaped exit code |
 
 A branch that proves it mutated nothing (`MutationNone`) records nothing, so a

@@ -123,6 +123,13 @@ func allTools() []*ToolDef {
 // Nothing here reads Success. Classification is never inferred from it.
 func executeToolCall(name string, args json.RawMessage, ctx *AgentContext) *ToolResult {
 	tool := getTool(name)
+	// What a shell command changes is observed around it (applyShellChanges):
+	// the ledger otherwise sees only paths it already tracked.
+	var before workspaceSnapshot
+	observeShell := name == "run_command" && ctx != nil && ctx.WorkingDir != ""
+	if observeShell {
+		before = snapshotWorkspace(ctx.WorkingDir)
+	}
 	result := executeToolCallInner(name, args, ctx)
 	if result == nil || tool == nil {
 		return result
@@ -152,6 +159,10 @@ func executeToolCall(name string, args json.RawMessage, ctx *AgentContext) *Tool
 	// Runs after classification so it sees the final evidence, and returns the
 	// same result either way — nothing downstream can observe that it ran.
 	recordLedgerEffect(name, args, ctx, result)
+	if observeShell && result != nil && result.MutationStatus != MutationNone &&
+		result.MutationStatus != MutationRefused {
+		applyShellChanges(ctx, before, snapshotWorkspace(ctx.WorkingDir))
+	}
 	return result
 }
 

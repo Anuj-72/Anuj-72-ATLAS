@@ -1042,6 +1042,13 @@ type AgentContext struct {
 	// the deferred broker envelope so the two cannot disagree.
 	TerminalStatus TerminalStatus
 	TerminalReason string
+	// InitialWorkspace is what the workspace held when this request started:
+	// the files a shell command's removal can take from the user
+	// (applyShellChanges). ShellEffectsUnobserved says some command's changes
+	// could not all be seen, because the workspace outgrew the walk.
+	InitialWorkspace       workspaceSnapshot
+	ShellEffectsUnobserved bool
+
 	// TerminalUnresolved names the exit gates that spent their bounces with
 	// their finding still true, comma-separated; empty when there were none.
 	TerminalUnresolved string
