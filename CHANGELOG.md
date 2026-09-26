@@ -4,6 +4,48 @@
 
 ## [Unreleased]
 
+### Changed: V3 candidates run only where the request lets one be delivered
+
+This entry was missing from these notes. Clients declare a task contract
+with each `/v1/agent` request: `task_mode` (`work` or `question`), optional
+`expected_outputs` and `verification` commands, and a `candidate_policy`.
+The proxy, not v3-service, decides whether a V3 candidate may replace the
+model's own bytes, under one of three policies
+([docs/CANDIDATE_POLICY.md](docs/CANDIDATE_POLICY.md)):
+
+- `strict`, the default: a candidate lands only when a verification the
+  client declared passes against those exact bytes.
+- `advisory`: candidates are scored and nothing is delivered.
+- `automatic_v3`: V3's selected candidate lands when every safety
+  requirement holds.
+
+The TUI sends `task_mode` (`work`, or `question` after `/ask`) and the
+session's policy: `strict` unless `/candidate-policy` changed it. The VS
+Code extension sends no contract, so it gets the operator default
+(`ATLAS_CANDIDATE_POLICY`, strict unless set).
+
+A candidate that could not be delivered is not generated: the write and
+edit tools skip V3 with reason `candidate_undeliverable_under_policy`.
+**So in a default TUI or VS Code session (strict policy, no declared
+outputs), write and edit tools do not run V3 generation at all.** The
+model's own write lands, through the usual gates. Candidates are
+generated only under `automatic_v3`, when the client declared outputs, or
+in the capture-only diagnostic mode, which delivers nothing. The entries below that say edits and first writes "go
+through the V3 pipeline" describe the route, which still reaches the
+pipeline entry, not what a default session delivers.
+
+### Changed: a new file that does not parse lands with a warning
+
+This entry was missing from these notes (47be143). A `write_file` of a new
+file whose content does not parse is no longer refused. It lands with a
+warning that names the parse error and says to run the file and read the
+traceback. Refusing it had blocked the write, run and fix loop: three AoC
+sessions and a novel-benchmark session ended with the file never created.
+V3 is skipped for such a write, and a file that already exists is still
+syntax-gated. The write is recorded as a failed parse, so the run cannot
+complete while that version stands. This supersedes "New files
+bypassed the syntax gate" under Measured reliability below.
+
 ### Fixed: "completed" resting on a check that never ran the program
 
 A run could end `completed` although nothing it ran showed the program
@@ -283,8 +325,10 @@ outright rather than left dormant.
 registry, contract records, closure eligibility, the evidence envelope and
 `contract.select`. A `.js` file now routes to the JavaScript compile adapter
 (syntax evidence, never closure) and an `.html` file is unsupported
-(unverifiable, never vacuously verified). The live consensus fallback for a
-condemned oracle (`_consensus_winners`) is unchanged. `SandboxAdapter`
+(unverifiable, never vacuously verified). The consensus fallback for a
+condemned oracle (`_consensus_winners`) is unchanged; it runs only when V3
+selection runs, which a default session does not (see the candidate policy
+entry above). `SandboxAdapter`
 loses the `language` and `timeout` parameters the probe needed: every
 remaining caller ran Python at the default 15 s, which is now fixed.
 
@@ -678,7 +722,9 @@ than adding another retry around it.
   common way anyone will first try ATLAS. `run_command` now returns the exact
   `run_background` call instead. Deliberately narrow — `python app.py` is left
   alone, since it is as likely a script that exits.
-- `insert_after` and `replace_lines` now go through the V3 pipeline. They were
+- `insert_after` and `replace_lines` now go through the V3 pipeline. (Since
+  the candidate policy entry above, a default session reaches the pipeline
+  entry and skips generation; see there.) They were
   added as harness-level tools and never wired to tier classification or
   candidate generation, so their edits got a single greedy sample — no
   candidates, no lens scoring — whatever the file's tier, while the tool
@@ -689,7 +735,9 @@ than adding another retry around it.
   re-deciding whether the pipeline applies to it;
   `tests/contracts/test_write_gate_coverage.py` asserts every write path
   reaches it.
-- The lens training corpus is fed by the harness, not only by a human.
+- *Superseded: the corpus and its capture were removed (see "Removed: the
+  lens training corpus" above).* The lens training corpus is fed by the
+  harness, not only by a human.
   `appendLensSample` had exactly one caller — `POST /feedback`, a thumbs
   up/down or per-file accept/deny — while `LensSample.Source` had always
   advertised `v3` and `run` alongside them and nothing wrote either. Twelve
@@ -744,11 +792,15 @@ than adding another retry around it.
 ### Measured reliability
 
 A day of running ATLAS against itself and fixing what the sessions showed.
-Every fix below was traced to an observed session and carries a test that
-fails without it. `scripts/e2e-reliability.py` reports the two numbers this
-work is judged on — harness integrity (ATLAS's own plumbing, which should be
-100%) and task success (bounded by the model) — plus objective code-quality
-probes from `scripts/code_quality.py`.
+Every fix below was traced to an observed session and was meant to carry a
+test that fails without it. A 2026-09 audit reverted four of them: two were
+caught by tests, and two were not (the sandbox's multi-document YAML check,
+and the system-prompt bullet for questions about code, which only a
+whole-prompt hash noticed); both now have tests. `scripts/e2e-reliability.py`
+reports the two numbers this work is judged on — harness integrity (ATLAS's
+own plumbing, which should be 100%) and task success (whose failures it does
+not classify as model or harness) — plus objective code-quality probes from
+`scripts/code_quality.py`.
 
 **Added**
 
@@ -758,11 +810,13 @@ probes from `scripts/code_quality.py`.
   anchor, `structural_edit` a whole node), and that is the step that
   measurably fails. `read_file` already prints line numbers, so this takes a
   number the model can cite and only the new text.
-- `scripts/verify-deployed.sh` — refuses to let a measurement describe code
-  that is not running, catching both source-newer-than-image and
-  image-newer-than-container.
-- Live-stack coverage for the TUI (17 of 21 slash commands driven through a
-  pty), the control plane (`/cancel`, `/v1/permission`), and multi-turn
+- `scripts/verify-deployed.sh` — a manual pre-measurement check that the
+  running code is the checked-out code, catching both source-newer-than-image
+  and image-newer-than-container. Nothing runs it automatically: no runner
+  or deploy gate calls it.
+- Live-stack coverage for the TUI (13 slash commands and 3 keys driven
+  through a pty; liveness checks, integration-marked and deselected by
+  default), the control plane (`/cancel`, `/v1/permission`), and multi-turn
   conversations, none of which had any.
 
 **Fixed — tier and conversation**
@@ -787,6 +841,8 @@ probes from `scripts/code_quality.py`.
 - `write_file` could clobber a file the session had never read.
 - New files bypassed the syntax gate, because the sandbox's YAML checker
   wrongly rejected multi-document files and had disabled the gate wholesale.
+  *Superseded for new files by 47be143: an unparseable new file now lands with
+  a warning (see the entry at the top of these notes). The YAML fix stands.*
 
 **Fixed — what ATLAS told the model**
 
@@ -809,7 +865,8 @@ probes from `scripts/code_quality.py`.
 One component-by-component pass over the whole tree — merge the fragments,
 split the God-files, cut what nothing calls — with the test suites as the
 invariant. Headline numbers, measured from the campaign's first commit:
-**3,047 → 514 tracked files, net ≈ −56,500 lines including data**. The
+**3,047 → 514 tracked files, net ≈ −56,500 lines including data** (counts at
+the end of the campaign, not today's tree, which has grown since). The
 per-component disposition ledgers live in the commit history for that
 range.
 
@@ -824,7 +881,8 @@ range.
   surface (projects, tasks, queue, chat/completions, auth), the cache
   consolidator + LTM tier, and dead lens routes (`/internal/lens/stats`,
   cache flush/consolidate, `/v1/patterns/write`) are gone.
-- **Pattern-cache reader added.** What replaces retrieval:
+- *Superseded: the pattern cache was removed in 2026-09 (see "Removed: the
+  pattern cache" above).* **Pattern-cache reader added.** What replaces retrieval:
   `POST /internal/patterns/context` serves lessons from previous sessions
   (type + recency + success scoring, co-occurrence expansion), and the
   agent loop injects the top ≤3 as a `[system note]` — always-on,
@@ -877,6 +935,8 @@ and the sampling and honesty-gate work were kept and remain accurate as written.
   PageIndex tree index, BM25, hybrid retriever, project store, and the router
   stages that fed them are gone. The pattern cache stays: v3-service writes to
   it through `/internal/patterns/write` after every successful candidate.
+  *(Superseded: the pattern cache and `patterns/write` were removed in
+  2026-09, and `atlas lens retrain` with the corpus.)*
 - **Endpoints kept and verified against their callers**: `score-per-step`
   (proxy, v3-service), `gx-score` (CLI, v3-service), `score-text` and
   `sandbox/analyze` (CLI), `retrain` (benchmark), `reload` (retrain scripts),
@@ -904,7 +964,8 @@ and the sampling and honesty-gate work were kept and remain accurate as written.
 - **Repetition sampling enabled.** llama-server ships every repetition control
   off (`repeat_penalty=1.0`, `dry_multiplier=0.0`, both penalties 0.0), and
   the proxy set none, so nothing bounded a repeating generation. DRY is now
-  set on outgoing requests — chosen over `repeat_penalty`, which scores
+  set on outgoing requests *(superseded: DRY defaults off again, see "Verbatim
+  reproduction" above)* — chosen over `repeat_penalty`, which scores
   individual tokens and punishes the indentation and keywords source code
   repeats legitimately. Six env knobs, forwarded by compose and registered in
   the config schema (which gained a `float` kind rather than demoting them to
@@ -1116,7 +1177,9 @@ are uncapped). Fixes:
   skips the V3 pipeline (still syntax-gated) and writes directly, instead of
   paying V3's multi-minute per-call latency (which on a mid-debug file often
   "completes without result" anyway). This unthrottles edit-test-fix loops from
-  ~5 cycles in 25 min to run-speed. V3 still owns the first write of each file.
+  ~5 cycles in 25 min to run-speed. V3 still owns the first write of each file
+  *(under the candidate policy at the top of these notes, only where a
+  candidate can be delivered)*.
 
 ### Agent-loop hardening from the Terminal-Bench 2.0 dogfood round (2026-07-18)
 - **`atlas doctor` workspace-mount check** — new `workspace_mounts` check fails
@@ -1143,6 +1206,8 @@ are uncapped). Fixes:
   fixed 256M `~/.local` overflowed on `pip install pandas pyarrow`.
 
 ### V3.2 — RPG-style architecture-first planning (#120, experimental, opt-in)
+*Superseded: RPG planning was removed (see the simplification campaign above);
+`ATLAS_RPG_PLANNING` remains only as a deprecated config key.*
 - New `ATLAS_RPG_PLANNING` flag (default **off**) enables repository-level,
   plan-then-fill planning ahead of the existing problem-level PlanSearch:
   - **Wavelet substrate** (`v3-service/wavelet/`) — a faithful, dependency-free

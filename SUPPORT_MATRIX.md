@@ -101,7 +101,7 @@ supported (A/B-validated). The gemma reference install additionally has
 
 ### Lens bundle provenance
 
-Every bundle activated by `atlas lens build`/`retrain` auto-writes `provenance.json`:
+Every bundle activated by `atlas lens build` auto-writes `provenance.json`:
 backbone + dim + quant + layer, dataset, training commit,
 hyperparameters, seed, train/val split, validation metrics,
 normalization + thresholds, creation time, and SHA-256 of every artifact

@@ -997,7 +997,7 @@ The model is running on CPU instead of GPU. Check:
 This is normal for T2 files. The V3 pipeline makes multiple LLM calls:
 - **Probe only (best case):** ~10-15 seconds (1 generation + 1 score + 1 test)
 - **Phase 1 generation:** ~1-2 minutes (PlanSearch + DivSampling + scoring)
-- **Phase 3 repair:** ~2-5 minutes (PR-CoT + Refinement + Derivation, if needed)
+- **Phase 3 repair:** ~2-5 minutes (PR-CoT + Refinement, if needed)
 
 To get faster (but lower quality) results:
 - Keep files under 10 lines (stays T1, no V3) — recognized code extensions at 10+ lines go T2 regardless of complexity

@@ -79,9 +79,10 @@ map of the repository itself, see [MAP.md](MAP.md).
   V3.0 ablation report; its 74.6% result is withdrawn (notice at the top).
 - [reports/CALL_GRAPH_REASONING_V3.md](reports/CALL_GRAPH_REASONING_V3.md)
   — structural call-graph reasoning design notes.
-- [adr/](adr/README.md) — architecture decision records (trust model,
-  Redis to SQLite, per-model bundles, fail-soft V3, lens optionality,
-  release strategy).
+- [adr/](adr/README.md) — architecture decision records 0001-0010 (trust
+  model, Redis, per-model bundles, fail-soft V3, lens optionality, release
+  strategy, the SQLite store (retired), harness mechanisms, embedding
+  convention, lens capacity).
 - [STORY.md](STORY.md) — why this project exists.
 
 ### Contribute
@@ -160,7 +161,7 @@ In order, each building on the last:
 12. [reports/V3_ABLATION_STUDY.md](reports/V3_ABLATION_STUDY.md) — historical V3.0 ablation report (result withdrawn)
 13. [reports/CALL_GRAPH_REASONING_V3.md](reports/CALL_GRAPH_REASONING_V3.md)
 14. [SOURCES.md](SOURCES.md) — the research it stands on
-15. [adr/](adr/README.md) — decisions 0001 through 0007, in order
+15. [adr/](adr/README.md) — decisions 0001 through 0010, in order (0007 retired)
 16. [../SUPPORT_MATRIX.md](../SUPPORT_MATRIX.md) — claims and their evidence
 17. [OPERATIONS.md](OPERATIONS.md) — running it long-term
 18. [DEVELOPMENT.md](DEVELOPMENT.md), [../CONTRIBUTING.md](../CONTRIBUTING.md),

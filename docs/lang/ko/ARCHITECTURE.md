@@ -301,10 +301,7 @@ flowchart LR
     AnyPass -->|"0"| FA["Failure Analysis"] --> PRCOT["PR-CoT"]
     PRCOT --> PRPass{"Pass?"}
     PRPass -->|"Yes"| Done
-    PRPass -->|"No"| Refine["Refinement"]
-    Refine --> RefPass{"Pass?"}
-    RefPass -->|"Yes"| Done
-    RefPass -->|"No"| Derive["Derivation"] --> Done
+    PRPass -->|"No"| Refine["Refinement"] --> Done
 
     style Entry fill:#1a3a5c,color:#fff
     style Done fill:#333,color:#fff
@@ -321,7 +318,6 @@ flowchart LR
     style Build fill:#2d5016,color:#fff
     style PRCOT fill:#5c3a1a,color:#fff
     style Refine fill:#5c3a1a,color:#fff
-    style Derive fill:#5c3a1a,color:#fff
     style FA fill:#5c3a1a,color:#fff
 ```
 
@@ -365,7 +361,6 @@ Wait 주입은 더 긴 추론 패스를 요청하기 위해 "Wait, let me recons
 - **메타인지 평가(Metacognitive Evaluation)**: 관측된 실패 카테고리로부터 도출한 보상 제약을 주입
 - **PR-CoT**: 4개 관점(logical_consistency, information_completeness, biases, alternative_solutions) x (분석 + 수리) = ~8회 LLM 호출, 최대 3라운드
 - **Refinement 루프**: 실패 분석 → 제약 정제 → 코드 생성 → 테스트 → 학습. 2회 반복, 120초 예산, 각 ~5회 이상 LLM 호출. 코사인 거리 필터링(>= 0.15)으로 가설 반복 방지
-- **Derivation 체인**: 최대 5개의 하위 문제로 분해, 각각 샌드박스 검증, 최종 합성. ~7회 이상 LLM 호출
 
 ### 모듈 맵
 

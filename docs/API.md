@@ -73,6 +73,7 @@ Tool-based agent endpoint. Sends a user message, runs the agent loop (LLM → to
 | `session_id` | string | `""` | Required for `/cancel` and for the interactive permission prompt (`/v1/permission`). The proxy keys the cancel handle and pending permission requests by this id while the turn is running. **Without a session_id, destructive tool calls in `default`/`accept-edits` mode are denied** (there is no channel to answer the prompt) — unattended clients use `mode:"yolo"` or pre-approve tools via `session_allowed_tools`. |
 | `history` | array | `[]` | Optional. Prior-turn `{role, content}` messages (`"user"` / `"assistant"`) the client wants replayed into the conversation before the new message. Capped at the most recent 40 entries. Omit for a single-turn request. |
 | `session_allowed_tools` | array | `[]` | Optional. Tool names the user has approved for the whole session (e.g. from an "allow for session" choice). The proxy skips the interactive permission prompt for these. The client re-sends the current list on each turn. |
+| `task_contract` | object | absent | Optional. What the client knows about the request. `task_mode` (required when the object is sent): `"work"` (the workspace should change) or `"question"` (nothing should change). `expected_outputs`: exact workspace paths the request must produce. `verification`: exact commands that must be run and pass. `candidate_policy`: `"strict"` (default), `"advisory"` or `"automatic_v3"`, which decides whether a V3 candidate may replace the model's own write ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). A contract that does not validate (an unknown mode or policy, a path outside the workspace, a `question` that declares outputs or commands) is refused with HTTP 400 rather than dropped. Without a contract, the proxy decides from the message whether a change is required, and the operator's `ATLAS_CANDIDATE_POLICY` applies. See [ARCHITECTURE.md § Client task mode](ARCHITECTURE.md#client-task-mode). |
 | `bypass_v3` | bool | `false` | Optional. Disables V3 orchestration for the turn. Used by the TUI's `/demo` split-pane baseline. |
 | `disable_fresh_slot` | bool | `false` | Optional. Keeps the pre-warmed KV-cache prefix instead of requesting a fresh slot. Used by `/demo`. |
 | `sandbox_subdir` | string | `""` | Optional. Confines the turn to a subdirectory of the workspace (a bare directory name — anything with path separators or traversal is ignored). `/demo` uses one per pane so concurrent sessions don't clobber each other's files. |
@@ -124,7 +125,7 @@ Every event has the shape `{"type":"<name>","data":{...}}`. Types in emission or
 | `plan_loaded` | A winning plan has been generated. Fires once after initial generation and again after each revision. Carries the full step list. | `steps` (array of `{id, action, target, why}`), `verify_step` (string id), `rationale` (string), `winning_score` (float), `revision` (int — 0 for initial plan, 1+ for revisions) |
 | `plan_adherence` | Emitted after each tool call, indicating whether the call satisfied an outstanding plan step. Off-plan calls (`matched=false`, no `neutral`) accumulate into the off-streak counter that drives auto-revise. | On match: `matched=true`, `step_index`, `step_id`, `step_action`, `satisfied` (steps satisfied so far), `total`. On miss: `matched=false`, `tool`, `off_streak` (consecutive off-plan calls), `satisfied`, `total`. Recon tools (`read_file`, `list_directory`, `find_file`, `search_files`) emit the miss shape plus `neutral=true` — they don't satisfy steps but leave `off_streak` unchanged. |
 | `plan_revise` | The off-streak crossed `planAutoReviseThreshold` (5) — a fresh plan is being generated. The next `plan_loaded` (with `revision>0`) supersedes the prior plan; `Satisfied` flags reset. | `reason` (string), `revision` (int, 1-indexed) |
-| `done` | The session ended, once per request, whatever the outcome | `summary` (string — the server's account; for a `text`-shaped turn it may be empty), `status` (`completed`, `incomplete`, `stopped`, `failed` or `timed_out`), `reason` (string — why, for example `deliverables_demonstrated` (the deliverables that can run were run), `deliverables_parse_only` (some were only checked to parse), `verification_demanded_unmet`, `claim_check_unresolved`), `unresolved` (comma-separated exit gates whose bounces were spent with their finding still true; present only when there are some — a `completed` run with `unresolved` completed with the caveats its summary names) |
+| `done` | The session ended, once per request, whatever the outcome. Only `status: "completed"` means the work was finished; read an absent or unknown `status` as `incomplete`. See [ARCHITECTURE.md § Terminal contract](ARCHITECTURE.md#terminal-contract-and-the-session-budget) | `summary` (string — the server's account; for a `text`-shaped turn it may be empty), `status` (`completed`, `incomplete`, `stopped`, `failed` or `timed_out`), `reason` (string — why, for example `deliverables_demonstrated` (the deliverables that can run were run), `deliverables_parse_only` (some were only checked to parse), `verification_demanded_unmet`, `claim_check_unresolved`), `unresolved` (comma-separated exit gates whose bounces were spent with their finding still true; present only when there are some — a `completed` run with `unresolved` completed with the caveats its summary names) |
 | `error` | LLM/parse/turn-cap error | `error` (string) |
 
 After the final event the server writes the SSE sentinel `data: [DONE]\n\n` and closes the response.
@@ -158,7 +159,12 @@ with requests.post(
         elif t == "text":
             print(d["content"])
         elif t == "done":
-            print(f"✓ {d.get('summary', '')}")
+            # Only "completed" is a finished task; absent or unknown is not.
+            if d.get("status") == "completed":
+                print(f"✓ {d.get('summary', '')}")
+            else:
+                print(f"not complete ({d.get('status', 'incomplete')}: "
+                      f"{d.get('reason', '')}) {d.get('summary', '')}")
         elif t == "error":
             print(f"✗ {d['error']}")
 ```

@@ -18,15 +18,15 @@ marks *audience* rather than maturity and composes with a level:
 | Capability | Status | Minimum verification level |
 |---|---|---|
 | Python CLI installation and command dispatch | Supported | Hermetic and install matrix |
-| TUI chat, file view, pipeline view, cancellation, and feedback | Supported | Hermetic Go race tests and local integration |
+| TUI chat, file view, pipeline view, and cancellation | Supported | Hermetic Go race tests and local integration |
 | Proxy `/v1/agent`, `/events`, `/cancel`, health, readiness, and model listing | Supported | Hermetic Go race tests and local integration |
 | Proxy OpenAI chat-completions passthrough | Supported | Local integration |
 | Workspace file tools and sandboxed command verification | Supported | Hermetic policy tests and container integration |
-| V3 candidate generation and selection for Python | Supported | Hermetic unit tests and hardware integration |
+| V3 candidate generation and selection for Python | Supported — release-blocked (see below) | Hermetic unit tests and hardware integration |
 | V3 verification for non-Python syntax/toolchain checks | Supported | Hermetic unit tests and sandbox integration |
 | V3 project build-command verification | Experimental | Hermetic overlay tests plus container integration |
 | Model registry list, recommend, install, remove, and verify | Supported | Hermetic CLI tests and hardware integration for inference |
-| Lens compatibility check, build, and retrain | Supported for registry entries with compatible artifacts | Hermetic tests and hardware integration |
+| Lens compatibility check and build (rebuild with `atlas lens build --force`) | Supported for registry entries with compatible artifacts | Hermetic tests and hardware integration |
 | Lens and ASA artifact publishing | Experimental | Hermetic CLI tests plus maintainer review workflow |
 | ASA compatibility check and build | Experimental | Hermetic tests and hardware integration |
 | CUDA backend | Supported | Hardware integration (maintainer hardware) |
@@ -35,6 +35,13 @@ marks *audience* rather than maturity and composes with a level:
 | Vulkan backend | Preview | Smoke-tested (lavapipe boot path); no real-GPU validation yet |
 | Intel SYCL and multi-GPU backends | Roadmap | None until implemented |
 | Browser or visual verification | Roadmap | None until implemented |
+
+**Release-blocked:** V3 candidate generation and selection. Its automated
+check, the `tests/e2e` V3-selection assertions, failed at `c3a881d` ("V3 never
+selected", 2026-09 audit), and the cause is not established. Under the default
+candidate policy (`strict`, no declared outputs), write and edit tools do not
+run V3 generation at all ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). No
+release is qualified against this row until the check passes.
 
 ## Service contracts
 
@@ -46,8 +53,10 @@ marks *audience* rather than maturity and composes with a level:
 | Geometric Lens `/health`, `/ready` and `/internal/*` endpoints | Internal | Every lens route is internal to the stack; the proxy and v3-service are the only callers |
 | llama-server inference, completion, embedding, and health | Internal (upstream llama.cpp contract, qualified against the pinned revision) | — |
 
-A feature is not promoted to Supported until its required verification level is
-automated and passing on representative hardware where applicable.
+A feature is Supported once it has been validated on representative hardware
+(maintainer-recorded or automated) and, where an automated check exists, that
+check passes; the SUPPORT_MATRIX levels govern. Hardware rows cite their
+recorded evidence in the SUPPORT_MATRIX.
 
 ## Verification
 

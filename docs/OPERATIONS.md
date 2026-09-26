@@ -116,7 +116,7 @@ analysed. In particular:
   guessable domain — `app.py` and the like — the original is recoverable by
   enumeration. Treat a capture as revealing which paths and commands were
   involved, and do not treat hashing as a confidentiality control.
-  The proxy's own direct Lens calls (per-write scoring and pattern context)
+  The proxy's own direct Lens calls (per-write scoring)
   carry the same `request_id` with a proxy-owned `proxy-lens:` invocation
   derived from it in the same historical header (ARCHITECTURE, attribution
   on model-bound calls); that value is a join key too, never an authority.

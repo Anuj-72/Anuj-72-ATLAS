@@ -46,8 +46,8 @@ Two defaults reduce accidental data exposure:
 **Sensitive-file exclusion** — the agent's read tools refuse known
 credential-bearing files (`.env` and variants, `.netrc`, `.npmrc`,
 `.pypirc`, key files, SSH/AWS/kube/docker credential stores,
-`secrets/service-token`, `secrets/api-keys.json`) so their contents never enter model context, session
-files, or lens training samples by default. A user who knows a
+`secrets/service-token`, `secrets/api-keys.json`) so their contents never enter model context or session
+files by default. A user who knows a
 specific file is non-sensitive can include it explicitly by setting
 `ATLAS_ALLOW_CREDENTIAL_READS=1` on the proxy (the refusal message
 says exactly this). `.env.example` stays readable — it's a template.

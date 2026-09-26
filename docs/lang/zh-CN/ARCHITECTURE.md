@@ -297,10 +297,7 @@ flowchart LR
     AnyPass -->|"0"| FA["Failure Analysis"] --> PRCOT["PR-CoT"]
     PRCOT --> PRPass{"Pass?"}
     PRPass -->|"Yes"| Done
-    PRPass -->|"No"| Refine["Refinement"]
-    Refine --> RefPass{"Pass?"}
-    RefPass -->|"Yes"| Done
-    RefPass -->|"No"| Derive["Derivation"] --> Done
+    PRPass -->|"No"| Refine["Refinement"] --> Done
 
     style Entry fill:#1a3a5c,color:#fff
     style Done fill:#333,color:#fff
@@ -317,7 +314,6 @@ flowchart LR
     style Build fill:#2d5016,color:#fff
     style PRCOT fill:#5c3a1a,color:#fff
     style Refine fill:#5c3a1a,color:#fff
-    style Derive fill:#5c3a1a,color:#fff
     style FA fill:#5c3a1a,color:#fff
 ```
 
@@ -361,7 +357,6 @@ Wait 注入会追加 "Wait, let me reconsider.\n" 以请求更长的一轮推理
 - **元认知评估**：从观察到的失败类别推导并注入补偿性约束
 - **PR-CoT**：4 个视角（logical_consistency、information_completeness、biases、alternative_solutions）×（分析 + 修复）= 约 8 次 LLM 调用，最多 3 轮
 - **Refinement Loop**：失败分析 → 约束精炼 → 代码生成 → 测试 → 学习。2 次迭代，120s 预算，每次约 5+ 次 LLM 调用。余弦距离过滤（>= 0.15）防止假设重复
-- **Derivation Chains**：分解为至多 5 个子问题，逐个用 sandbox 验证，组合出最终结果。约 7+ 次 LLM 调用
 
 ### 模块图
 

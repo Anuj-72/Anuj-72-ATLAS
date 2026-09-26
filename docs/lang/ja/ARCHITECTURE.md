@@ -274,10 +274,7 @@ flowchart LR
     AnyPass -->|"0"| FA["Failure Analysis"] --> PRCOT["PR-CoT"]
     PRCOT --> PRPass{"Pass?"}
     PRPass -->|"Yes"| Done
-    PRPass -->|"No"| Refine["Refinement"]
-    Refine --> RefPass{"Pass?"}
-    RefPass -->|"Yes"| Done
-    RefPass -->|"No"| Derive["Derivation"] --> Done
+    PRPass -->|"No"| Refine["Refinement"] --> Done
 
     style Entry fill:#1a3a5c,color:#fff
     style Done fill:#333,color:#fff
@@ -294,7 +291,6 @@ flowchart LR
     style Build fill:#2d5016,color:#fff
     style PRCOT fill:#5c3a1a,color:#fff
     style Refine fill:#5c3a1a,color:#fff
-    style Derive fill:#5c3a1a,color:#fff
     style FA fill:#5c3a1a,color:#fff
 ```
 
@@ -338,7 +334,6 @@ Wait 注入は、より長い推論パスを要求するために「Wait, let me
 - **メタ認知評価**: 観測された失敗カテゴリから導出した補償制約を注入する
 - **PR-CoT**: 4つの視点（logical_consistency、information_completeness、biases、alternative_solutions）×（分析 + 修復）= 約8回の LLM 呼び出し、最大3ラウンド
 - **Refinement Loop**: 失敗分析 → 制約のリファイン → コード生成 → テスト → 学習。2反復、120秒予算、各約5回以上の LLM 呼び出し。コサイン距離フィルタリング（>= 0.15）が仮説の繰り返しを防ぐ
-- **Derivation Chains**: 最大5つのサブ問題に分解し、それぞれをサンドボックスで検証し、最終形を合成する。約7回以上の LLM 呼び出し
 
 ### モジュールマップ
 

@@ -673,7 +673,7 @@ K3s 使用 `atlas.conf`（而非 `.env`）进行配置。HTTP 契约与流水线
 | 服务暴露方式 | 主机端口（`8090`、`8080`、`8099`、`8070`、`30820`） | NodePort（`30080`、`32735`、`31144`、`30070`、`30820`） |
 | 项目工作区 | 绑定挂载（`ATLAS_PROJECT_DIR` → `/workspace`） | `hostPath`（`ATLAS_PROJECTS_DIR` → 每个需要的 Pod 的 `/workspace`） |
 | 模型文件 | 绑定挂载（`ATLAS_MODELS_DIR` → `/models:ro`） | GPU 节点上的 `hostPath`（`ATLAS_MODELS_DIR`，`Directory`，只读） |
-| 有状态存储 | 命名卷（`v3-telemetry`） | PVC（`lens-projects` 由 `ATLAS_PVC_PROJECTS_SIZE` 指定大小） |
+| 有状态存储 | 命名卷（`v3-telemetry`） | PVC（`lens-projects` 由 `ATLAS_PVC_PROJECTS_SIZE` 指定大小；仍会挂载，但自项目索引器移除后已不再使用） |
 | GPU 分配 | `deploy.resources.reservations.devices`（nvidia） | `resources.limits.nvidia.com/gpu: 1`（需要 GPU Operator 或设备插件） |
 | 沙箱工具链缓存 | 按语言的 `tmpfs` 挂载 | 按语言、带 `sizeLimit` 的 `emptyDir`（通用模式，集合相同） |
 

@@ -1416,6 +1416,23 @@ func TestToolGuidanceNamesEveryOldStrFreeEditTool(t *testing.T) {
 	}
 }
 
+// A question about the code is answered from the file, not from a guess. The
+// bullet saying so was once lumped in with greetings, and questions about code
+// were answered without opening anything; when it was deleted, only the
+// whole-prompt hash noticed.
+func TestSystemPromptSaysToReadBeforeAnsweringCodeQuestions(t *testing.T) {
+	prompt := buildSystemPrompt(NewAgentContext(t.TempDir(), Tier2Medium))
+	for _, want := range []string{
+		"Questions about the CODE",
+		"read the file first, then answer",
+		"never answer from a guess about code you have not opened",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("system prompt lost the code-question guidance: missing %q", want)
+		}
+	}
+}
+
 // The over-limit refusal used to say "use structural_edit with function:NAME".
 // For a JavaScript function inside a Flask template that is a dead end — the
 // markup is one string literal to the Python grammar, so no selector reaches

@@ -43,7 +43,7 @@ single resolver that implements this.
 | `ATLAS_BATCH` | `1024` | llama-server logical batch size (`-b`). Must be no larger than `ATLAS_UBATCH` because self-embeddings are always enabled. Set by `atlas tier fit --write`. |
 | `ATLAS_EMBED_POOLING` | `none` | Pooling mode for the self-embedding `/embedding` endpoint (`--pooling`). `--pooling` is server-global in llama.cpp, and two consumers read the endpoint: whole-text `C(x)` and the per-step PRM path, which needs per-token vectors. Only `none` serves both — per-token vectors pool down to the whole-text vector, while a pooled response cannot be unpooled. The lens pools client-side and requests `embd_normalize: -1`, so it reads the same vector under either mode. Do not let the server normalize: `C(x)` is fitted on unnormalized vectors (‖v‖≈137) and reads a flat ~0.8 for every input once they are scaled to unit norm. |
 | `ATLAS_PROJECT_DIR` | (cwd at `compose up`) | Host directory bind-mounted to `/workspace` inside the atlas-proxy container. Switch projects by re-creating the proxy container with this var set. |
-| `ATLAS_DIAGNOSTIC_HOST_DIR` | `./diagnostics` | Host path bind-mounted into atlas-proxy at `/data/diagnostics`, the containment root for private diagnostic captures (`ATLAS_SHADOW_CAPTURE`, default off — see [OPERATIONS.md](OPERATIONS.md#private-diagnostics-task-contract-shadow-capture)). Bind-mounted rather than a named volume so the directory carries the invoking user's ownership, which is the identity the proxy runs as. Deliberately separate from the lens corpus and the V3 telemetry volume. Nothing is written here unless a capture is named. |
+| `ATLAS_DIAGNOSTIC_HOST_DIR` | `./diagnostics` | Host path bind-mounted into atlas-proxy at `/data/diagnostics`, the containment root for private diagnostic captures (`ATLAS_SHADOW_CAPTURE`, default off — see [OPERATIONS.md](OPERATIONS.md#private-diagnostics-task-contract-shadow-capture)). Bind-mounted rather than a named volume so the directory carries the invoking user's ownership, which is the identity the proxy runs as. Deliberately separate from the V3 telemetry volume. Nothing is written here unless a capture is named. |
 | `ATLAS_GHCR_OWNER` | `itigges22` | GHCR namespace to pull images from. Set to your own GitHub username if you've published forked images. |
 | `ATLAS_IMAGE_TAG` | `latest` | Image tag to pull (`latest` for main, `dev` for the dev branch, `3.1.3` or `sha-...` for pinned releases). Registry semver tags carry no leading `v`; `atlas upgrade`/`atlas rollback` strip one if given. |
 | `ATLAS_LLAMA_PORT` | `8080` | llama-server host port |
@@ -611,13 +611,13 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 |----------|---------|-------------|
 | `ATLAS_MODELS_DIR` | `/opt/atlas/models` | GGUF model files. Mounted into llama-server at `/models` (read-only) via `hostPath` in `templates/llama-deployment.yaml.tmpl`. |
 | `ATLAS_PROJECTS_DIR` | `/opt/atlas/data/projects` | User project workspace. Bind-mounted at `/workspace` in BOTH atlas-proxy and sandbox pods (`hostPath` with `DirectoryOrCreate`) so the agent sees the same files in both. |
-| `ATLAS_DATA_DIR` | `/opt/atlas/data` | Parent of the lens state/projects paths. Printed at install time; `uninstall.sh` does `rm -rf "$ATLAS_DATA_DIR"` when `--data` is set. Not mounted as a volume itself. |
+| `ATLAS_DATA_DIR` | `/opt/atlas/data` | Parent of `ATLAS_PROJECTS_DIR`. Printed at install time; `uninstall.sh` does `rm -rf "$ATLAS_DATA_DIR"` when `--data` is set. Not mounted as a volume itself. |
 
 ### 8.3 Persistent Volume sizes
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PVC_PROJECTS_SIZE` | `20Gi` | `lens-projects` PVC used by the geometric-lens pod for its project index storage |
+| `ATLAS_PVC_PROJECTS_SIZE` | `20Gi` | Size of the `lens-projects` PVC. The geometric-lens pod still mounts it (`PROJECT_DATA_DIR`), but nothing in the lens has read it since the project indexer was removed in 2026-07; it is a leftover to remove |
 
 ### 8.4 Model & Inference
 

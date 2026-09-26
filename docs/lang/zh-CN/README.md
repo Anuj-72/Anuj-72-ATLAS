@@ -42,7 +42,7 @@
 ## 📰 最新动态
 
 - **2026-07-06** - **[V3.1.3 "Maia" 发布](https://github.com/itigges22/ATLAS/releases/tag/v3.1.3)** - 面向生产平台的一轮打磨：分阶段升级/回滚并自动还原、SQLite 状态存储（不再需要 Redis）、签名的工件清单、结构化日志 + 关联 ID、交互式权限、会话恢复，以及两轮对抗性 bug 修复扫荡
-- **2026-06-17** - **[V3.1.2 "Maia" 发布](https://github.com/itigges22/ATLAS/releases/tag/v3.1.2)** - 更广的硬件覆盖（ROCm / Metal / Vulkan）、自带模型的 Lens + ASA 训练、基于自有工作负载的在环 lens 重训练，以及一轮 agent 可靠性加固
+- **2026-06-17** - **[V3.1.2 "Maia" 发布](https://github.com/itigges22/ATLAS/releases/tag/v3.1.2)** - 更广的硬件覆盖（ROCm / Metal / Vulkan）、自带模型的 Lens + ASA 训练、基于自有工作负载的在环 lens 重训练（后已移除，见 CHANGELOG），以及一轮 agent 可靠性加固
 - **2026-05-12** - **[V3.1.0 "Maia" 发布](https://github.com/itigges22/ATLAS/releases/tag/v3.1.0)** - 原生 Bubbletea TUI、一条命令的 bootstrap、流式 Lens + ASA 激活操控、感知 AST 的外科式编辑
 - **2026-03-26** - [Hacker News 首页](https://news.ycombinator.com/item?id=47533297) - 489 点赞、285 条评论
 - **2026-03-05** - **V3.0 发布** - 在冻结的 Qwen3-14B 上运行的多阶段 V3 流水线。*随本次发布公布的 LiveCodeBench 74.6% 已撤回：基准测试运行器从未运行 LiveCodeBench 的隐藏测试，并且只要三个候选之一、或看过失败输出的修复通过题面给出的示例，就把任务记为通过（[撤回说明](../../reports/V3_ABLATION_STUDY.md)）。当前产品重新验证后将重新测量。*
@@ -153,12 +153,11 @@ Apple Silicon 通过原生 macOS 混合 Metal 方案运行（原生 llama-server
 
 ## 🗺️ 路线图
 
-**V3.1.3 "Maia"** - 当前版本。在 V3.1.2 之上的生产平台打磨：带自动还原的分阶段 `atlas upgrade`/`rollback`、用 SQLite 状态存储替代 Redis（[ADR 0007](../../adr/0007-sqlite-state-store.md)）、签名的工件清单、带跨服务关联 ID 的结构化 JSON 日志、交互式权限提示、会话恢复、类型化的配置校验/迁移，以及两轮对抗性 bug 修复扫荡（33 个确认修复）。
+**V3.1.3 "Maia"** - 当前版本。在 V3.1.2 之上的生产平台打磨：带自动还原的分阶段 `atlas upgrade`/`rollback`、用 SQLite 状态存储替代 Redis（[ADR 0007](../../adr/0007-sqlite-state-store.md)；2026-09 在 `dev` 上随其唯一使用者模式缓存一并停用）、签名的工件清单、带跨服务关联 ID 的结构化 JSON 日志、交互式权限提示、会话恢复、类型化的配置校验/迁移，以及两轮对抗性 bug 修复扫荡（33 个确认修复）。
 
 **V3.1.2 "Maia"** - 在 V3.1.0 基座（TUI、一条命令安装、流式 Lens + ASA）之上的更广硬件覆盖、自带模型训练与 agent 可靠性加固。
 - 硬件覆盖：通过 llama.cpp 支持 AMD ROCm，包括 RDNA4 / RX 9070 (gfx1200/gfx1201) ([#26](https://github.com/itigges22/ATLAS/issues/26))；Apple Silicon 原生 macOS 混合 Metal 方案（[#32](https://github.com/itigges22/ATLAS/issues/32)，见 [SETUP_MACOS.md](../../SETUP_MACOS.md)）；Vulkan 通用回退，覆盖 AMD / Intel / Snapdragon / 通过 MoltenVK 的 Apple / CPU ([#114](https://github.com/itigges22/ATLAS/issues/114))。
-- 自带模型：本地 Lens 训练流水线（`atlas lens build` / `retrain`，[#100](https://github.com/itigges22/ATLAS/issues/100)）与 ASA 逐模型校准对齐（`atlas asa check/build/publish`，[#113](https://github.com/itigges22/ATLAS/issues/113)）- 为额外的 GGUF 训练 Lens + ASA 工件，逐模型的工作阈值随 lens 一起发布。
-- 在环 lens 训练：在 TUI 中为每一轮打分（`/good` · `/bad` · `/review` · `/deny`）→ 收集、加权样本 → 在你自己的工作负载上运行 `atlas lens retrain`。
+- 自带模型：本地 Lens 训练流水线（`atlas lens build`，[#100](https://github.com/itigges22/ATLAS/issues/100)）与 ASA 逐模型校准对齐（`atlas asa check/build/publish`，[#113](https://github.com/itigges22/ATLAS/issues/113)）- 为额外的 GGUF 训练 Lens + ASA 工件，逐模型的工作阈值随 lens 一起发布。
 - Agent 可靠性：工具结果可见性修复、读取去重、回溯 → 定向编辑、`move_file`、pip 安装 / 大小写不匹配操控、沙箱 shell 策略 + 按主机调整的 cgroup 限制。
 - 结构化调用图推理（[#39](https://github.com/itigges22/ATLAS/issues/39) / [#125](https://github.com/itigges22/ATLAS/pull/125)，感谢 [@yogthos](https://github.com/yogthos)）；ARCHITECTURE.md 翻译为 zh-CN / ja / ko ([#25](https://github.com/itigges22/ATLAS/issues/25))。
 

@@ -919,7 +919,7 @@ atlas bench --run-id <your-run-id> --tasks 200
 对于 T2 文件来说这是正常的。V3 pipeline 会进行多次 LLM 调用：
 - **仅探测（最佳情况）：** 约 10-15 秒（1 次生成 + 1 次评分 + 1 次测试）
 - **Phase 1 生成：** 约 1-2 分钟（PlanSearch + DivSampling + 评分）
-- **Phase 3 修复：** 约 2-5 分钟（PR-CoT + Refinement + Derivation，如果需要）
+- **Phase 3 修复：** 约 2-5 分钟（PR-CoT + Refinement，如果需要）
 
 如需更快（但质量较低）的结果：
 - 保持文件不足 10 行（维持 T1，不触发 V3）—— 可识别的代码扩展名达到 10 行以上时，无论复杂度如何都会归入 T2

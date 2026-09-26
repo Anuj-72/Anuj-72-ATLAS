@@ -42,7 +42,7 @@
 ## 📰 최신 소식
 
 - **2026-07-06** - **[V3.1.3 "Maia" 출시](https://github.com/itigges22/ATLAS/releases/tag/v3.1.3)** - 프로덕션 플랫폼 정비: 자동 복원을 갖춘 단계적 업그레이드/롤백, SQLite 상태 저장소(Redis 제거), 서명된 아티팩트 매니페스트, 구조화 로그 + 상관관계 ID, 대화형 권한, 세션 재개, 그리고 두 차례의 적대적 버그 수정 스윕
-- **2026-06-17** - **[V3.1.2 "Maia" 출시](https://github.com/itigges22/ATLAS/releases/tag/v3.1.2)** - 더 넓은 하드웨어 지원(ROCm / Metal / Vulkan), 자체 모델 반입(BYO) Lens + ASA 학습, 사용자 자신의 워크로드로부터의 인루프 lens 재학습, 에이전트 신뢰성 정비
+- **2026-06-17** - **[V3.1.2 "Maia" 출시](https://github.com/itigges22/ATLAS/releases/tag/v3.1.2)** - 더 넓은 하드웨어 지원(ROCm / Metal / Vulkan), 자체 모델 반입(BYO) Lens + ASA 학습, 사용자 자신의 워크로드로부터의 인루프 lens 재학습(이후 제거됨, CHANGELOG 참조), 에이전트 신뢰성 정비
 - **2026-05-12** - **[V3.1.0 "Maia" 출시](https://github.com/itigges22/ATLAS/releases/tag/v3.1.0)** - 네이티브 Bubbletea TUI, 원커맨드 부트스트랩, 스트리밍 Lens + ASA 활성화 스티어링, AST 인식 정밀 편집
 - **2026-03-26** - [Hacker News 첫 페이지](https://news.ycombinator.com/item?id=47533297) - 489 포인트, 285 댓글
 - **2026-03-05** - **V3.0 출시** - 동결된 Qwen3-14B 기반의 다단계 V3 파이프라인. *이 릴리스와 함께 발표한 LiveCodeBench 74.6% 수치는 철회되었습니다. 벤치마크 러너는 LiveCodeBench의 비공개 테스트를 한 번도 실행하지 않았고, 후보 3개 중 하나 또는 실패 출력을 보고 만든 수리 결과가 문제에 인쇄된 예제를 통과하면 과제를 통과로 셌습니다([철회 공지](../../reports/V3_ABLATION_STUDY.md)). 현재 제품을 다시 검증한 뒤 재측정합니다.*
@@ -153,12 +153,11 @@ Apple Silicon은 macOS 하이브리드 Metal 경로(추론은 네이티브 llama
 
 ## 🗺️ 로드맵
 
-**V3.1.3 "Maia"** - 현재 릴리스. V3.1.2 위에 얹은 프로덕션 플랫폼 정비: 자동 복원을 갖춘 단계적 `atlas upgrade`/`rollback`, Redis를 대체하는 SQLite 상태 저장소([ADR 0007](../../adr/0007-sqlite-state-store.md)), 서명된 아티팩트 매니페스트, 서비스 간 상관관계 ID를 갖춘 구조화 JSON 로그, 대화형 권한 프롬프트, 세션 재개, 타입 기반 설정 검증/마이그레이션, 그리고 두 차례의 적대적 버그 수정 스윕(확정 수정 33건).
+**V3.1.3 "Maia"** - 현재 릴리스. V3.1.2 위에 얹은 프로덕션 플랫폼 정비: 자동 복원을 갖춘 단계적 `atlas upgrade`/`rollback`, Redis를 대체하는 SQLite 상태 저장소([ADR 0007](../../adr/0007-sqlite-state-store.md); 2026-09 `dev`에서 유일한 사용처였던 패턴 캐시와 함께 폐기), 서명된 아티팩트 매니페스트, 서비스 간 상관관계 ID를 갖춘 구조화 JSON 로그, 대화형 권한 프롬프트, 세션 재개, 타입 기반 설정 검증/마이그레이션, 그리고 두 차례의 적대적 버그 수정 스윕(확정 수정 33건).
 
 **V3.1.2 "Maia"** - V3.1.0 기반(TUI, 원커맨드 설치, 스트리밍 Lens + ASA) 위에 얹은 더 넓은 하드웨어 지원, 자체 모델 반입 학습, 에이전트 신뢰성 정비.
 - 하드웨어 지원: llama.cpp 경유 AMD ROCm — RDNA4 / RX 9070 (gfx1200/gfx1201) 포함 ([#26](https://github.com/itigges22/ATLAS/issues/26)); Apple Silicon 네이티브 macOS 하이브리드 Metal 경로 ([#32](https://github.com/itigges22/ATLAS/issues/32), [SETUP_MACOS.md](../../SETUP_MACOS.md) 참고); AMD / Intel / Snapdragon / MoltenVK 경유 Apple / CPU를 커버하는 Vulkan 범용 폴백 ([#114](https://github.com/itigges22/ATLAS/issues/114)).
-- 자체 모델 반입: 로컬 Lens 학습 파이프라인(`atlas lens build` / `retrain`, [#100](https://github.com/itigges22/ATLAS/issues/100))과 ASA 모델별 캘리브레이션 패리티(`atlas asa check/build/publish`, [#113](https://github.com/itigges22/ATLAS/issues/113)) — 추가 GGUF에 대한 Lens + ASA 아티팩트 학습과, lens에 함께 실리는 모델별 운영 임계값.
-- 인루프 lens 학습: TUI에서 패스를 평가(`/good` · `/bad` · `/review` · `/deny`) → 수집·가중치화된 샘플 → 본인 워크로드에 대한 `atlas lens retrain`.
+- 자체 모델 반입: 로컬 Lens 학습 파이프라인(`atlas lens build`, [#100](https://github.com/itigges22/ATLAS/issues/100))과 ASA 모델별 캘리브레이션 패리티(`atlas asa check/build/publish`, [#113](https://github.com/itigges22/ATLAS/issues/113)) — 추가 GGUF에 대한 Lens + ASA 아티팩트 학습과, lens에 함께 실리는 모델별 운영 임계값.
 - 에이전트 신뢰성: 도구 결과 가시성 수정, 읽기 중복 제거, 트레이스백 → 지시된 편집, `move_file`, pip-install / 대소문자 불일치 스티어, 샌드박스 셸 정책 + 호스트 크기의 cgroup 제한.
 - 구조적 콜 그래프 추론([#39](https://github.com/itigges22/ATLAS/issues/39) / [#125](https://github.com/itigges22/ATLAS/pull/125), [@yogthos](https://github.com/yogthos) 감사합니다); ARCHITECTURE.md의 zh-CN / ja / ko 번역([#25](https://github.com/itigges22/ATLAS/issues/25)).
 

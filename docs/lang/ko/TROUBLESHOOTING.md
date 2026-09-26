@@ -939,7 +939,7 @@ atlas bench --run-id <your-run-id> --tasks 200
 T2 파일에 대해서는 정상입니다. V3 파이프라인은 여러 번의 LLM 호출을 수행합니다:
 - **프로브만 (최상의 경우):** 약 10-15초 (생성 1회 + 스코어링 1회 + 테스트 1회)
 - **Phase 1 생성:** 약 1-2분 (PlanSearch + DivSampling + 스코어링)
-- **Phase 3 수리:** 약 2-5분 (필요 시 PR-CoT + Refinement + Derivation)
+- **Phase 3 수리:** 약 2-5분 (필요 시 PR-CoT + Refinement)
 
 더 빠른(그러나 품질이 낮은) 결과를 원한다면:
 - 파일을 10줄 미만으로 유지 (T1 유지, V3 미실행) — 인식되는 코드 확장자는 10줄 이상이면 복잡도와 무관하게 T2가 됩니다

@@ -667,7 +667,7 @@ K3s は設定に `.env` ではなく `atlas.conf` を使用します。HTTP コ�
 | サービス公開 | ホストポート (`8090`, `8080`, `8099`, `8070`, `30820`) | NodePorts (`30080`, `32735`, `31144`, `30070`, `30820`) |
 | プロジェクトワークスペース | バインドマウント (`ATLAS_PROJECT_DIR` → `/workspace`) | `hostPath`（`ATLAS_PROJECTS_DIR` → 必要な各 Pod の `/workspace`） |
 | モデルファイル | バインドマウント (`ATLAS_MODELS_DIR` → `/models:ro`) | GPU ノード上の `hostPath`（`ATLAS_MODELS_DIR`、`Directory`、読み取り専用） |
-| ステートフルストレージ | 名前付きボリューム (`v3-telemetry`) | PVC（`lens-projects` のサイズは `ATLAS_PVC_PROJECTS_SIZE` で指定） |
+| ステートフルストレージ | 名前付きボリューム (`v3-telemetry`) | PVC `lens-projects`（サイズは `ATLAS_PVC_PROJECTS_SIZE` で指定。マウントはされるが、プロジェクトインデクサの削除以降は未使用） |
 | GPU 割り当て | `deploy.resources.reservations.devices` (nvidia) | `resources.limits.nvidia.com/gpu: 1`（GPU Operator またはデバイスプラグインが必要） |
 | サンドボックスのツールチェーンキャッシュ | 言語ごとの `tmpfs` マウント | 言語ごとの `sizeLimit` 付き `emptyDir`（共通パターン、同一セット） |
 

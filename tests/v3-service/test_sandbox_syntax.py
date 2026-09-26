@@ -70,6 +70,23 @@ def test_json_syntax_check_rejects_invalid_document(tmp_path):
     assert errors
 
 
+def test_yaml_syntax_check_accepts_a_multi_document_file(tmp_path):
+    # Compose and Kubernetes manifests are multi-document. safe_load rejects
+    # them ("expected a single document in the stream"), and that false
+    # rejection once kept the write gate off every new file.
+    pytest.importorskip("yaml")
+    sandbox = _load_sandbox_module()
+
+    assert sandbox._syntax_check_impl("yaml", "a: 1\n---\nb: 2\n", tmp_path) == []
+
+
+def test_yaml_syntax_check_rejects_malformed_yaml(tmp_path):
+    pytest.importorskip("yaml")
+    sandbox = _load_sandbox_module()
+
+    assert sandbox._syntax_check_impl("yaml", "a: [1, 2\nb: }\n", tmp_path)
+
+
 def test_xml_syntax_check_rejects_invalid_document(tmp_path):
     sandbox = _load_sandbox_module()
 

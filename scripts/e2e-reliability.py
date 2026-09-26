@@ -11,8 +11,8 @@ stack and reports two numbers that must not be conflated:
                           the task, and the number that should be 100%.
 
   Task Success Rate       sessions where the requested change actually landed.
-                          Bounded by the model's coding ability, so a low value
-                          is evidence about the model, not about ATLAS.
+                          A failure here can come from the model or from the
+                          harness; this script does not tell them apart.
 
 The split matters because "it built a snake game" moves with model skill and
 sampling luck, so it cannot tell you whether a pipeline regression shipped. A
@@ -614,8 +614,9 @@ TASKS["smallrung_toml"] = Task(
 # --- medium rung: find a seeded bug across several real files -----------
 #
 # The deliverable is IDENTIFYING the defect, not editing it. That is
-# deliberate: the model's transcription ceiling is already measured and would
-# dominate any fix-it task at this size, hiding what this actually tests —
+# deliberate: verbatim-transcription failures were already observed on edits
+# of this size, and would likely dominate a fix-it task (a hypothesis, not a
+# measured ceiling), hiding what this actually tests —
 # can it navigate ~1.3k lines across three unfamiliar files, understand a
 # selection algorithm, and locate a one-character bug from a symptom alone.
 
@@ -1778,7 +1779,7 @@ def report(sessions: list[Session], known: set[str]) -> None:
     print(f"Harness Integrity Rate   {clean}/{total} "
           f"({100.0 * clean / total:.0f}%)   <- ATLAS's own plumbing")
     print(f"Task Success Rate        {passed}/{total} "
-          f"({100.0 * passed / total:.0f}%)   <- bounded by model ability")
+          f"({100.0 * passed / total:.0f}%)   <- task outcome (cause not classified)")
     print("=" * 72)
 
     by_class: dict[str, int] = {}

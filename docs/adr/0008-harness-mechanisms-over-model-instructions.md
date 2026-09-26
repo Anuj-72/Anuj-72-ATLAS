@@ -1,17 +1,21 @@
 # ADR 0008: Harness mechanisms over model instructions
 
-Status: accepted 2026-08
+Status: accepted 2026-08; revised 2026-09-26 — the claim that the remaining
+failures were model behaviour is withdrawn (see Revision). The decision stands.
 
 ## Context
 Nine consecutive dogfooding runs of one task against
 `gemma-4-12b-it-Q4_K_M` produced zero complete, correct results. The
-harness defects those runs exposed are fixed (see CHANGELOG, the
-2026-08-01/02 gate work). What remained was model behaviour, and the
-runs separate cleanly into two kinds of intervention:
+harness defects found at the time were fixed (see CHANGELOG, the
+2026-08-01/02 gate work), and the interventions tried in those runs
+separate into two kinds. More harness defects affecting the same runs
+were found in the following days; see the Revision below.
 
 - Every **mechanism** added — syntax gates, the embedded-script gate,
   the stopped-render-loop and duplicate-binding checks, the node-size
-  precondition — fired correctly and prevented the failure it targeted.
+  precondition — fired and prevented the failure it targeted. (One of
+  them, the syntax gate's refusal of new files, was later found to
+  cause failures of its own; see the Revision.)
 - Every **instruction** improved — better rejection wording, a more
   precise verification message, tool guidance naming the right tool —
   was ignored at least once. Run 9 re-sent a byte-identical tool call
@@ -31,6 +35,49 @@ cited elsewhere as the calibration for a retry cap, is about error-message
 detail and repair success and says nothing about retry limits; the
 byte-identical rule below rests on our own run data and on determinism,
 not on that paper.
+
+## Revision (2026-09-26)
+This ADR originally said "The harness defects those runs exposed are
+fixed ... What remained was model behaviour", and ended "None of this is
+expected to make a weak model complete tasks it otherwise fails ... Task
+completion remains bounded by the model, which is what the quant and
+control-vector work addresses." Both claims are withdrawn. Nothing in
+the nine runs separated model behaviour from harness behaviour, and
+commits over the next four days found harness causes for failures the
+ADR had assigned to the model:
+
+- c4012b6 (2026-08-02, an hour after this ADR): the error-loop breaker
+  killed runs that were converging, each attempt answering the previous
+  rejection. With it fixed, run 12 produced the first correct
+  implementation of the task.
+- 9a9517e: a context overflow ended runs at turn 3. The last-read
+  restatement was appended after the history budget was spent. The
+  commit's own words: the "model is done after three tool calls"
+  symptom "was not the model giving up".
+- b272fa8: a parse failure was the proxy's own content-loop cut, then
+  diagnosed as a token-cap truncation, so the model was told to do the
+  wrong thing.
+- 8fcec3a and 8e6a5a1: the planner told the model to recreate a
+  2000-line fixture, and could not see the workspace it planned against.
+- 663406a: this ADR's change 1, the identical-retry refusal, blocked the
+  verify-fix-verify loop (re-running `pytest` after a fix) and was
+  narrowed.
+- 47be143 (2026-08-06): the syntax gate's refusal of an unparseable new
+  file blocked the write, run, read-the-traceback recovery. Three AoC
+  sessions and a novel-benchmark session ended with the file never
+  created. A mechanism can cause failures as well as prevent them.
+- e40a63d ([ADR 0009](0009-embedding-convention-owned-client-side.md)):
+  the lens scored every candidate 0.500, so candidate selection in these
+  runs ran with every candidate tied.
+
+What remains of the decision is unchanged: a mechanism changes what the
+model can do or is shown, an instruction is per-model configuration, and
+neither is assumed to be free of side effects. The cause of the task
+failures that remain is not established. Model-side work (quant,
+control vectors) tests one hypothesis. Harness causes are the other, and
+telling them apart takes a controlled comparison: the same tasks and
+harness across two models or quants, or one model across harness
+versions.
 
 ## Decision
 Interventions that change what the model **can** do, or what it is
@@ -82,7 +129,7 @@ something — the probe-to-policy mapping is an engineering bet, not a
 validated design, and Life-Harness got its transfer result by evolving a
 harness against traces rather than by running a fixed battery.
 
-None of this is expected to make a weak model complete tasks it
-otherwise fails. It reduces wasted turns and stops unsupported success
-claims reaching the user. Task completion remains bounded by the model,
-which is what the quant and control-vector work addresses.
+These changes reduce wasted turns and stop unsupported success claims
+reaching the user. Whether the tasks that still fail are limited by the
+model or by the harness is not established (see the Revision). The
+quant and control-vector work tests one of those hypotheses.
