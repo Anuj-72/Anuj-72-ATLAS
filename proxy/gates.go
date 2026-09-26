@@ -1426,13 +1426,14 @@ func fallbackSyntaxRejection(path, content, syntaxErr string) string {
 				"with the COMPLETE file content; if it is long, write it in full, "+
 				"not in fragments.", path, truncateStr(syntaxErr, 200), quoted)
 	}
-	// An f-string error is almost always quote nesting, and the model is not
-	// wrong so much as too new: `f"{d["k"]}"` is valid from Python 3.12
-	// (PEP 701) and a SyntaxError on 3.11, which is what the sandbox runs.
-	// Leading with that turns a confusing rejection into a one-step fix.
-	// Observed live: a session hit the wall clock re-emitting the same
-	// nesting, because the advice sat in a parenthetical after two other
-	// sentences.
+	// An f-string error names a real problem inside the braces. The sandbox
+	// that checks the file runs Python 3.13, where nesting the same quote
+	// (`f"{d["k"]}"`, PEP 701) is valid, so the old advice -- "this
+	// environment runs an older Python" -- was false, and it sent the model
+	// after quotes when the error was a bracket. Point at the braces instead,
+	// on the quoted line. Observed live: a session hit the wall clock
+	// re-sending the same content because the advice sat in a parenthetical
+	// after two other sentences, so it still leads.
 	// "unexpected character after line continuation character" is Python
 	// telling you a backslash is followed by something other than a newline.
 	// The wording names the mechanism, not the mistake, and a model that has
@@ -1451,21 +1452,18 @@ func fallbackSyntaxRejection(path, content, syntaxErr string) string {
 	}
 	if strings.Contains(lowerErr, "f-string") {
 		return fmt.Sprintf(
-			"Your content for %s has an f-string quoting error (%s) — it was NOT "+
-				"written.%s Nesting the SAME quote character inside an f-string, "+
-				"like f\"{d[\"k\"]}\", needs Python 3.12; this environment runs an "+
-				"older Python, so it is a syntax error here. Use the other quote "+
-				"inside — f\"{d['k']}\" — or pull the value into a variable first. "+
-				"Do NOT resend the same content unchanged.",
+			"Your content for %s has an f-string error (%s) — it was NOT "+
+				"written.%s Look inside the braces on that line: a bracket or "+
+				"brace that is never closed, an empty {}, or a conversion other "+
+				"than !r, !s or !a. If the expression is long, pull it into a "+
+				"variable first. Do NOT resend the same content unchanged.",
 			path, truncateStr(syntaxErr, 200), quoted)
 	}
 	return fmt.Sprintf(
 		"Your content for %s has a syntax error (%s) — it was NOT written. The "+
 			"content is NOT truncated; it is complete but INVALID.%s Fix THAT "+
-			"specific error (e.g. a common cause is nested double-quotes inside "+
-			"an f-string — use single quotes for the inner string, or a temp "+
-			"variable). Do NOT resend the same content unchanged; it will fail "+
-			"identically.", path, truncateStr(syntaxErr, 200), quoted)
+			"specific error on the line quoted. Do NOT resend the same content "+
+			"unchanged; it will fail identically.", path, truncateStr(syntaxErr, 200), quoted)
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -148,7 +149,35 @@ func TestTheGrammarIsBuiltFromASafeTag(t *testing.T) {
 	if strings.Contains(g, "drop\n") || strings.Contains(g, "\"; ") {
 		t.Errorf("tag characters reached the grammar unescaped: %q", g)
 	}
-	if !strings.HasPrefix(g, "root ::= \"```pydrop\\n\"") {
+	if !strings.HasPrefix(g, "root ::= \"````pydrop\\n\"") {
 		t.Errorf("unexpected grammar: %q", g)
+	}
+}
+
+// P-safety/INTEGRITY#5: with a three-backtick fence no body line could start
+// with ```, so a Markdown file's first code block ended the file: the grammar
+// allowed only the closer there, and the truncated body parsed as complete.
+func TestAFileWithACodeBlockSurvivesTheFence(t *testing.T) {
+	body := "# Tool\n\nInstall:\n\n```bash\npip install tool\n```\n\nMore docs here.\n"
+	g := fenceBlockGrammar("markdown")
+	if !strings.HasPrefix(g, "root ::= \"````markdown\\n\" line* \"````\"") {
+		t.Fatalf("the outer fence is not four backticks: %q", g)
+	}
+	// The line rule, mirrored: up to three leading backticks, never four.
+	if !strings.Contains(g, "\"```\" ( [^`\\n] [^\\n]* )?") {
+		t.Fatalf("the line rule does not admit a line starting with ```: %q", g)
+	}
+	line := regexp.MustCompile("^(?:[^`][^\n]*|`(?:[^`][^\n]*)?|``(?:[^`][^\n]*)?|```(?:[^`][^\n]*)?)?$")
+	for _, l := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
+		if !line.MatchString(l) {
+			t.Errorf("the grammar's line rule refuses %q", l)
+		}
+	}
+	framing, got := classifyFencedPayload("````markdown\n" + body + "````")
+	if framing != fenceFramingComplete || got != body {
+		t.Fatalf("round trip: framing=%v body=%q, want the whole file", framing, got)
+	}
+	if !fencedGrammarFits(body) || fencedGrammarFits("intro\n````\nnested\n````\n") {
+		t.Error("fencedGrammarFits misjudges which files the fence can carry")
 	}
 }

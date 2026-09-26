@@ -128,3 +128,26 @@ func TestTheV3NudgeSaysWhatARunShowed(t *testing.T) {
 		t.Fatalf("a superseded delivery is told to finish: %q", msg)
 	}
 }
+
+// P-safety/INTEGRITY#4: the identical-resend refusal keyed structural_edit on
+// path and selector only, so a corrected body was refused "byte for byte",
+// the tool was banned for the file and the run ended repeated_refusal.
+func TestAStructuralEditWithANewBodyIsNotAResend(t *testing.T) {
+	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
+	call := func(body string) json.RawMessage {
+		b, _ := json.Marshal(StructuralEditInput{Path: "app.py", Selector: "function:update", Content: body})
+		return b
+	}
+	recordFailedToolCall(ctx, "structural_edit", call("def update(:\n    pass\n"), "does not parse")
+
+	if msg := identicalRetryRefusal(ctx, "structural_edit", call("def update():\n    pass\n")); msg != "" {
+		t.Fatalf("a corrected body was refused as a byte-for-byte re-send: %q", msg)
+	}
+	if msg := identicalRetryRefusal(ctx, "structural_edit", call("def update(:\n    pass\n")); msg == "" {
+		t.Fatal("an identical re-send of a refused call is no longer refused")
+	}
+	// The repeat window keeps its own identity: the selector, whatever the body.
+	if toolCallSignature("structural_edit", call("a")) != toolCallSignature("structural_edit", call("b")) {
+		t.Fatal("the repeat window no longer treats bodies against one selector as repeats")
+	}
+}

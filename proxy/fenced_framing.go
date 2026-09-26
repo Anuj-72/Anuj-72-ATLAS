@@ -190,6 +190,15 @@ func isFencedSentinel(content string) bool {
 // close the fence early, and the closing fence. It is a GBNF grammar, the
 // same llama-server interface the main loop already uses, and says nothing
 // about any model or chat template.
+//
+// The outer fence is FOUR backticks. With three, no body line could start
+// with ```, so the first ``` line a file needed -- a Markdown code block, a
+// docstring example -- was the only thing the grammar allowed there: the
+// closer. Generation had to stop, the reply parsed as a complete block, and
+// the truncated file was written (audit P-safety/INTEGRITY#5). Body lines may
+// now start with up to three backticks; parseFencedReply matches the closer
+// by width, so they stay inside the file. A file that itself has a column-0
+// ```` line is sent without the grammar (fencedGrammarFits).
 func fenceBlockGrammar(tag string) string {
 	safe := make([]rune, 0, len(tag))
 	for _, r := range tag {
@@ -198,7 +207,20 @@ func fenceBlockGrammar(tag string) string {
 			safe = append(safe, r)
 		}
 	}
-	return fmt.Sprintf("root ::= \"```%s\\n\" line* \"```\"\n"+
-		"line ::= ( [^`\\n] [^\\n]* | \"`\" ( [^`\\n] [^\\n]* )? | \"``\" ( [^`\\n] [^\\n]* )? )? \"\\n\"\n",
+	return fmt.Sprintf("root ::= \"````%s\\n\" line* \"````\"\n"+
+		"line ::= ( [^`\\n] [^\\n]* | \"`\" ( [^`\\n] [^\\n]* )? | \"``\" ( [^`\\n] [^\\n]* )? | "+
+		"\"```\" ( [^`\\n] [^\\n]* )? )? \"\\n\"\n",
 		string(safe))
+}
+
+// fencedGrammarFits reports whether a file's current text can be carried
+// inside the four-backtick fence: none of its lines starts with four
+// backticks at column 0, which the grammar reserves for the closer.
+func fencedGrammarFits(current string) bool {
+	for _, line := range strings.Split(current, "\n") {
+		if strings.HasPrefix(line, "````") {
+			return false
+		}
+	}
+	return true
 }

@@ -2279,6 +2279,14 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						log.Printf("[agent] redirecting a foreground server start to run_background: %q",
 							truncateStr(rc.Command, 80))
 						st.bounceToolCall(ctx, "run_command", rejection)
+						// Counted like every other refusal, so a model that
+						// re-sends it meets the identical-retry refusal and the
+						// failure bounds. Measured: 20 identical re-sends, each
+						// bounced, until the session deadline.
+						if accountRefusedCall(parsed.Name, intentArgs, rejection,
+							workspaceRefusalPath(ctx, parsed.Name, parsed.Args)) {
+							return nil
+						}
 						continue
 					}
 				}
@@ -2293,6 +2301,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						log.Printf("[agent] rejecting run_command %q: %q",
 							truncateStr(rc.Command, 80), rejection)
 						st.bounceToolCall(ctx, "run_command", rejection)
+						if accountRefusedCall(parsed.Name, intentArgs, rejection,
+							workspaceRefusalPath(ctx, parsed.Name, parsed.Args)) {
+							return nil
+						}
 						continue
 					}
 				}
@@ -2314,6 +2326,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						log.Printf("[agent] rejecting run_background %q: %q",
 							truncateStr(rb.Command, 80), rejection)
 						st.bounceToolCall(ctx, "run_background", rejection)
+						if accountRefusedCall(parsed.Name, intentArgs, rejection,
+							workspaceRefusalPath(ctx, parsed.Name, parsed.Args)) {
+							return nil
+						}
 						continue
 					}
 				}
@@ -5983,7 +5999,8 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 	tag := fenceTagForPath(path)
 	note := AgentMessage{Role: "user", Content: fmt.Sprintf(
 		"[system note]: Now provide ONLY the complete contents of %s, as plain "+
-			"code in a single fenced block (```%s ... ```). No JSON, no "+
+			"code in a single fenced block, fenced with FOUR backticks (````%s ... ````) "+
+			"so a ``` line inside the file stays inside it. No JSON, no "+
 			"commentary, no partial file.", path, tag)}
 	msgs := append(append([]AgentMessage{}, ctx.Messages...),
 		AgentMessage{Role: "assistant", Content: rawCall}, note)
@@ -6012,7 +6029,8 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 		// A later attempt drops the grammar, so a server that refuses it
 		// still gets the free-text request this channel has always sent.
 		grammar := fenceBlockGrammar(tag)
-		if attempt > 0 {
+		current, _ := os.ReadFile(resolveAgentPath(ctx, path)) // absent: a new file
+		if attempt > 0 || !fencedGrammarFits(string(current)) {
 			grammar = rawEmissionSentinel
 		}
 		reply, tokens, err := callLLMOnceRestating(ctx, msgs, 0.2, grammar, path)

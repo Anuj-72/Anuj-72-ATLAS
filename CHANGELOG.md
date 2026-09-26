@@ -30,6 +30,26 @@ server-start instruction no longer suggests the headers-only `curl -I`, which
 never counted. Java, Kotlin, PHP, shell and `./script` runs now count, where
 before they never did.
 
+### Fixed: harness refusals that stopped correct work
+
+- Outside yolo mode, a server started with `run_background` was refused with
+  the instruction to use `run_background`. Only `run_command` is redirected
+  now; it keeps its check in every mode.
+- That redirect, and the other shell-command refusals, skipped every failure
+  counter, so a model re-sending one looped until the session deadline
+  (measured: 20 identical re-sends). They now count like every other refusal.
+- The f-string syntax advice said the sandbox runs a Python older than 3.12
+  and sent the model after quote nesting. The sandbox runs 3.13, where that
+  nesting is valid; the advice now points inside the braces.
+- A `structural_edit` with a corrected body on the same selector was refused
+  as a byte-for-byte re-send, the tool was banned for the file, and the run
+  ended `repeated_refusal` blaming the model. The re-send refusal now compares
+  the whole call.
+- The fenced sub-call grammar used a three-backtick fence, so the first ```
+  line a file needed (a Markdown code block, a docstring example) ended the
+  file, and the truncated body was written as complete. The fence is four
+  backticks now.
+
 ### Fixed: the model was told V3 had verified code nothing had run
 
 After V3 delivered a write or edit whose phase name sounded like success, the

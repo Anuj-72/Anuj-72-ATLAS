@@ -579,3 +579,45 @@ func TestLiveServerCoverageIsScopedToItsOwnFiles(t *testing.T) {
 		t.Error("a non-probe command was credited with live-server coverage")
 	}
 }
+
+// P-guardrails/DEAD#1: outside yolo mode, validateRunCommand refused a
+// server started with run_background -- the tool the refusal told the model
+// to use. A foreground start through run_command is still redirected.
+func TestAServerStartedInTheBackgroundRunsOutsideYolo(t *testing.T) {
+	serve := toolCall("run_background", map[string]interface{}{"command": "python3 -m http.server 8000"})
+	foreground := toolCall("run_command", map[string]interface{}{"command": "python3 -m http.server 8000"})
+	w := startBgWorldWith(t, map[string]string{"index.html": "<!DOCTYPE html><html><body>hi</body></html>\n"},
+		[]string{foreground, serve, `{"type":"done","summary":"serving"}`},
+		func(cmd string, w *bgWorld) ([]string, int, bool) { return nil, 0, true },
+		// The mode-gated validation, isolated: no permission prompts.
+		func(ctx *AgentContext) { ctx.YoloMode = false })
+	if !w.told("Start it with run_background") {
+		t.Error("a foreground server start through run_command was not redirected")
+	}
+	started := false
+	for _, c := range w.executed {
+		if c == "python3 -m http.server 8000" {
+			started = true
+		}
+	}
+	if !started {
+		t.Fatalf("run_background was refused the server it is for; executed %v", w.executed)
+	}
+}
+
+// G-proxy-orphan-leads#5: the foreground-server bounce skipped every failure
+// counter, so a model re-sending it looped until the session deadline.
+func TestARepeatedForegroundServerStartEnds(t *testing.T) {
+	var script []string
+	for i := 0; i < 40; i++ {
+		script = append(script, toolCall("run_command", map[string]interface{}{"command": "python3 -m http.server 8000"}))
+	}
+	w := startBgWorld(t, nil, script,
+		func(cmd string, w *bgWorld) ([]string, int, bool) { return nil, 0, true })
+	if w.terminal["reason"] != "repeated_refusal" {
+		t.Fatalf("terminal = %v, want repeated_refusal", w.terminal)
+	}
+	if len(w.prompts) >= len(script) {
+		t.Fatalf("the loop ran through all %d re-sends", len(script))
+	}
+}

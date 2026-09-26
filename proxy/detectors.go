@@ -125,10 +125,14 @@ func recordToolCall(ctx *AgentContext, toolName string, args json.RawMessage) (s
 
 	if toolName == "structural_edit" {
 		if path, sel := structuralEditTarget(args); path != "" && sel != "" {
+			// Counted before execution and on the target alone: the window
+			// sees that the calls kept coming at one selector, not whether
+			// they failed or how their bodies differed, so it says only that.
 			return fmt.Sprintf(
-				"⚠ `structural_edit` on `%s` with selector `%s` has failed %d times. The body was different each "+
-					"time, so the body is not what is wrong — the SELECTOR is. That node either does not contain the "+
-					"code you are changing, or is mostly a string literal you cannot re-emit byte-for-byte. No "+
+				"⚠ `structural_edit` on `%s` with selector `%s` has been sent %d times in a row. If those attempts "+
+					"were refused, changing the body will not help — the SELECTOR is the problem. That node either "+
+					"does not contain the code you are changing, or is mostly a string literal you cannot re-emit "+
+					"byte-for-byte. No "+
 					"selector reaches INSIDE a string: an HTML/JS template held in a Python string is one literal to "+
 					"the grammar, however many lines it spans. Switch tools now: `edit_file` with old_str set to ONE "+
 					"unique line copied out of the region you are changing, or `insert_after` with the line number "+
@@ -880,7 +884,7 @@ func identicalRetryRefusal(ctx *AgentContext, toolName string, args json.RawMess
 	if toolName == "tail_background" {
 		return ""
 	}
-	prev, seen := ctx.FailedToolCalls[toolCallSignature(toolName, args)]
+	prev, seen := ctx.FailedToolCalls[retryIdentity(toolName, args)]
 	if !seen {
 		return ""
 	}
@@ -895,9 +899,8 @@ func identicalRetryRefusal(ctx *AgentContext, toolName string, args json.RawMess
 }
 
 // recordFailedToolCall remembers a rejected call so an identical re-send is
-// refused. Keyed on the same signature the repetition window uses, so the two
-// agree on what "the same call" means -- and, like that window, on the args
-// the MODEL sent rather than on whatever fenced resolution left behind.
+// refused. Keyed on retryIdentity -- the args the MODEL sent rather than
+// whatever fenced resolution left behind.
 func recordFailedToolCall(ctx *AgentContext, toolName string, args json.RawMessage, errMsg string) {
 	if ctx == nil || errMsg == "" {
 		return
@@ -905,7 +908,29 @@ func recordFailedToolCall(ctx *AgentContext, toolName string, args json.RawMessa
 	if ctx.FailedToolCalls == nil {
 		ctx.FailedToolCalls = make(map[string]string)
 	}
-	ctx.FailedToolCalls[toolCallSignature(toolName, args)] = errMsg
+	ctx.FailedToolCalls[retryIdentity(toolName, args)] = errMsg
+}
+
+// retryIdentity is what "the same call" means to the identical-resend
+// refusal, whose message says "byte for byte": the whole call. It is
+// toolCallSignature for every tool but structural_edit, whose repeat window
+// keys on (path, selector) and ignores the body, on purpose, so different
+// bodies against one doomed selector still count as repeats. The refusal
+// used that key too, so a corrected body on the same selector was refused as
+// identical, the tool was banned for the file, and the run ended
+// repeated_refusal blaming the model for an unchanged re-send (audit
+// P-safety/INTEGRITY#4).
+func retryIdentity(toolName string, args json.RawMessage) string {
+	if toolName == "structural_edit" {
+		var in StructuralEditInput
+		if json.Unmarshal(args, &in) == nil && in.Path != "" && in.Selector != "" {
+			body := sha1.Sum([]byte(in.Content))
+			h := sha1.Sum([]byte(toolName + "|path:" + signaturePath(in.Path) + "|sel:" + in.Selector +
+				"|c:" + hex.EncodeToString(body[:])))
+			return hex.EncodeToString(h[:])
+		}
+	}
+	return toolCallSignature(toolName, args)
 }
 
 // clearFailedToolCall forgets remembered rejections once ANY tool call

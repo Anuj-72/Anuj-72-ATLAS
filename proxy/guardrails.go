@@ -419,11 +419,14 @@ func validateWorkingDirReference(cmd, workingDir string) string {
 // validateRunCommand chains the shell-mutation gate and the workingDir
 // gate. Used by both run_command and run_background paths in the agent
 // loop. Empty return = command is allowed.
+//
+// It does not refuse a server start. run_command gets that check in every
+// mode, source-aware, before this one (foregroundServerRejectionWithSource),
+// and run_background is where a server belongs: refusing it here, in the
+// default and accept-edits modes, told the model to use run_background and
+// then refused run_background with the same instruction.
 func validateRunCommand(cmd, workingDir string) string {
 	if r := validateShellCommand(cmd); r != "" {
-		return r
-	}
-	if r := foregroundServerRejection(cmd); r != "" {
 		return r
 	}
 	if r := validateWorkingDirReference(cmd, workingDir); r != "" {

@@ -1228,22 +1228,31 @@ func TestUnreadOverwriteAllowsSessionOwnedAndCorrupted(t *testing.T) {
 	}
 }
 
-// `f"{d["k"]}"` is valid from Python 3.12 (PEP 701) and a SyntaxError on
-// 3.11, which is what the sandbox runs. The model is not wrong so much as too
-// new, and a session hit the wall clock re-emitting the same nesting because
-// the advice sat in a parenthetical after two other sentences.
-func TestFStringRejectionLeadsWithTheQuotingFix(t *testing.T) {
+// The sandbox checks Python on 3.13, where `f"{d["k"]}"` (PEP 701) is valid,
+// so an f-string error is a real problem inside the braces. The message used
+// to say "this environment runs an older Python" and send the model after the
+// quotes (audit P-tests-3/TEST#2). It still leads with the diagnosis, because
+// a session once hit the wall clock when the advice sat in a parenthetical.
+func TestFStringRejectionPointsInsideTheBraces(t *testing.T) {
 	msg := fallbackSyntaxRejection("todo.py",
-		"print(f\"{i}: {item[\"text\"]}\")\n",
-		"SyntaxError: f-string: unmatched '[' (line 1)")
-	if !strings.Contains(msg, "f-string quoting error") {
-		t.Errorf("must lead with the quoting diagnosis, got %q", msg)
+		"print(f\"{i}: {item[}\")\n",
+		"SyntaxError: f-string: closing parenthesis '}' does not match opening parenthesis '[' (line 1)")
+	if !strings.HasPrefix(msg, "Your content for todo.py has an f-string error") {
+		t.Errorf("must lead with the diagnosis, got %q", msg)
 	}
-	if !strings.Contains(msg, "3.12") {
-		t.Errorf("must explain the version reason, got %q", msg)
+	for _, false_ := range []string{"3.12", "older Python", "the other quote"} {
+		if strings.Contains(msg, false_) {
+			t.Errorf("claims %q, which is not true on the 3.13 sandbox: %q", false_, msg)
+		}
 	}
-	if !strings.Contains(msg, "the other quote") {
-		t.Errorf("must name the fix, got %q", msg)
+	for _, want := range []string{"does not match opening parenthesis", "NOT written", "Do NOT resend"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("must carry %q, got %q", want, msg)
+		}
+	}
+	general := fallbackSyntaxRejection("a.py", "def f(:\n    pass\n", "SyntaxError: invalid syntax (line 1)")
+	if strings.Contains(general, "f-string") {
+		t.Errorf("the general message still blames f-string quoting: %q", general)
 	}
 }
 
@@ -1251,7 +1260,7 @@ func TestFStringRejectionLeadsWithTheQuotingFix(t *testing.T) {
 func TestNonFStringSyntaxErrorKeepsGeneralAdvice(t *testing.T) {
 	msg := fallbackSyntaxRejection("a.py", "def f(:\n    pass\n",
 		"SyntaxError: invalid syntax (line 1)")
-	if strings.Contains(msg, "f-string quoting error") {
+	if strings.Contains(msg, "f-string error") {
 		t.Errorf("plain syntax error must not claim an f-string problem: %q", msg)
 	}
 }
@@ -1275,14 +1284,14 @@ func TestStrayBackslashRejectionNamesTheCharacter(t *testing.T) {
 func TestFStringBranchStillFiresAfterBackslashBranch(t *testing.T) {
 	msg := fallbackSyntaxRejection("a.py", "x=1\n",
 		"SyntaxError: f-string: unmatched '['")
-	if !strings.Contains(msg, "f-string quoting error") {
+	if !strings.Contains(msg, "has an f-string error") {
 		t.Errorf("f-string diagnosis lost: %q", msg)
 	}
 }
 
 func TestPlainSyntaxErrorGetsNeitherSpecialCase(t *testing.T) {
 	msg := fallbackSyntaxRejection("a.py", "def f(:\n", "SyntaxError: invalid syntax")
-	if strings.Contains(msg, "stray backslash") || strings.Contains(msg, "f-string quoting") {
+	if strings.Contains(msg, "stray backslash") || strings.Contains(msg, "f-string error") {
 		t.Errorf("plain error must keep the general message: %q", msg)
 	}
 }

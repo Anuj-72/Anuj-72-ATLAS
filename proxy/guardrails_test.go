@@ -2564,3 +2564,29 @@ func TestAToolBanNeverRecommendsTheBannedTool(t *testing.T) {
 		t.Errorf("no targeted alternative left for a .py: %q", note)
 	}
 }
+
+// P-guardrails/DEAD#2: the redirect prescribed `curl -I`, a probe the
+// verification rule declines. Any probe a refusal message prescribes has to
+// count as verification.
+func TestTheProbeARedirectPrescribesCountsAsVerification(t *testing.T) {
+	msg := foregroundServerRejection("python3 -m http.server 8000")
+	probes := regexp.MustCompile("`(curl[^`]*)`").FindAllStringSubmatch(msg, -1)
+	if len(probes) == 0 {
+		t.Fatalf("the redirect names no probe: %q", msg)
+	}
+	for _, p := range probes {
+		if !isVerificationCommand(p[1]) {
+			t.Errorf("the redirect prescribes %q, which does not count as verification", p[1])
+		}
+	}
+	for _, sawFailed := range []bool{false, true} {
+		for _, blocked := range []bool{false, true} {
+			rej := verificationRejection(sawFailed, blocked, "job1")
+			for _, p := range regexp.MustCompile("`(curl[^`]*)`").FindAllStringSubmatch(rej, -1) {
+				if !isVerificationCommand(p[1]) {
+					t.Errorf("the verification gate prescribes %q, which does not count", p[1])
+				}
+			}
+		}
+	}
+}
