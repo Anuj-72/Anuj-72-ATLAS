@@ -124,9 +124,12 @@ func allTools() []*ToolDef {
 func executeToolCall(name string, args json.RawMessage, ctx *AgentContext) *ToolResult {
 	tool := getTool(name)
 	// What a shell command changes is observed around it (applyShellChanges):
-	// the ledger otherwise sees only paths it already tracked.
+	// the ledger otherwise sees only paths it already tracked. A background
+	// job's later writes are measured from the walk after the call that
+	// started it (noteBackgroundBaseline).
 	var before workspaceSnapshot
-	observeShell := name == "run_command" && ctx != nil && ctx.WorkingDir != ""
+	observeShell := (name == "run_command" || name == "run_background" || name == "stop_background") &&
+		ctx != nil && ctx.WorkingDir != ""
 	if observeShell {
 		before = snapshotWorkspace(ctx.WorkingDir)
 	}
@@ -161,7 +164,15 @@ func executeToolCall(name string, args json.RawMessage, ctx *AgentContext) *Tool
 	recordLedgerEffect(name, args, ctx, result)
 	if observeShell && result != nil && result.MutationStatus != MutationNone &&
 		result.MutationStatus != MutationRefused {
-		applyShellChanges(ctx, before, snapshotWorkspace(ctx.WorkingDir))
+		after := snapshotWorkspace(ctx.WorkingDir)
+		applyShellChanges(ctx, before, after, name)
+		if name == "run_background" {
+			noteBackgroundBaseline(ctx, after)
+		}
+	}
+	if name == "stop_background" {
+		// A confirmed exit may have lowered the last hazard.
+		settleBackgroundEffects(ctx)
 	}
 	return result
 }

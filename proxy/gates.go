@@ -3089,6 +3089,16 @@ func ledgerTracks(ctx *AgentContext, path string) bool {
 	return ctx.Ledger[key] != nil
 }
 
+// ledgerTombstoned reports whether the ledger records the path as gone: a
+// delete, a move, or a removal a shell observation already charged.
+func ledgerTombstoned(ctx *AgentContext, path string) bool {
+	key := ledgerKey(ctx, path)
+	ctx.LedgerMu.Lock()
+	defer ctx.LedgerMu.Unlock()
+	d := ctx.Ledger[key]
+	return d != nil && d.Tombstoned
+}
+
 // ledgerArgPath pulls one string field out of a tool's raw args without
 // binding the ledger to any tool's input struct.
 func ledgerArgPath(args json.RawMessage, field string) string {

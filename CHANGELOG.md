@@ -96,7 +96,10 @@ that was there when the request started and that a command removed is an
 unapproved deletion (`delete_intent_unestablished`). Dependency, cache and
 build directories are not walked, and a file the run created and later
 removed does not block. The system prompt now says deleting a pre-existing
-file goes through `delete_file`.
+file goes through `delete_file`. A `run_background` job writes on its own
+schedule, so its changes are compared against the workspace as it stood when
+the job started, once the job can no longer be writing: when completion reaps
+it, when `stop_background` confirms its exit, or when the session reaps it.
 
 ### Fixed: harness refusals that stopped correct work
 

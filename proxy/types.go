@@ -1048,6 +1048,10 @@ type AgentContext struct {
 	// could not all be seen, because the workspace outgrew the walk.
 	InitialWorkspace       workspaceSnapshot
 	ShellEffectsUnobserved bool
+	// BackgroundBaseline is the walk taken after the call that started the
+	// first background job still live. What jobs changed is recorded against
+	// it once none can still be writing (settleBackgroundEffects).
+	BackgroundBaseline workspaceSnapshot
 
 	// TerminalUnresolved names the exit gates that spent their bounces with
 	// their finding still true, comma-separated; empty when there were none.

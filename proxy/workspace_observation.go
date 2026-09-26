@@ -25,6 +25,13 @@ import (
 // A file the session itself created and then removed is nobody's loss.
 // Dependency, cache and build directories are not walked: pip, npm, pytest
 // and a build rewrite them wholesale, and nothing in them is a deliverable.
+//
+// A background job writes on its own schedule, so one call cannot bracket
+// what it does. The walk after the call that started the first live job is
+// the baseline, and the comparison runs once no job can still be writing:
+// when completion reaps an exited job, when stop_background confirms an
+// exit, or when the session reaps its jobs at the end. Until then the
+// workspace hazard already keeps the run from completing.
 
 // workspaceFile is what a stat walk sees of one file. Stat-only by design:
 // two walks per command have to stay cheap. A rewrite that keeps both size
@@ -113,8 +120,9 @@ func shellDeliverable(rel string) bool {
 	return gated
 }
 
-// applyShellChanges records in the ledger what one shell command changed.
-func applyShellChanges(ctx *AgentContext, before, after workspaceSnapshot) {
+// applyShellChanges records in the ledger what changed between two walks.
+// source names the tool the change is charged to.
+func applyShellChanges(ctx *AgentContext, before, after workspaceSnapshot, source string) {
 	if ctx == nil || ctx.WorkingDir == "" {
 		return
 	}
@@ -131,8 +139,8 @@ func applyShellChanges(ctx *AgentContext, before, after workspaceSnapshot) {
 			// Tracked paths were rehashed by invalidateTrackedValidation.
 			continue
 		}
-		log.Printf("[ledger] %s written by a shell command — now a deliverable of this session", rel)
-		observePathFromDisk(ctx, rel, ValidationKindUnknown, ValidationUnknown, "run_command")
+		log.Printf("[ledger] %s written by %s — now a deliverable of this session", rel, source)
+		observePathFromDisk(ctx, rel, ValidationKindUnknown, ValidationUnknown, source)
 	}
 	if before.truncated || after.truncated {
 		return // an absence in a partial walk is not a removal
@@ -141,13 +149,20 @@ func applyShellChanges(ctx *AgentContext, before, after workspaceSnapshot) {
 		if _, still := after.files[rel]; still {
 			continue
 		}
+		if ledgerTombstoned(ctx, rel) {
+			// Already recorded: a delete_file, a move_file, or an earlier
+			// walk. A background comparison spans those calls, and
+			// re-reading their removal as the shell's would erase an
+			// approved deletion.
+			continue
+		}
 		// Without a complete picture of the start, assume the user's.
 		preexisting := !ctx.InitialWorkspace.taken || ctx.InitialWorkspace.truncated
 		if _, ok := ctx.InitialWorkspace.files[rel]; ok {
 			preexisting = true
 		}
 		if preexisting {
-			log.Printf("[ledger] %s was here before this session and a shell command removed it", rel)
+			log.Printf("[ledger] %s was here before this session and %s removed it", rel, source)
 			tombstoneDeliverable(ctx, rel, "deleted:shell")
 			continue
 		}
@@ -158,4 +173,24 @@ func applyShellChanges(ctx *AgentContext, before, after workspaceSnapshot) {
 		delete(ctx.Ledger, key)
 		ctx.LedgerMu.Unlock()
 	}
+}
+
+// noteBackgroundBaseline keeps the walk taken after a run_background call as
+// the baseline, when that call left a job live and none was live before. A
+// second job started while the first runs is measured from the same walk.
+func noteBackgroundBaseline(ctx *AgentContext, after workspaceSnapshot) {
+	if ctx == nil || ctx.BackgroundBaseline.taken || !workspaceHazardous(ctx) {
+		return
+	}
+	ctx.BackgroundBaseline = after
+}
+
+// settleBackgroundEffects records what background jobs changed since the
+// baseline, once none of them can still be writing.
+func settleBackgroundEffects(ctx *AgentContext) {
+	if ctx == nil || ctx.WorkingDir == "" || !ctx.BackgroundBaseline.taken || workspaceHazardous(ctx) {
+		return
+	}
+	applyShellChanges(ctx, ctx.BackgroundBaseline, snapshotWorkspace(ctx.WorkingDir), "run_background")
+	ctx.BackgroundBaseline = workspaceSnapshot{}
 }

@@ -7704,6 +7704,8 @@ func reapSessionBackgroundJobs(ctx *AgentContext) {
 	if ctx == nil || len(ctx.BackgroundJobs) == 0 {
 		return
 	}
+	// Once they are confirmed gone, record what they left behind.
+	defer settleBackgroundEffects(ctx)
 	ids := make([]string, 0, len(ctx.BackgroundJobs))
 	for id := range ctx.BackgroundJobs {
 		ids = append(ids, id)
@@ -9398,7 +9400,13 @@ func offerDebtRecovery(ctx *AgentContext, st *runState) string {
 // every tracked deliverable is rehashed afterwards so a verdict about bytes a
 // job changed on its way out cannot survive.
 func settleBackgroundHazard(ctx *AgentContext) []string {
-	if ctx == nil || len(ctx.BackgroundJobs) == 0 {
+	if ctx == nil {
+		return nil
+	}
+	// Last, after reaping and the rehash: files a job created or removed are
+	// not in the ledger for the rehash to find.
+	defer settleBackgroundEffects(ctx)
+	if len(ctx.BackgroundJobs) == 0 {
 		return nil
 	}
 	ids := make([]string, 0, len(ctx.BackgroundJobs))
