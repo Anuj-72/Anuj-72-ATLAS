@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added: a gated deploy that covers all five services
+
+`scripts/deploy-gated.sh` replaces a host-only script that rebuilt three of
+the five services. The lens and the model server were never rebuilt, so a
+lens change could not reach the running stack while `DEPLOYED_SHA` said it
+had. The script also refuses a dirty checkout, requires every service to be
+healthy, checks that each container runs the image just built, and checks
+the running stack before it records the commit. See
+[OPERATIONS.md](docs/OPERATIONS.md#deploying-a-checkout-gated).
+
 ### Changed: V3 candidates run only where the request lets one be delivered
 
 This entry was missing from these notes. Clients declare a task contract

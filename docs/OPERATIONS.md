@@ -281,6 +281,31 @@ docker inspect -f '{{.Image}}' atlas-atlas-proxy-1
 docker inspect -f '{{index .Config.Labels "com.docker.compose.image"}}' atlas-atlas-proxy-1
 ```
 
+## Deploying a checkout, gated
+
+`scripts/deploy-gated.sh` deploys the checked-out commit to the local Compose
+stack and records what "deployed" means. In order, it:
+
+- refuses a checkout with uncommitted changes;
+- runs `go test ./...` in `proxy/` and `pytest tests/v3 tests/v3-service
+  tests/cli`, and stops on a failure;
+- tags each image it replaces as `atlas-prev:<service>-<stamp>`, the rollback
+  target;
+- rebuilds geometric-lens, v3-service, sandbox and atlas-proxy, and
+  llama-server when `inference/` changed since the last deploy or the running
+  model server was not put there by the script (a recreate reloads the model);
+- recreates them one at a time, each healthy before the next;
+- checks that every container runs the image its tag names, and pins it as
+  `atlas-built:<service>-<sha>`;
+- checks the running stack: the proxy sees every upstream, v3-service is
+  healthy, the lens serves no pattern-cache routes, the sandbox's Jinja and
+  subdirectory checks work, and v3-service can syntax-check an absolute path;
+- writes `DEPLOYED_SHA` only when all of that passed.
+
+Records go to `ATLAS_DEPLOY_DIR` (default `~/atlas-ralph`). To roll one
+service back, tag its `atlas-prev:*` image with the service's image name and
+recreate that service with `docker compose up -d --force-recreate --no-deps`.
+
 ## Cancellation
 
 A caller that goes away stops the command it asked for. A reset connection, a
