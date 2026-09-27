@@ -889,6 +889,7 @@ ensure_repo_and_env() {
         log_ok "Pinned ATLAS_IMAGE_TAG=${image_tag} in .env"
     fi
 
+    migrate_legacy_ghcr_owner
     ensure_default_model_selected
     persist_backend_selection
 
@@ -905,6 +906,37 @@ env_file_value() {
     # as empty, not fatal. Broke every install-matrix distro when
     # persist_backend_selection queried the commented-out ATLAS_BACKEND.
     grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
+# ATLAS moved from itigges22/ATLAS to inferstep/ATLAS, and releases after
+# the move are published only under ghcr.io/inferstep. Older installs
+# carry ATLAS_GHCR_OWNER=itigges22 in .env (atlas init wrote it), which
+# outranks the compose default, so an install that follows a moving tag
+# (latest, dev) would keep pulling images that no longer update. A
+# release-pinned install keeps the old owner: its images live there. An
+# owner exported in the shell is an explicit choice and is left alone.
+# Same rule as `atlas config migrate` (atlas/upgrade_engine.py).
+migrate_legacy_ghcr_owner() {
+    local owner tag
+    [[ -z "${ATLAS_GHCR_OWNER:-}" ]] || return 0
+    owner=$(env_file_value ATLAS_GHCR_OWNER)
+    owner="${owner//[\"\']/}"
+    [[ "$owner" == "itigges22" ]] || return 0
+    tag=$(env_file_value ATLAS_IMAGE_TAG)
+    tag="${tag//[\"\']/}"
+    if [[ "${tag:-latest}" =~ ^v?[0-9]+(\.[0-9]+)*([.-].*)?$ ]]; then
+        log_info "Keeping ATLAS_GHCR_OWNER=itigges22: ATLAS_IMAGE_TAG=${tag} pins a release from before the move. \`atlas upgrade\` moves it with the next release."
+        return 0
+    fi
+    # Rewrite through a temp file and `cat >` so the .env keeps its
+    # owner and mode, with no GNU-only `sed -i`.
+    if sed -E 's/^ATLAS_GHCR_OWNER=.*/ATLAS_GHCR_OWNER=inferstep/' .env > .env.owner-tmp \
+        && cat .env.owner-tmp > .env; then
+        log_ok "ATLAS_GHCR_OWNER: itigges22 → inferstep in .env (ATLAS moved to inferstep/ATLAS)"
+    else
+        log_warn "Could not update ATLAS_GHCR_OWNER in .env; set it to inferstep by hand."
+    fi
+    rm -f .env.owner-tmp
 }
 
 # Set (or append) key=value in ./.env.
