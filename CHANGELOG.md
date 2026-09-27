@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-09-27 — Maia
+
+The first release from ATLAS's new home, **inferstep/ATLAS**. It carries the
+security fixes below, the move to the new image owner, and the new
+contributor setup, on top of the changes since 3.1.3 listed further down.
+
 ### Security: commands ran without approval, and file search read credential files
 
 - `run_background` started any command without the approval prompt in the
@@ -36,6 +42,48 @@
   never sent the service token, so on an install with one they failed
   with 401. Every request to the proxy now sends it, ahead of an api-keys
   token.
+
+### Moved to inferstep/ATLAS
+
+- The repository is now **github.com/inferstep/ATLAS**. Old links, `git`
+  remotes and the install one-liner redirect.
+- Images are published under **ghcr.io/inferstep/atlas-*** and signed by
+  the inferstep/ATLAS build workflow. `ghcr.io/itigges22/atlas-*` stays
+  published for existing installs but gets no new versions.
+- **Existing installs:** re-run the install command, or `git pull` and then
+  `atlas upgrade`. `atlas upgrade`, `atlas config migrate` and a bootstrap
+  re-run move `ATLAS_GHCR_OWNER=itigges22` in `.env` to `inferstep`. A
+  failed upgrade or a rollback puts it back. An install pinned to a
+  release from before the move keeps the old owner until it upgrades, and
+  an owner set in the shell is left alone.
+
+### Fixed
+
+- `golang.org/x/net` in the TUI is now v0.55.0 (GHSA-5cv4-jp36-h3mw).
+
+### Contributors
+
+- New issue forms for bugs, features, tasks, docs, spikes and RFCs, and a
+  fuller pull request template. [CONTRIBUTING](CONTRIBUTING.md) is
+  rewritten as the path from an issue to a release. [GOVERNANCE](GOVERNANCE.md)
+  describes the trust ladder and the RFC flow. New
+  [TRIAGE](docs/TRIAGE.md) and [INCIDENT_RESPONSE](docs/INCIDENT_RESPONSE.md)
+  guides.
+- The public [Roadmap board](https://github.com/orgs/inferstep/projects/1)
+  has a Start Here view. The atlas-bot handles `/claim` and `/unclaim`,
+  reminds and releases stale claims, adds area labels and welcomes
+  newcomers.
+- Pull requests now also need the dependency review and a conventional
+  title check. An OpenSSF Scorecard runs weekly. Dependabot targets `dev`.
+- Releases record a deployment per promotion, and publishing `:latest` or
+  a version tag waits for the release owner's approval.
+
+### Docs
+
+- The V3.0 LiveCodeBench figure (74.6%) is withdrawn. The benchmark runner
+  never ran LiveCodeBench's hidden tests (see the notice in
+  [V3_ABLATION_STUDY](docs/reports/V3_ABLATION_STUDY.md)). The README says
+  ATLAS has no current benchmark result.
 
 ### Measured reliability
 
