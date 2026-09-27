@@ -6,6 +6,11 @@
 #               (v*-*). No approval.
 #   production  deployable from branch main and release tags (v*). Waits for
 #               the release owner's approval.
+#   bots        usable from branch main only: holds the atlas-bot app's
+#               client ID (a variable, set here) and private key (a secret,
+#               pasted in the UI, never by this script). Bot workflows run
+#               from main, so a workflow pushed to any other branch can't
+#               read the key.
 #
 # build-images.yml's promote job and staging-promotion.yml deploy into
 # these, so every promotion leaves a timestamped deployment record, and
@@ -24,7 +29,7 @@ REPO="inferstep/ATLAS"
 APPROVER="itigges22"
 DRY_RUN=0
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,7 +54,9 @@ ENVS=(
     "dev|[]|branch:dev"
     "staging|[]|branch:staging tag:v*-*"
     "production|[{\"type\":\"User\",\"id\":$APPROVER_ID}]|branch:main tag:v*"
+    "bots|[]|branch:main"
 )
+BOT_APP="inferstep-atlas-bot"
 
 for spec in "${ENVS[@]}"; do
     IFS='|' read -r env reviewers policies <<<"$spec"
@@ -83,4 +90,25 @@ EOF
         case " $policies " in *" $p "*) ;; *) echo "  note    $p is not in this script; left alone" ;; esac
     done
 done
+# The bot's client ID is public (it's in the app's page); only the private
+# key is secret, and that one is pasted in the UI.
+client_id=$(gh api "apps/$BOT_APP" --jq .client_id)
+current=$(gh api "repos/$REPO/environments/bots/variables/ATLAS_BOT_CLIENT_ID" --jq .value 2>/dev/null || true)
+if [[ "$current" == "$client_id" ]]; then
+    echo "keep    bots variable ATLAS_BOT_CLIENT_ID"
+else
+    echo "set     bots variable ATLAS_BOT_CLIENT_ID = $client_id"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        if [[ -n "$current" ]]; then
+            gh api -X PATCH "repos/$REPO/environments/bots/variables/ATLAS_BOT_CLIENT_ID" -f value="$client_id" --silent
+        else
+            gh api -X POST "repos/$REPO/environments/bots/variables" -f name=ATLAS_BOT_CLIENT_ID -f value="$client_id" --silent
+        fi
+    fi
+fi
+if gh api "repos/$REPO/environments/bots/secrets/ATLAS_BOT_PRIVATE_KEY" >/dev/null 2>&1; then
+    echo "keep    bots secret ATLAS_BOT_PRIVATE_KEY (present)"
+else
+    echo "todo    bots secret ATLAS_BOT_PRIVATE_KEY: paste it in Settings → Environments → bots"
+fi
 [[ "$DRY_RUN" == 1 ]] && echo "dry run done." || echo "done."
