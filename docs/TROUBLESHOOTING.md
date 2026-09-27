@@ -849,7 +849,7 @@ The proxy caches the lens answer for 5 seconds, so a fixed lens is accepted with
 
 **Cause:** The embed server is serving a different `/embedding` convention than the one the Geometric Lens `C(x)`/`G(x)` artifacts were trained on — typically per-token instead of pooled, or unnormalized instead of L2-normalized (‖v‖≈60 instead of ~1). Same dimensionality, wrong distribution; the cost-field MLP extrapolates to a huge energy and `cx_normalized` saturates. This happens after rebuilding the serving stack without `--pooling mean` (llama-server has no `--embd-normalize` server flag; the lens requests L2 normalization per-call via `embd_normalize` in the `/embedding` body).
 
-**Verify:** the lens re-scores a stored fingerprint in its self-test (at boot, and again from `/ready` after a retryable failure). Check `/ready` and `/health`:
+**Verify:** where a `drift_fingerprint.json` sits next to the artifacts (see step 3 below), the lens re-scores it in its self-test (at boot, and again from `/ready` after a retryable failure). Check `/ready` and `/health`:
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
@@ -868,7 +868,7 @@ curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerpri
    nothing. Compare against `pass_energy_mean` in `cx_normalization.json`:
    served energies should span that band, not sit on one value.
 2. Set `ATLAS_EMBED_POOLING=none` (the default; see [CONFIGURATION.md](CONFIGURATION.md)) and recreate the llama-server container so the entrypoint pins the flags. `--pooling` is server-global, and only `none` serves both the whole-text and per-step paths; pooling and scale are handled client-side.
-3. After the server serves the correct convention, the boot self-test's fingerprint check passes and `/ready` returns 200. If the artifacts predate the fingerprint, a rebuild (`atlas lens build`) writes one and stamps the `embedding_contract` into `model_identity.json`.
+3. After the server serves the correct convention, the boot self-test passes and `/ready` returns 200. A rebuild (`atlas lens build`) stamps the `embedding_contract` into `model_identity.json`. It does not write a drift fingerprint: `geometric_lens.drift.write_fingerprint` exists, but no command calls it yet, so the fingerprint check runs only where a `drift_fingerprint.json` was written by hand.
 
 ### Embedding Extraction Fails
 
