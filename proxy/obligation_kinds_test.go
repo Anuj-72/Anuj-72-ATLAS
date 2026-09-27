@@ -144,10 +144,11 @@ func TestAnObligationIDNeverCarriesItsSubject(t *testing.T) {
 	}
 }
 
-// TestObligationIDsMatchTheServiceVocabulary pins the exact strings the V3
-// service computes for the same (kind, subject). tests/contracts recomputes
-// these in Python and fails when the two sides drift.
-func TestObligationIDsMatchTheServiceVocabulary(t *testing.T) {
+// TestObligationIDsArePinned pins the exact id strings for known (kind,
+// subject) pairs: the kind, a colon, and the first 32 hex digits of the
+// subject's SHA-256. A change to the derivation fails here rather than
+// silently renaming every obligation.
+func TestObligationIDsArePinned(t *testing.T) {
 	for _, c := range []struct{ kind, subject, want string }{
 		{ObligationArtifactExists, "solve.py",
 			"artifact_exists:713230e3884f80839aab2246048d5c46"},
@@ -160,24 +161,6 @@ func TestObligationIDsMatchTheServiceVocabulary(t *testing.T) {
 		if !ok || got != c.want {
 			t.Errorf("%s/%q -> %q (ok=%v), want %q", c.kind, c.subject, got, ok, c.want)
 		}
-	}
-}
-
-func TestTheClosureFloorIsTheStrongestRequiredObligation(t *testing.T) {
-	exists, _ := newTaskObligation(ObligationArtifactExists, "a.py", "", true)
-	cmd, _ := newTaskObligation(ObligationDeclaredCommand, "pytest -q", VerificationKindBehavioral, true)
-	if got := obligationClosureFloor([]taskObligation{exists, cmd}); got != "behavioral" {
-		t.Errorf("floor %q, want behavioral", got)
-	}
-	// And an untyped command carries the floor it can actually support.
-	untyped, _ := newTaskObligation(ObligationDeclaredCommand, "pytest -q",
-		VerificationKindRuntime, true)
-	if got := obligationClosureFloor([]taskObligation{exists, untyped}); got != "runtime" {
-		t.Errorf("floor %q, want runtime", got)
-	}
-	unsup, _ := newTaskObligation(ObligationUnsupported, "a thing", "", true)
-	if got := obligationClosureFloor([]taskObligation{exists, unsup}); got != "oracle" {
-		t.Errorf("an unsupported obligation left the floor at %q, want it out of reach", got)
 	}
 }
 

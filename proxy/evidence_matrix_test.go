@@ -430,7 +430,7 @@ func TestEvidenceMatrix(t *testing.T) {
 		}); ok {
 			t.Error("a producer spoke for an unsupported obligation")
 		}
-		if got := obligationClosureFloor([]taskObligation{unsup}); got != "oracle" {
+		if got := authorizationFloor([]taskObligation{unsup}); got != "oracle" {
 			t.Errorf("an unsupported obligation left the floor reachable at %q", got)
 		}
 	})

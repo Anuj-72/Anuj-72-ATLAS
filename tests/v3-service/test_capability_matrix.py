@@ -55,67 +55,62 @@ def _record(adapter, accepted=True):
         candidate_content_hash=C.content_hash("bytes"))
 
 
-# task_family, fixture, path, has_oracle, expected_adapter, may_claim_behaviour
+# task_family, fixture, path, expected_adapter
 MATRIX = [
-    ("algorithmic_io_python",   ALGO_PY,          "solve.py",   True,  A.ADAPTER_ALGORITHMIC_IO,                 True),
-    ("algorithmic_io_python_no_oracle", ALGO_PY,  "solve.py",   False, A.ADAPTER_PYTHON_COMPILE,                 False),
-    ("cli_python",              CLI_PY,           "tool.py",    False, A.ADAPTER_PYTHON_COMPILE,                 False),
-    ("algorithmic_io_js",       ALGO_JS,          "solve.js",   False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
-    ("node_module",             NODE_MODULE,      "util.js",    False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
-    ("canvas_game",             CANVAS_GAME,      "game.js",    False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
-    ("dom_app_no_canvas",       DOM_APP,          "app.js",     False, A.ADAPTER_JAVASCRIPT_COMPILE,             False),
-    ("static_html",             STATIC_HTML,      "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
-    ("html_inline_script",      HTML_INLINE,      "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
-    ("html_external_script",    HTML_EXTERNAL,    "index.html", False, A.ADAPTER_UNSUPPORTED,                    False),
-    ("css",                     CSS,              "style.css",  False, A.ADAPTER_CSS_SYNTAX,                     False),
-    ("react_jsx",               JSX,              "App.jsx",    False, A.ADAPTER_UNSUPPORTED,                    False),
-    ("backend_api",             FLASK_API,        "api.py",     False, A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, False),
-    ("pygame",                  PYGAME,           "game.py",    False, A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, False),
-    ("tkinter",                 TKINTER,          "ui.py",      False, A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, False),
-    ("config_data",             CONFIG_JSON,      "config.json", False, A.ADAPTER_UNSUPPORTED,                   False),
-    ("unsupported_language",    UNSUPPORTED_LANG, "main.go",    False, A.ADAPTER_UNSUPPORTED,                    False),
+    ("algorithmic_io_python",   ALGO_PY,          "solve.py",    A.ADAPTER_PYTHON_COMPILE),
+    ("cli_python",              CLI_PY,           "tool.py",     A.ADAPTER_PYTHON_COMPILE),
+    ("algorithmic_io_js",       ALGO_JS,          "solve.js",    A.ADAPTER_JAVASCRIPT_COMPILE),
+    ("node_module",             NODE_MODULE,      "util.js",     A.ADAPTER_JAVASCRIPT_COMPILE),
+    ("canvas_game",             CANVAS_GAME,      "game.js",     A.ADAPTER_JAVASCRIPT_COMPILE),
+    ("dom_app_no_canvas",       DOM_APP,          "app.js",      A.ADAPTER_JAVASCRIPT_COMPILE),
+    ("static_html",             STATIC_HTML,      "index.html",  A.ADAPTER_UNSUPPORTED),
+    ("html_inline_script",      HTML_INLINE,      "index.html",  A.ADAPTER_UNSUPPORTED),
+    ("html_external_script",    HTML_EXTERNAL,    "index.html",  A.ADAPTER_UNSUPPORTED),
+    ("css",                     CSS,              "style.css",   A.ADAPTER_CSS_SYNTAX),
+    ("react_jsx",               JSX,              "App.jsx",     A.ADAPTER_UNSUPPORTED),
+    ("backend_api",             FLASK_API,        "api.py",      A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED),
+    ("pygame",                  PYGAME,           "game.py",     A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED),
+    ("tkinter",                 TKINTER,          "ui.py",       A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED),
+    ("config_data",             CONFIG_JSON,      "config.json", A.ADAPTER_UNSUPPORTED),
+    ("unsupported_language",    UNSUPPORTED_LANG, "main.go",     A.ADAPTER_UNSUPPORTED),
 ]
 
 
-@pytest.mark.parametrize("family,code,path,oracle,expected_adapter,may_claim", MATRIX,
+@pytest.mark.parametrize("family,code,path,expected_adapter", MATRIX,
                          ids=[m[0] for m in MATRIX])
-def test_adapter_routing(family, code, path, oracle, expected_adapter, may_claim):
-    assert A.select_adapter(path, code, oracle) == expected_adapter, family
+def test_adapter_routing(family, code, path, expected_adapter):
+    assert A.select_adapter(path, code) == expected_adapter, family
 
 
-@pytest.mark.parametrize("family,code,path,oracle,expected_adapter,may_claim", MATRIX,
+@pytest.mark.parametrize("family,code,path,expected_adapter", MATRIX,
                          ids=[m[0] for m in MATRIX])
 def test_no_family_claims_behaviour_it_cannot_demonstrate(
-        family, code, path, oracle, expected_adapter, may_claim):
+        family, code, path, expected_adapter):
     """The invariant that matters: false behavioral_complete rate is zero.
 
-    Every family gets a smoke pass. Only the families with a real oracle may
-    reach complete on that basis.
+    Every family gets a smoke pass, and none may claim behaviour on that
+    basis: no verifier here demonstrates more than syntax.
     """
     rec = _record(expected_adapter)
-    if may_claim and expected_adapter == A.ADAPTER_ALGORITHMIC_IO:
-        assert rec["evidence_strength"] == C.ORACLE
-        assert rec["closure_eligible"] is True
+    # Nothing here may claim behavioural strength.
+    assert rec["evidence_strength"] in (C.SYNTAX, C.RUNTIME), family
+    # It may still close if its own contract floor is that low -- a
+    # stylesheet has no behaviour to demand -- but never otherwise.
+    floor = A.closure_floor(expected_adapter)
+    if rec["closure_eligible"]:
+        assert floor == rec["evidence_strength"], \
+            f"{family} closed above its demonstrated strength"
+        assert floor == C.SYNTAX, f"{family} closed without behaviour"
     else:
-        # Nothing here may claim behavioural strength.
-        assert rec["evidence_strength"] in (C.SYNTAX, C.RUNTIME), family
-        # It may still close if its own contract floor is that low -- a
-        # stylesheet has no behaviour to demand -- but never otherwise.
-        floor = A.closure_floor(expected_adapter)
-        if rec["closure_eligible"]:
-            assert floor == rec["evidence_strength"], \
-                f"{family} closed above its demonstrated strength"
-            assert floor == C.SYNTAX, f"{family} closed without behaviour"
-        else:
-            assert C.STRENGTH_ORDER.index(floor) > \
-                C.STRENGTH_ORDER.index(rec["evidence_strength"]) \
-                or not rec["supported"] or not rec["requirements_complete"], family
+        assert C.STRENGTH_ORDER.index(floor) > \
+            C.STRENGTH_ORDER.index(rec["evidence_strength"]) \
+            or not rec["supported"] or not rec["requirements_complete"], family
 
 
-@pytest.mark.parametrize("family,code,path,oracle,expected_adapter,may_claim", MATRIX,
+@pytest.mark.parametrize("family,code,path,expected_adapter", MATRIX,
                          ids=[m[0] for m in MATRIX])
 def test_unsupported_is_never_represented_as_failed(
-        family, code, path, oracle, expected_adapter, may_claim):
+        family, code, path, expected_adapter):
     rec = _record(expected_adapter)
     assert rec["execution_status"] != C.EXEC_ERROR, \
         f"{family}: the smoke check passed, so it is unverified, not failed"

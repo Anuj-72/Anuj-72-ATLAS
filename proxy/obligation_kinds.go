@@ -25,9 +25,9 @@ import (
 // is a subject, and a command string in an operator log is a content leak; a
 // uniform rule that never carries text cannot leak one by exception.
 //
-// The same vocabulary exists in v3-service/obligations.py. Two copies of a
-// closed set is a divergence waiting to happen, so a contract test parses
-// both and fails when they disagree.
+// This is the only copy of the vocabulary. The V3 service never receives
+// task obligations -- V3GenerateRequest has no field for them -- so nothing
+// there names a kind.
 
 const (
 	// ObligationArtifactExists: the artifact the client named must exist at
@@ -164,7 +164,7 @@ func knownObligationKind(kind string) bool {
 //
 // Deterministic and content-free: the subject is hashed, so the id can be
 // logged, compared and carried on the wire without ever holding a path's
-// contents or a command's text. v3-service computes the same string.
+// contents or a command's text.
 func obligationID(kind, subject string) (string, bool) {
 	if !knownObligationKind(kind) || strings.TrimSpace(subject) == "" {
 		return "", false
@@ -237,26 +237,6 @@ func newTaskObligation(kind, subject, baselineStrength string, required bool) (t
 		ID: id, Kind: kind, Subject: subject,
 		RequiredStrength: strength, Required: required,
 	}, true
-}
-
-// obligationClosureFloor is the strongest floor any REQUIRED obligation
-// demands. An unsupported required obligation makes the floor unreachable
-// rather than absent: a record cannot close a task that owes something
-// nothing measured.
-func obligationClosureFloor(obs []taskObligation) string {
-	floor := evidenceStrengthOrder[0]
-	for _, o := range obs {
-		if !o.Required {
-			continue
-		}
-		if obligationUnsatisfiableKinds[o.Kind] {
-			return evidenceStrengthOrder[len(evidenceStrengthOrder)-1]
-		}
-		if strengthRank(o.RequiredStrength) > strengthRank(floor) {
-			floor = o.RequiredStrength
-		}
-	}
-	return floor
 }
 
 // --- the three roles, read off a derived obligation set ----------------------

@@ -186,26 +186,24 @@ CAP_PER_STEP = {
     "thresholds": {"severe": 0.30, "severe_mean": 0.40},
 }
 
-# Per candidate, per case input: what the sandbox reports back. Candidate
-# zero scores 1/5 rather than 0/5 on purpose — a clean 0/N sends the run
-# down the dead-oracle fast return and no candidates are ever generated,
-# which is the Suite A shape but leaves nothing to select between.
+# Per candidate, per case input: what the sandbox reports back. The three
+# scores differ so capture has something to tell apart. None of them decides
+# anything: the cases are model-generated and carry no rejection authority.
 CAP_SANDBOX_TABLE = {
-    # 1/5: below half, rejected, and each failure a different kind.
+    # 1/5, and each failure a different kind.
     (CAP_ZERO, "0"): CAP_PASS,
     (CAP_ZERO, "1"): (False, "", "AssertionError: got 2"),
     (CAP_ZERO, "2"): (False, "", "Traceback (most recent call last):\n"
                                  "NameError: name 'q' is not defined"),
     (CAP_ZERO, "3"): (False, "", "execution timed out after 15s"),
     (CAP_ZERO, "4"): (False, "", "AssertionError: got 5"),
-    # 3/5: the only candidate that reaches the pool.
+    # 3/5.
     (CAP_ONE, "0"): CAP_PASS,
     (CAP_ONE, "1"): CAP_PASS,
     (CAP_ONE, "2"): CAP_PASS,
     (CAP_ONE, "3"): (False, "", "AssertionError: got 5"),
     (CAP_ONE, "4"): (False, "", "AssertionError: got 6"),
-    # 2/5: a partial below half — rejected, and distinguishable from 1/5
-    # only because capture kept the score.
+    # 2/5: distinguishable from 1/5 only because capture kept the score.
     (CAP_TWO, "0"): CAP_PASS,
     (CAP_TWO, "1"): CAP_PASS,
     (CAP_TWO, "2"): (False, "", "AssertionError: got 5"),

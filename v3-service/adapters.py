@@ -886,14 +886,12 @@ class EmbedAdapter:
 # rather than a translator of someone else's grade.
 
 import contract
-import obligations
 
 # Adapter identities. These are the ids the pipeline records carry, declared
 # here because they name THIS layer's verifiers. test_adapters.py pins them
 # against the retiring module's copies for as long as that module exists.
 ADAPTER_JAVASCRIPT_COMPILE = "javascript_compile"
 ADAPTER_CSS_SYNTAX = "css_syntax"
-ADAPTER_ALGORITHMIC_IO = "algorithmic_io"
 ADAPTER_PYTHON_COMPILE = "python_compile"
 ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED = "interactive_python_unsupported"
 ADAPTER_UNSUPPORTED = "unsupported"
@@ -905,7 +903,6 @@ LIVE_ADAPTER_VERSION = "0.1.0-prototype"
 
 # Criterion ids this layer declares. Opaque above it: nothing interprets them,
 # and no task vocabulary appears here.
-CRITERION_ORACLE_CASES = "oracle_cases_pass"
 CRITERION_PARSES = "parses"
 
 # --- registry: what an adapter may declare, and what must back it -----------
@@ -928,22 +925,12 @@ CRITERION_PARSES = "parses"
 # candidate in that run could reach closure -- not for want of an oracle, but
 # because that route could not reach closure at all.
 #
-# That quarantine is now lifted, because the thing it was waiting for exists:
-# obligations.py owns what a TASK requires, so an adapter no longer has to
-# declare a requirement in order to be measured against one. What remains here
-# is the honest upper bound -- which criteria this verifier observes, and which
-# obligation KINDS it owns an evaluator for. python_compile requires nothing of
-# the task and measures what it actually compiles.
-#
-# Two declarations, kept apart on purpose:
-#
-#   capabilities        criterion ids this verifier observes about a run
-#   obligation_kinds    kinds of TASK obligation it owns an evaluator for
-#
-# A syntax verifier owns syntactic_validity and nothing above it. Owning a kind
-# is necessary and not sufficient: contract_record also refuses to report on an
-# obligation whose floor is above the strength the run actually reached, so a
-# capability can never stand in for the evidence.
+# The registry below makes all three explicit, and check_registry checks them
+# against each other at import. Each adapter requires exactly the criteria it
+# observes, each backed by an evaluator: python_compile requires only that the
+# artifact parses, which is what it measures. What a TASK owes is not declared
+# here. The proxy derives that from the validated request
+# (proxy/obligation_kinds.go), and none of it reaches this service.
 
 SUPPORT_ALWAYS = "always"
 SUPPORT_NEVER = "never"
@@ -965,11 +952,10 @@ def _eval_on_acceptance(cid):
 def _unsupported_entry(support):
     """Answers the question by declining it.
 
-    It observes nothing and owns no obligation kind. Requirements are empty
-    because an adapter does not own the task's obligations: what this artifact
-    class owes is the task's to say, and what this verifier can show is
-    nothing. Unsupported is unverifiable -- never failed, and never vacuously
-    complete.
+    It observes nothing. Requirements are empty because an adapter does not
+    own the task's obligations: what this artifact class owes is the task's to
+    say, and what this verifier can show is nothing. Unsupported is
+    unverifiable -- never failed, and never vacuously complete.
     """
     return {
         "support": support,
@@ -977,43 +963,25 @@ def _unsupported_entry(support):
         "requirements": [],
         "evaluators": {},
         "unmeasurable": [],
-        "obligation_kinds": [],
     }
 
 
-def _measurable_entry(support, criteria, obligation_kinds):
+def _measurable_entry(support, criteria):
     return {
         "support": support,
         "capabilities": list(criteria),
         "requirements": [(c, True) for c in criteria],
         "evaluators": {c: _eval_on_acceptance(c) for c in criteria},
         "unmeasurable": [],
-        "obligation_kinds": list(obligation_kinds),
     }
 
 
-# algorithmic_io owns oracle-case evaluation, and it is reachable only where a
-# trusted declared case source exists: select_adapter routes to it on
-# has_io_oracle, which pipeline._trusted_oracle grants only when EVERY case
-# declares trusted provenance. A model-generated suite is not one, so the
-# declaration below describes a route the untrusted case can never take.
-_ALGORITHMIC_IO_KINDS = [obligations.KIND_SYNTACTIC_VALIDITY,
-                         obligations.KIND_DECLARED_EXAMPLE]
-
 REGISTRY = {
-    ADAPTER_ALGORITHMIC_IO: _measurable_entry(
-        SUPPORT_ALWAYS, [CRITERION_ORACLE_CASES], _ALGORITHMIC_IO_KINDS),
-    ADAPTER_CSS_SYNTAX: _measurable_entry(
-        SUPPORT_ALWAYS, [CRITERION_PARSES],
-        [obligations.KIND_SYNTACTIC_VALIDITY]),
+    ADAPTER_CSS_SYNTAX: _measurable_entry(SUPPORT_ALWAYS, [CRITERION_PARSES]),
     # Compiles the artifact in its own language and reports whether it parsed.
     # It requires nothing of the task and claims nothing above syntax.
-    ADAPTER_PYTHON_COMPILE: _measurable_entry(
-        SUPPORT_ALWAYS, [CRITERION_PARSES],
-        [obligations.KIND_SYNTACTIC_VALIDITY]),
-    ADAPTER_JAVASCRIPT_COMPILE: _measurable_entry(
-        SUPPORT_ALWAYS, [CRITERION_PARSES],
-        [obligations.KIND_SYNTACTIC_VALIDITY]),
+    ADAPTER_PYTHON_COMPILE: _measurable_entry(SUPPORT_ALWAYS, [CRITERION_PARSES]),
+    ADAPTER_JAVASCRIPT_COMPILE: _measurable_entry(SUPPORT_ALWAYS, [CRITERION_PARSES]),
     ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED: _unsupported_entry(SUPPORT_NEVER),
     ADAPTER_UNSUPPORTED: _unsupported_entry(SUPPORT_NEVER),
 }
@@ -1029,21 +997,6 @@ def evaluators_for(adapter):
 
 def unmeasurable_requirements(adapter):
     return list(REGISTRY.get(adapter, {}).get("unmeasurable", []))
-
-
-def obligation_capabilities(adapter):
-    """Which kinds of TASK obligation this verifier owns an evaluator for.
-
-    An upper bound, never a substitute: an adapter may evaluate an obligation
-    only when it owns the kind AND the run it performed actually reached that
-    obligation's floor. Both are checked; either alone is an over-claim.
-    """
-    return list(REGISTRY.get(adapter, {}).get("obligation_kinds", []))
-
-
-def can_evaluate(adapter, obligation):
-    """Whether this adapter owns an evaluator for this obligation's kind."""
-    return obligation.get("kind") in obligation_capabilities(adapter)
 
 
 def check_registry(registry):
@@ -1090,24 +1043,6 @@ def check_registry(registry):
                 f"{adapter}: requires {unregistered} with no evaluator and no "
                 "registered reason; an obligation an adapter cannot measure "
                 "must be declared unmeasurable, not implied")
-        kinds = entry.get("obligation_kinds")
-        if kinds is None:
-            raise AdapterRegistryError(
-                f"{adapter}: declares no obligation_kinds; an adapter that does "
-                "not say which task obligations it can evaluate would be asked "
-                "to evaluate all of them")
-        unknown = sorted(set(kinds) - set(obligations.KINDS))
-        if unknown:
-            raise AdapterRegistryError(
-                f"{adapter}: declares unknown obligation kinds {unknown}")
-        never = sorted(set(kinds) & {obligations.KIND_UNSUPPORTED})
-        if never:
-            raise AdapterRegistryError(
-                f"{adapter}: declares {never}, which nothing can evaluate")
-        if kinds and support == SUPPORT_NEVER:
-            raise AdapterRegistryError(
-                f"{adapter}: never supports an artifact yet claims to evaluate "
-                f"{sorted(kinds)}")
     return True
 
 
@@ -1115,11 +1050,9 @@ check_registry(REGISTRY)
 
 # The strength a TASK on this artifact class must reach before it may close.
 # Declared per adapter, never a universal floor: a stylesheet has no runtime
-# behaviour to demand, an I/O task is not closed by anything weaker than its
-# oracle, and code whose behaviour matters but cannot be observed here stays
-# open rather than closing on a compile.
+# behaviour to demand, and code whose behaviour matters but cannot be observed
+# here stays open rather than closing on a compile.
 _CLOSURE_FLOOR = {
-    ADAPTER_ALGORITHMIC_IO: contract.ORACLE,
     ADAPTER_CSS_SYNTAX: contract.SYNTAX,
 }
 
@@ -1146,8 +1079,8 @@ def _requirements(adapter):
     an obligation an adapter cannot measure must appear in its `unmeasurable`
     quarantine, which the registry check enforces.
 
-    Still adapter-owned for now. Moving ownership to the task is the next
-    slice: it changes which records are selectable, and this one may not.
+    Adapter-owned: the task's own obligations are derived in the proxy and
+    never reach this service.
     """
     return [contract.requirement(cid, required=req)
             for cid, req in REGISTRY.get(adapter, {}).get("requirements", [])]
@@ -1181,71 +1114,25 @@ def _supported(adapter):
         f"{adapter!r} has no support declaration; refusing to assume one")
 
 
-def _strength_and_execution(adapter, accepted, supported):
+def _strength_and_execution(accepted, supported):
     """What this verifier demonstrated, and whether its run completed.
 
-    Derived from the observations themselves. An oracle claim is made only
-    where an oracle ran; a compile that accepted the artifact demonstrated
-    syntax and nothing above it; and an artifact the adapter cannot support
-    is unverified, never failed.
+    Derived from the observations themselves. Every verifier here checks
+    syntax: one that accepted the artifact demonstrated syntax and nothing
+    above it, and an artifact the adapter cannot support is unverified, never
+    failed.
     """
     if not accepted:
         # The verifier demonstrated nothing at all.
         return contract.SYNTAX, contract.EXEC_ERROR, False
     if not supported:
         return contract.SYNTAX, contract.EXEC_SKIPPED, False
-    if adapter == ADAPTER_ALGORITHMIC_IO:
-        return contract.ORACLE, contract.EXEC_OK, True
     return contract.SYNTAX, contract.EXEC_OK, True
-
-
-def _obligation_reach(adapter, task_obligations, strength):
-    """Which task obligations this record may report on, and what it saw.
-
-    Two independent bounds, both necessary:
-
-      kind      the adapter must own an evaluator for that kind of obligation;
-      strength  the run must have reached the obligation's own floor.
-
-    Either alone is an over-claim. A compile owns syntactic_validity, so it
-    passes the first bound for a behavioural obligation it does not own -- and
-    a hypothetical adapter that owned declared_command would still be refused
-    for one while its run only demonstrated syntax. Everything outside both
-    bounds is reported not_applicable by contract.build, which is "we could not
-    look", never "absent".
-    """
-    reachable = []
-    for o in task_obligations:
-        if not can_evaluate(adapter, o):
-            continue
-        required = o.get("required_strength")
-        if required not in contract.STRENGTH_ORDER:
-            continue
-        if contract.STRENGTH_ORDER.index(strength) < \
-                contract.STRENGTH_ORDER.index(required):
-            continue
-        reachable.append(o)
-    return reachable
-
-
-def _obligation_observations(reachable, accepted):
-    """What this verifier saw about each obligation within its reach.
-
-    The verifier's own accept/reject IS its evaluator: a compile that accepted
-    the artifact demonstrated it parses, and one that did not saw nothing. A
-    criterion an adapter can measure and did not see is UNOBSERVED, never
-    REFUTED -- claiming refutation it did not observe is the same overreach as
-    claiming demonstration.
-    """
-    return {o["id"]: contract.observation(
-        contract.DEMONSTRATED if accepted else contract.UNOBSERVED)
-        for o in reachable}
 
 
 def contract_record(*, adapter, accepted, contract_id,
                     contract_version, artifact_scope, evaluation_context_hash,
-                    candidate_content_hash, minimum_closure_strength=None,
-                    task_obligations=None):
+                    candidate_content_hash):
     """One finalized contract record, built here and derived by contract.py.
 
     The caller hands over raw observation inputs -- which verifier ran and
@@ -1253,42 +1140,21 @@ def contract_record(*, adapter, accepted, contract_id,
     else is this layer's declaration or the contract's derivation; no grading
     from elsewhere is translated.
 
-    `task_obligations` is what the TASK owes, derived from the validated
-    request by obligations.py. When it is supplied the record is measured
-    against it, the closure floor is the strongest floor those obligations
-    demand, and this adapter reports only on the ones it owns and reached.
-
-    When it is absent -- a caller that stated no structured knowledge -- the
-    record falls back to the adapter's own measurable criteria. That record
-    describes what a verifier saw and carries no task authority: nothing about
-    a run whose obligations were never stated can be promoted into a trusted
-    structured claim, which is why the two paths are separate rather than one
-    path with an empty list.
+    The record is measured against the adapter's own measurable criteria and
+    closes at the adapter's own floor. It describes what a verifier saw and
+    carries no task authority: the task's obligations are derived in the
+    proxy and never reach this service.
     """
     supported = _supported(adapter)
     strength, execution_status, supported = _strength_and_execution(
-        adapter, accepted, supported)
+        accepted, supported)
 
-    if task_obligations is None:
-        floor = minimum_closure_strength or closure_floor(adapter)
-        requirements = _requirements(adapter)
-        observations = _observations(adapter, accepted)
-        capabilities = _capabilities(adapter)
-    else:
-        # Raises on an unknown kind or strength: an obligation nothing can
-        # name must not survive into a record that will be measured.
-        obligations.validate(task_obligations)
-        floor = minimum_closure_strength or obligations.closure_floor(task_obligations)
-        requirements = obligations.to_requirements(task_obligations)
-        reachable = _obligation_reach(adapter, task_obligations, strength)
-        observations = _obligation_observations(reachable, accepted)
-        capabilities = [o["id"] for o in reachable]
-
-    task = contract.task_contract(contract_id, contract_version, requirements,
-                                  minimum_closure_strength=floor)
+    task = contract.task_contract(contract_id, contract_version,
+                                  _requirements(adapter),
+                                  minimum_closure_strength=closure_floor(adapter))
     return contract.build(
         task, adapter, LIVE_ADAPTER_VERSION,
-        observations, capabilities,
+        _observations(adapter, accepted), _capabilities(adapter),
         strength, execution_status=execution_status, supported=supported,
         artifact_scope=artifact_scope,
         evaluation_context_hash=evaluation_context_hash,
@@ -1338,7 +1204,7 @@ _INTERACTIVE_PY_RE = re.compile(
 
 
 
-def select_adapter(file_path: str, code: str, has_io_oracle: bool = False) -> str:
+def select_adapter(file_path: str, code: str) -> str:
     """Which verifier can speak for this artifact. Capability, not keywords."""
     ext = (file_path or "").lower().rsplit(".", 1)
     ext = ("." + ext[-1]) if len(ext) == 2 else ""
@@ -1347,7 +1213,7 @@ def select_adapter(file_path: str, code: str, has_io_oracle: bool = False) -> st
     if ext in (".py",):
         if _INTERACTIVE_PY_RE.search(code):
             return ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED
-        return ADAPTER_ALGORITHMIC_IO if has_io_oracle else ADAPTER_PYTHON_COMPILE
+        return ADAPTER_PYTHON_COMPILE
     if ext in (".js", ".mjs"):
         return ADAPTER_JAVASCRIPT_COMPILE
     if ext in (".jsx", ".tsx", ".ts"):

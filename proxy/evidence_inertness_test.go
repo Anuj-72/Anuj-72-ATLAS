@@ -311,7 +311,7 @@ func TestTerminalCompletionReadsNoEvidence(t *testing.T) {
 		"missingExpectedOutputs":    true,
 	}
 	banned := append(append([]string{}, provenanceReaders...),
-		"deriveTaskObligations", "obligationID", "obligationClosureFloor",
+		"deriveTaskObligations", "obligationID",
 		"baselineIdentityFor", "workspaceIdentity")
 	for _, fn := range banned {
 		for site := range callSites(files, fn) {

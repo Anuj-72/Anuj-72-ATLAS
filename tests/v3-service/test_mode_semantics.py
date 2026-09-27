@@ -3,9 +3,9 @@
 Phase zero may return early only when the record built for the delivered
 bytes closes under the task's contract. A compile that accepted the artifact
 demonstrates syntax and nothing above it, so it never closes a task whose
-floor is behaviour; an oracle that every case passed does. There is one mode:
-the record decides closure, `contract.select` fills the envelope's selection,
-and the lens chooses the delivered bytes.
+floor is behaviour; a stylesheet, whose floor is syntax, may close on it.
+There is one mode: the record decides closure, `contract.select` fills the
+envelope's selection, and the lens chooses the delivered bytes.
 """
 
 import re
@@ -62,45 +62,30 @@ class _Embed:
         return []
 
 
-def _sandbox_factory(self_test_pass=True, smoke_ok=True, partial_oracle=False,
-                     passing_marker=None):
-    seen = {"cases": 0}
-
+def _sandbox_factory(smoke_ok=True, passing_marker=None):
     class _Sandbox:
         def __init__(self, project_files=None):
             pass
 
         def __call__(self, code, test_input="", **_):
-            if "SELF_TEST_PASS" in code:
-                seen["cases"] += 1
-                if passing_marker is not None:
-                    # Only the artifact carrying the marker satisfies its own
-                    # suite; everything else scores below half and fails.
-                    ok = passing_marker in code or seen["cases"] % 3 == 1
-                    if passing_marker in code:
-                        ok = True
-                    return (True, "SELF_TEST_PASS", "") if ok else (True, "WRONG", "")
-                if partial_oracle:
-                    # One case passes, the rest do not: a suite that CAN
-                    # separate candidates, and a candidate that underperforms.
-                    ok = seen["cases"] == 1
-                else:
-                    ok = self_test_pass
-                return (True, "SELF_TEST_PASS", "") if ok else (True, "WRONG", "")
-            return (smoke_ok, "ok", "") if smoke_ok else (False, "", "boom")
+            if passing_marker is not None:
+                # Only the artifact carrying the marker executes; everything
+                # else fails in the sandbox, so nothing passes before repair.
+                ok = passing_marker in code
+            else:
+                ok = smoke_ok
+            return (True, "ok", "") if ok else (False, "", "boom")
     return _Sandbox
 
 
-def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
-             task_type="algorithmic", plan_calls=None,
-             record_hook=None, code=PROBE_CODE, partial_oracle=False,
+def _service(monkeypatch, *, smoke_ok=True, task_type="algorithmic",
+             plan_calls=None, record_hook=None, code=PROBE_CODE,
              passing_marker=None):
     """A V3PipelineService whose every outside dependency is controlled."""
     monkeypatch.setattr(_LLM, "code", code)
     monkeypatch.setattr(adapters, "LLMAdapter", _LLM)
     monkeypatch.setattr(adapters, "SandboxAdapter",
-                        _sandbox_factory(self_test_pass, smoke_ok, partial_oracle,
-                                         passing_marker))
+                        _sandbox_factory(smoke_ok, passing_marker))
     monkeypatch.setattr(adapters, "EmbedAdapter", _Embed)
     monkeypatch.setattr(scoring, "classify_task_type", lambda p: task_type)
     monkeypatch.setattr(scoring, "score_candidate", lambda code: (1.0, 0.1, False))
@@ -125,20 +110,9 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
                             lambda **kw: record_hook(real, kw))
 
     service = P.V3PipelineService()
-    if oracle_cases:
-        # These stand in for a REAL oracle — repository or task-supplied
-        # cases whose expected output ATLAS did not invent. They declare
-        # trusted provenance, so they keep the reject-and-close authority
-        # model-generated cases no longer have.
-        cases = [SimpleNamespace(input_str="1", expected_output="1",
-                                 provenance=P.PROVENANCE_TRUSTED)
-                 for _ in range(oracle_cases)]
-        service.self_test_gen = SimpleNamespace(
-            generate=lambda problem, llm, task_id: SimpleNamespace(test_cases=cases))
-    else:
-        service.self_test_gen = SimpleNamespace(
-            generate=lambda problem, llm, task_id:
-                (_ for _ in ()).throw(RuntimeError("unavailable")))
+    service.self_test_gen = SimpleNamespace(
+        generate=lambda problem, llm, task_id:
+            (_ for _ in ()).throw(RuntimeError("unavailable")))
 
     calls = plan_calls if plan_calls is not None else []
 
@@ -159,50 +133,28 @@ def _service(monkeypatch, *, oracle_cases=0, self_test_pass=True, smoke_ok=True,
 # A script whose only verifier is a compile: syntax evidence, never closure.
 PLAIN_JS = "function add(a, b) { return a + b; }\nconsole.log(add(1, 2));\n"
 
+# A stylesheet: its contract floor is syntax, so an accepted one closes.
+PLAIN_CSS = "body { color: red; }\n"
+
 
 def _run(service, file_path, problem="build the thing"):
     return service.run(problem, task_id="t", file_path=file_path)
 
 
-# 1. Algorithmic I/O with a complete oracle: a legitimate close.
-def test_algorithmic_oracle_closes_without_generating(monkeypatch):
-    service, calls = _service(monkeypatch, oracle_cases=2, self_test_pass=True)
-    result = _run(service, "solve.py")
-
-    assert result["phase_solved"] == "probe"
-    assert result["passed"] is True
-    assert calls == [], "a closed pipeline must not generate alternatives"
-    rec = result["evidence_record"]
-    assert rec["evidence_strength"] == C.ORACLE
-    assert rec["closure_eligible"] is True
-    assert rec["candidate_content_hash"] == C.content_hash(result["code"])
-
-
-# 1b. The bytes that close the run are the bytes the model wrote. PROBE_CODE
+# 1. The bytes that close the run are the bytes the model wrote. PLAIN_CSS
 # ends in a newline and reaches the pipeline through a fenced response, so
 # this is exact-byte identity across extraction, selection and the hash the
 # proxy will compare against the bytes it holds.
 def test_the_closing_candidate_is_the_models_exact_bytes(monkeypatch):
-    service, _ = _service(monkeypatch, oracle_cases=2, self_test_pass=True)
-    result = _run(service, "solve.py")
+    service, _ = _service(monkeypatch, task_type="interactive", code=PLAIN_CSS)
+    result = _run(service, "theme.css")
 
-    assert result["code"] == PROBE_CODE
+    assert result["phase_solved"] == "probe"
+    assert result["code"] == PLAIN_CSS
     assert result["code"].endswith("\n")
     rec = result["evidence_record"]
-    assert rec["candidate_content_hash"] == C.content_hash(PROBE_CODE)
+    assert rec["candidate_content_hash"] == C.content_hash(PLAIN_CSS)
     assert rec["candidate_content_hash"] == C.content_hash(result["code"])
-
-
-# 2. Algorithmic I/O that does not pass its own suite: no closure claim.
-def test_algorithmic_partial_does_not_close_and_generates(monkeypatch):
-    service, calls = _service(monkeypatch, oracle_cases=3, partial_oracle=True)
-    result = _run(service, "solve.py")
-
-    assert result["phase_solved"] != "probe"
-    rec = result["evidence_record"]
-    assert rec["closure_eligible"] is False
-    assert rec["evidence_strength"] != C.ORACLE
-    assert len(calls) == 1, "alternatives must be generated"
 
 
 # 5. A contract whose declared floor IS syntax may close on syntax evidence.
@@ -241,13 +193,13 @@ def test_hash_mismatch_cannot_close(monkeypatch):
         kw["candidate_content_hash"] = C.content_hash("some other artifact\n")
         return real(**kw)
 
-    service, calls = _service(monkeypatch, oracle_cases=2, self_test_pass=True,
-                              record_hook=_stale)
-    result = _run(service, "solve.py")
+    service, calls = _service(monkeypatch, task_type="interactive",
+                              code=PLAIN_CSS, record_hook=_stale)
+    result = _run(service, "theme.css")
 
     rec = result["evidence_record"]
     assert rec["closure_eligible"] is True, "the record itself is well formed"
-    assert rec["candidate_content_hash"] != C.content_hash(PROBE_CODE)
+    assert rec["candidate_content_hash"] != C.content_hash(PLAIN_CSS)
     assert result["phase_solved"] != "probe", \
         "a record about other bytes may not close the pipeline"
     assert len(calls) == 1
@@ -374,8 +326,8 @@ def _assert_envelope_describes_delivery(result, phase):
 
 
 def test_probe_exit_describes_its_delivery(monkeypatch):
-    service, _ = _service(monkeypatch, oracle_cases=2, self_test_pass=True)
-    result = _run(service, "solve.py")
+    service, _ = _service(monkeypatch, task_type="interactive", code=PLAIN_CSS)
+    result = _run(service, "theme.css")
     env = _assert_envelope_describes_delivery(result, "probe")
     assert env["selection"]["status"] == C.SELECTION_VERIFIED_WINNER
     assert env["evaluation"]["closure_eligible"] is True
@@ -408,8 +360,7 @@ def test_phase_one_exit_describes_its_delivery(monkeypatch):
 
 def test_pr_cot_exit_describes_its_delivery(monkeypatch):
     repaired = "def repaired():\n    return 11\n"
-    service, calls = _service(monkeypatch, oracle_cases=3,
-                              passing_marker="repaired")
+    service, calls = _service(monkeypatch, passing_marker="repaired")
     service.plan_search = SimpleNamespace(
         generate=lambda problem, task_id, llm, num_plans=None,
         budget_tier="standard": SimpleNamespace(candidates=list(ALT_CODES),
@@ -427,8 +378,7 @@ def test_pr_cot_exit_describes_its_delivery(monkeypatch):
 
 def test_refinement_exit_describes_its_delivery(monkeypatch):
     winning = "def refined():\n    return 13\n"
-    service, calls = _service(monkeypatch, oracle_cases=3,
-                              passing_marker="refined")
+    service, calls = _service(monkeypatch, passing_marker="refined")
     service.pr_cot = SimpleNamespace(
         repair=lambda problem, code, error, llm_call, task_id:
             SimpleNamespace(repairs=[], total_tokens=0))
@@ -463,7 +413,7 @@ def test_every_successful_exit_is_covered():
 
 
 # =====================================================================
-# Model-generated cases lose their authority; a trusted oracle keeps its own.
+# Model-generated cases carry no authority.
 #
 # The captured ring2 shape: five generated cases, two keys agreeing with the
 # task's own reference and three disagreeing. The candidate matched the
@@ -555,17 +505,15 @@ def test_two_of_five_generated_cases_does_not_reject_the_candidate(monkeypatch):
     stages = [e["stage"] for e in result["events"]]
     assert "self_test_verify" in stages
     assert "self_test_untrusted" in stages
-    assert "self_test_inconclusive" not in stages
-    assert result["phase_solved"] != "oracle_inconclusive"
+    probe = [e for e in result["events"] if e["stage"] == "probe_sandbox"]
+    assert probe and probe[0]["detail"].startswith("passed=True"), probe
 
 
 def test_five_zero_of_n_results_do_not_skip_candidate_generation(monkeypatch):
-    """0/N from model-generated cases must not take the dead-oracle exit."""
+    """0/N from model-generated cases must not skip candidate generation."""
     result = _run_with(monkeypatch, _sandbox_scoring(0), _generated_cases(),
                        plan_candidates=[RING2_CANDIDATE.replace("strip", "rstrip")])
     stages = [e["stage"] for e in result["events"]]
-    assert "probe_unverifiable" not in stages
-    assert result["phase_solved"] != "oracle_inconclusive"
     assert "plansearch" in stages, "candidate generation must happen"
     assert result["candidates_generated"] >= 2
 
@@ -581,19 +529,6 @@ def test_a_generated_score_never_reaches_a_repair_prompt(monkeypatch):
     blob = repr(result.get("events", []))
     assert "Self-test:" not in blob
     assert "expected" not in blob.lower() or "self_test_untrusted" in blob
-
-
-def test_a_trusted_oracle_still_rejects_and_still_closes(monkeypatch):
-    """Requirement 6: correcting generated-case authority must not weaken a
-    real oracle."""
-    trusted = [SimpleNamespace(input_str=str(i), expected_output=str(i),
-                               provenance=P.PROVENANCE_TRUSTED)
-               for i in range(5)]
-    result = _run_with(monkeypatch, _sandbox_scoring(0), trusted)
-    stages = [e["stage"] for e in result["events"]]
-    assert "self_test_inconclusive" in stages
-    assert "self_test_untrusted" not in stages
-    assert result["phase_solved"] == "oracle_inconclusive"
 
 
 def test_a_syntax_failure_still_rejects_independently(monkeypatch):
@@ -617,7 +552,7 @@ def test_a_syntax_failure_still_rejects_independently(monkeypatch):
 
 
 def test_generated_evidence_never_reaches_closure_or_a_verified_winner(monkeypatch):
-    """With no trusted oracle nothing may close, whatever the pool did."""
+    """Generated cases close nothing, whatever the pool did."""
     result = _run_with(monkeypatch, _sandbox_scoring(5), _generated_cases(),
                        plan_candidates=[RING2_CANDIDATE.replace("strip", "rstrip")])
     record = result.get("evidence_record") or {}

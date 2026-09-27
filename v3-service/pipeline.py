@@ -57,11 +57,9 @@ _TELEMETRY_DISABLE_VALUES = {"0", "off", "none", "disabled", "false"}
 _STAGE_PHASE = {}
 for _phase, _stages in {
     "probe": ("probe", "probe_light", "probe_retry", "probe_failed",
-              "probe_error", "probe_scored", "probe_sandbox", "probe_pass",
-              "probe_unverifiable"),
+              "probe_error", "probe_scored", "probe_sandbox", "probe_pass"),
     "self_test": ("self_test_gen", "self_test_done", "self_test_error",
-                  "self_test_skip", "self_test_inconclusive",
-                  "self_test_untrusted"),
+                  "self_test_skip", "self_test_untrusted"),
     "allocation": ("phase2", "phase2_allocated", "diagnostic_allocation"),
     "generation": ("phase1", "plansearch", "plansearch_done",
                    "plansearch_error", "divsampling", "divsampling_done",
@@ -970,17 +968,21 @@ def _diagnostic_total_candidates(value) -> int:
 
 
 def _trusted_oracle(self_tests) -> bool:
-    """Whether these cases may decide anything about a candidate.
+    """Whether every case in this suite declares trusted provenance.
 
-    Only a suite whose every case declares trusted provenance is an oracle.
-    Model-generated cases are not: the same model wrote the code and the
-    answer, from the problem statement alone, and for these tasks producing
-    the expected output IS solving the problem. Measured on the captured
-    pool: 21 of 36 valid generated keys disagreed with the task's own
-    reference, and a correct candidate scored 2/5 against its own suite.
+    Model-generated cases are not trusted: the same model wrote the code and
+    the answer, from the problem statement alone, and for these tasks
+    producing the expected output IS solving the problem. Measured on the
+    captured pool: 21 of 36 valid generated keys disagreed with the task's
+    own reference, and a correct candidate scored 2/5 against its own suite.
+
+    The answer decides only whether verified_sandbox labels the score
+    `self_test_untrusted`; no suite rejects a candidate. Nothing in this
+    service produces a trusted case -- self_test_gen marks every case it
+    writes as generated -- so every score here carries that label.
 
     Unknown provenance fails closed. A case that cannot say where it came
-    from gets no authority, so a future producer must opt in deliberately
+    from is not trusted, so a future producer must opt in deliberately
     rather than inherit trust by omission.
     """
     cases = getattr(self_tests, "test_cases", None) or []
@@ -1013,9 +1015,7 @@ def _staged_candidate_run(code: str, inp: str, infile: str):
         # stdin at EOF, so a candidate that reads sys.stdin must terminate
         # immediately and fail fast. With no stdin attached it BLOCKS until
         # the sandbox timeout instead: measured live, one stdin candidate
-        # turned the probe into a 300s hang and the dead-oracle fast return
-        # never fired, because the probe "failed" by timeout rather than by
-        # inconclusive.
+        # turned the probe into a 300s hang.
         files[infile] = inp
         stdin_setup = "_s.stdin=_o.StringIO('')\n"
     else:
@@ -1093,8 +1093,7 @@ _CONSENSUS_MARK = "V3_OUT:"
 
 
 
-def _evaluate_candidate(file_path, code, smoke_passed, has_oracle, emit, *,
-                       task=None):
+def _evaluate_candidate(file_path, code, smoke_passed, emit, *, task=None):
     """THE canonical contract record for ONE artifact.
 
     An unsupported candidate stays available as a fallback but is never
@@ -1104,7 +1103,7 @@ def _evaluate_candidate(file_path, code, smoke_passed, has_oracle, emit, *,
     score or coverage field is kept beside it: a second authoritative copy is
     how two answers about one candidate start to disagree.
     """
-    adapter = adapters.select_adapter(file_path, code, has_oracle)
+    adapter = adapters.select_adapter(file_path, code)
     task = task or _task_identity("", "")
     return adapters.contract_record(
         adapter=adapter, accepted=bool(smoke_passed),
@@ -1130,9 +1129,8 @@ def _ensure_delivered_evidence(result, *, file_path, problem):
     runs here -- an artifact whose behaviour was never observed reports
     exactly that -- and the verifier's own accept/reject is the observation
     input, never a claim of complete evidence: `accepted` on an interactive
-    artifact still yields syntax-level, unsupported evidence, and only the
-    oracle adapter, which exists only where an oracle ran, reaches oracle
-    strength.
+    artifact still yields syntax-level, unsupported evidence, and no adapter
+    here reports more than syntax.
 
     It changes no path's `passed`, selection or return value. Where a legacy
     `passed=true` sits on evidence that is not closure-eligible, the envelope
@@ -1147,8 +1145,7 @@ def _ensure_delivered_evidence(result, *, file_path, problem):
     record = result.get("evidence_record")
     if not record or record.get("candidate_content_hash") != contract.content_hash(code):
         record = adapters.contract_record(
-            adapter=adapters.select_adapter(
-                file_path, code, bool(result.get("has_oracle"))),
+            adapter=adapters.select_adapter(file_path, code),
             accepted=bool(result.get("passed")),
             contract_id=task["contract_id"],
             contract_version=task["contract_version"],
@@ -1631,8 +1628,9 @@ class V3PipelineService:
         else:
             emit("self_test_skip", "Interactive task — using compile smoke-test")
 
-        # Set before verified_sandbox is ever called (phase 0 probe is the
-        # first caller, after the self-test generation below).
+        # Computed once, before verified_sandbox's first caller (the phase-0
+        # probe). The phase-3 regeneration below also writes generated cases,
+        # so it cannot change the answer.
         _has_trusted_oracle = _trusted_oracle(self_tests)
 
         import_comparison = None
@@ -1642,7 +1640,8 @@ class V3PipelineService:
                 remaining_ms=lambda: _remaining_budget_ms(start), check_cancel=check_client)
 
         def verified_sandbox(code, extra_test=""):
-            """Sandbox + verification. Algorithmic tasks: I/O self-tests; interactive: compile smoke."""
+            """Sandbox + verification. Algorithmic tasks: execution, with the
+            I/O self-tests recorded as diagnostics; interactive: compile smoke."""
             verification_evidence: List[Dict[str, Any]] = []
 
             def verify_build_if_requested(out="", err=""):
@@ -1710,7 +1709,7 @@ class V3PipelineService:
             if not ok:
                 return False, out, err, verification_evidence
             if self_tests and self_tests.test_cases:
-                p, fails = 0, []
+                p = 0
                 observed = []
                 for i, tc in enumerate(self_tests.test_cases):
                     try:
@@ -1719,11 +1718,8 @@ class V3PipelineService:
                         tp, to, te = sandbox(tc_code, files=tc_files)
                         if tp and "SELF_TEST_PASS" in to:
                             p += 1
-                        else:
-                            fails.append(f"TC{i+1}:{te[:60] if te else 'wrong'}")
                         observed.append(_capture_case(i, tc, tp, to, te))
                     except Exception as ex:
-                        fails.append(f"TC{i+1}:{str(ex)[:40]}")
                         observed.append(_capture_case(i, tc, False, "", "",
                                                       harness_error=str(ex)[:200]))
                 total = len(self_tests.test_cases)
@@ -1742,58 +1738,14 @@ class V3PipelineService:
                     # every per-case pair stay in telemetry and in the pool
                     # capture for offline analysis -- what changes is that
                     # nothing downstream reads them as a verdict.
-                    #
-                    # The verdict below is the part that does not depend on
-                    # the generated cases: the candidate executed, and the
-                    # project's own build command still gets to speak.
                     emit("self_test_untrusted",
                          f"{p}/{total} against model-generated cases — "
                          f"diagnostic only, no rejection authority",
                          cases=total, passed_cases=p,
                          provenance=PROVENANCE_GENERATED)
-                    return verify_build_if_requested(out, err)
-                # A suite the candidate passes NO case of says nothing about
-                # the candidate. The cases come from the same model that
-                # writes the code, and for these tasks producing an expected
-                # output IS solving the problem — so a wrong answer key and
-                # wrong code are indistinguishable at zero.
-                #
-                # Measured: 0 of 44 candidates across a 28-session run, with
-                # scores of 0/5, 0/4, 0/3 and never a partial. A check that
-                # rejects every candidate it sees is not evidence, and it
-                # cost the pipeline every winner it might have had — every
-                # passing session was won by the model's own direct write.
-                #
-                # A partial score is different: the suite has demonstrated
-                # some case is passable, so falling below half is the
-                # candidate underperforming a bar something else cleared.
-                if total > 0 and p == 0:
-                    # Inconclusive is not a pass. An earlier version emitted
-                    # this and fell through to the build check, which made
-                    # "it compiles" the whole of verification: a candidate
-                    # that failed every one of its own cases was marked
-                    # passed, joined the selection pool, and could be written
-                    # over the model's work. Measured on the two tasks whose
-                    # answer is computed from a file the program has to read:
-                    # 0/4 sessions correct on the run that shipped it,
-                    # against 1-2 of 4 on each of the four runs before.
-                    #
-                    # "Cannot condemn" and "therefore promote" are different
-                    # claims. A suite that passes nothing still establishes
-                    # nothing, so the candidate stays unverified and the
-                    # caller's own write stands — the rule the fallback path
-                    # below already states, that executing but wrong is worse
-                    # than an honest failure.
-                    emit("self_test_inconclusive",
-                         f"0/{total} — no case passed, so the suite cannot "
-                         f"separate a wrong answer key from wrong code. Not "
-                         f"verified; leaving the caller's own write in place",
-                         cases=total)
-                    return (False, out,
-                            f"Self-test:0/{total} inconclusive — nothing verified",
-                            verification_evidence)
-                elif total > 0 and p < total / 2:
-                    return False, out, f"Self-test:{p}/{total}. "+";".join(fails[:3]), verification_evidence
+            # The verdict is the part that does not depend on the self-test
+            # cases: the candidate executed, and the project's own build
+            # command still gets to speak.
             return verify_build_if_requested(out, err)
 
         # Score and test probe with self-generated tests. The probe is the
@@ -1842,14 +1794,8 @@ class V3PipelineService:
         # wrong for Pygame/Tkinter/Flask — those get a compile smoke and
         # nothing more, and would have closed the pipeline claiming behaviour
         # nobody demonstrated.
-        # A suite exists; whether it may DECIDE anything is a separate
-        # question, and only a trusted one may. Model-generated cases route
-        # the artifact to the no-oracle adapter, so nothing claims oracle
-        # strength on evidence that never had it.
-        _has_oracle = _trusted_oracle(self_tests)
-        # Recorded for the finaliser: which verifier the artifact was eligible
-        # for is a fact of the run, not something to re-derive afterwards.
-        result["has_oracle"] = _has_oracle
+        # The adapter is chosen from the artifact alone. The self-test cases
+        # play no part in it: they are diagnostics (see verified_sandbox).
         _task = _task_identity(file_path, problem)
         # The incumbent, measured the same way and kept apart. Only when the
         # diagnostic sink is on: with capture off this is not built, not
@@ -1861,7 +1807,7 @@ class V3PipelineService:
                     file_path, baseline_code,
                     scoring.smoke_compile_check(
                         baseline_code, sandbox, language=smoke_language, filename=file_path)[0],
-                    _has_oracle, emit, task=_task)
+                    emit, task=_task)
                 capture.note_incumbent(code=baseline_code, record=_inc,
                                        adapter=_inc["adapter_id"])
             except Exception as _exc:                  # noqa: BLE001
@@ -1872,8 +1818,7 @@ class V3PipelineService:
                     evaluation=f"unevaluated: {str(_exc)[:120]}")
 
         probe_result = _evaluate_candidate(
-            file_path, probe_code, probe_passed, _has_oracle, emit,
-            task=_task)
+            file_path, probe_code, probe_passed, emit, task=_task)
         probe_adapter = probe_result["adapter_id"]
         result["evidence_record"] = probe_result
         capture.note_candidate(
@@ -1896,8 +1841,8 @@ class V3PipelineService:
         # anything unsupported, failed or incomparable, and any record whose
         # hash does not match these bytes, all leave the pipeline open. The
         # strength floor comes from the contract, so an artifact class whose
-        # contract closes on syntax legitimately may, and one that demands an
-        # oracle still cannot close on a compile.
+        # contract closes on syntax legitimately may, and one that demands
+        # behaviour still cannot close on a compile.
         if probe_passed and _record_closes(probe_result, probe_code):
             emit("probe_pass", "Probe passed — returning early")
             result["passed"] = True
@@ -1907,34 +1852,6 @@ class V3PipelineService:
             result["total_time_ms"] = (time.time() - start) * 1000
             result["verification_evidence"] = probe_evidence
             result["winning_score"] = probe_energy_norm
-            result["events"] = events
-            return result
-
-        # The oracle condemned nothing and certified nothing (0/N), and the
-        # probe executes. Every candidate this pipeline could generate faces
-        # the same broken answer key, so none can be verified either —
-        # measured across every logged run: zero candidates ever selected on
-        # this path, every session ending in fallback_unverified after
-        # burning the full budget (~300s per write), leaving too little
-        # session time for the model's own write-run-fix loop. When
-        # verification cannot distinguish candidates, generating them buys
-        # nothing: return unverified FAST and let the caller's own draft
-        # stand. A partial oracle score (some case passed) still runs the
-        # full pipeline, because there the suite can actually rank.
-        # Untrusted cases never produce the inconclusive verdict above, and
-        # the guard says so rather than relying on that: a 0/N from
-        # model-generated cases must not skip candidate generation, which is
-        # how every session on this path returned nothing at all.
-        if _has_oracle and "inconclusive" in (probe_stderr or ""):
-            emit("probe_unverifiable",
-                 "self-test cannot certify anything (0/N) and the probe "
-                 "executes — skipping candidate generation, returning "
-                 "unverified without spending the budget")
-            result["passed"] = False
-            result["code"] = ""
-            result["phase_solved"] = "oracle_inconclusive"
-            result["candidates_generated"] = 1
-            result["total_time_ms"] = (time.time() - start) * 1000
             result["events"] = events
             return result
 
@@ -2210,8 +2127,7 @@ class V3PipelineService:
                     # rank_key saw defaults for it.
                     if "contract_record" not in c:
                         c["contract_record"] = _evaluate_candidate(
-                            file_path, c["code"], True, _has_oracle, emit,
-                            task=_task)
+                            file_path, c["code"], True, emit, task=_task)
                     _capture_pool_member(capture, c, probe_code)
                     passing.append(c)
                     continue
@@ -2228,8 +2144,7 @@ class V3PipelineService:
                 # is how the boolean survived into the candidate path, letting
                 # ATLAS generate alternatives it could not rank.
                 c["contract_record"] = _evaluate_candidate(
-                    file_path, c["code"], passed, _has_oracle, emit,
-                    task=_task)
+                    file_path, c["code"], passed, emit, task=_task)
                 _capture_pool_member(capture, c, probe_code)
                 if passed:
                     passing.append(c)
@@ -2244,24 +2159,24 @@ class V3PipelineService:
             emit("sandbox_done", f"{len(passing)}/{len(candidates)} passed",
                  passed=len(passing), total=len(candidates))
 
-            # Nothing passed, which for these tasks usually means the answer
-            # key was wrong rather than every candidate. Measured across 42
-            # verifications in one run: all 42 scored 0/N, and a candidate
-            # pulled from those logs passed immediately against a correct
-            # expected value. The pipeline has never selected a candidate in
-            # any measured run — every session shipped the model's own draft.
+            # Nothing passed: every candidate failed to execute (or, outside
+            # Python, its syntax check) or failed the project's build command.
+            # The generated cases decided none of that -- they carry no
+            # rejection authority -- so this runs whenever nothing passed and
+            # a generated suite exists.
             #
             # Fall back to the agreement signal CodeT actually uses: run the
             # candidates on the generated INPUTS and take the largest cluster
-            # that produced the same answers. Narrow on purpose — this only
-            # runs where the oracle has already condemned everything, so a
-            # working suite keeps deciding.
+            # that produced the same answers. The generated expected outputs
+            # are not used. Measured across 42 verifications in one run: all
+            # 42 scored 0/N against them, and a candidate pulled from those
+            # logs passed immediately against a correct expected value.
             #
             # Agreement is not verification. Winners are marked `consensus`,
-            # never `passed`: a candidate that failed the project's own build
-            # command is still one that failed it. And a trusted oracle is not
-            # overruled by candidates agreeing with each other.
-            if not passing and self_tests and self_tests.test_cases and not _has_oracle:
+            # never `passed`, and a candidate that failed a project check is
+            # left out: a candidate that failed the project's own build
+            # command is still one that failed it.
+            if not passing and self_tests and self_tests.test_cases:
                 agreed = _consensus_winners(
                     [c for c in candidates if not _failed_a_project_check(c)],
                     self_tests.test_cases, sandbox, emit, task_input_file)
@@ -2611,11 +2526,12 @@ class V3PipelineService:
                 for c in candidates if not c.get("passed")
             ]
 
-            # Repair verifies against the SAME self-tests phase 0 generated —
-            # verified_sandbox closes over them. Regenerate only when phase 0
-            # produced none (e.g. a transient LLM failure); a failed retry here
-            # must not downgrade an existing good set to None. Interactive
-            # tasks repair against compile-smoke (PC-022).
+            # Repair runs the SAME self-tests phase 0 generated —
+            # verified_sandbox closes over them and records each score as a
+            # diagnostic. Regenerate only when phase 0 produced none (e.g. a
+            # transient LLM failure); a failed retry here must not downgrade an
+            # existing good set to None. Interactive tasks repair against
+            # compile-smoke (PC-022).
             if task_type == "algorithmic" and not (self_tests and self_tests.test_cases):
                 emit("self_test_gen", "Generating self-tests...")
                 try:
@@ -2704,8 +2620,8 @@ class V3PipelineService:
                             role="repair", index=None, code=repair_code,
                             accepted=passed,
                             record=_evaluate_candidate(
-                                file_path, repair_code, passed, _has_oracle,
-                                emit, task=_task),
+                                file_path, repair_code, passed, emit,
+                                task=_task),
                             phase="repair_pr_cot", lens=repair_lens)
                         if passed:
                             emit("pr_cot_pass", "PR-CoT repair succeeded!",
@@ -2789,7 +2705,7 @@ class V3PipelineService:
                             code=ref_result.winning_code, accepted=passed,
                             record=_evaluate_candidate(
                                 file_path, ref_result.winning_code, passed,
-                                _has_oracle, emit, task=_task),
+                                emit, task=_task),
                             phase="refinement", lens=refinement_lens)
                         if passed:
                             emit("refinement_pass",

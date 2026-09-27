@@ -15,8 +15,8 @@ generation, its value is discarded, and nothing is skipped.
 
 ## Obligations: what a task owes
 
-A validated `TaskContract` is turned into typed obligations. Six kinds, mirrored
-in Go and Python with a divergence contract test:
+A validated `TaskContract` is turned into typed obligations by the proxy
+(`proxy/obligation_kinds.go`). Six kinds:
 
 | Kind | Subject | Comes from |
 | --- | --- | --- |

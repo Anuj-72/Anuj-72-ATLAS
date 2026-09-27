@@ -759,21 +759,23 @@ func TestLocalValidationCannotUpgradeServiceEvidence(t *testing.T) {
 
 // A live round trip: the real Python serialiser writes the envelope, HTTP
 // carries it, Go decodes it and authorizes on it. Nothing in this test builds
-// a Go-side envelope by hand.
+// a Go-side envelope by hand. The record is the stylesheet adapter's: its
+// contract floor is syntax, so an accepted stylesheet is a closure-eligible
+// verified winner, which no other adapter's record can be.
 func TestLivePythonEnvelopeAuthorizesDelivery(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 unavailable")
 	}
-	code := "def solve():\n    return 42\n"
+	code := "body { color: red; }\n"
 	script := `
 import json, sys
 sys.path.insert(0, "../v3-service")
 import adapters, contract
 code = json.loads(sys.stdin.read())["code"]
 record = adapters.contract_record(
-    adapter=adapters.ADAPTER_ALGORITHMIC_IO, accepted=True,
-    contract_id="generate:py", contract_version="1", artifact_scope="solve.py",
-    evaluation_context_hash=contract.content_hash("solve it"),
+    adapter=adapters.ADAPTER_CSS_SYNTAX, accepted=True,
+    contract_id="generate:css", contract_version="1", artifact_scope="theme.css",
+    evaluation_context_hash=contract.content_hash("style it"),
     candidate_content_hash=contract.content_hash(code))
 selection = contract.select([record], record)
 print(json.dumps({
@@ -805,7 +807,7 @@ print(json.dumps({
 	defer srv.Close()
 
 	got, err := callV3GenerateStreaming(context.Background(), srv.URL,
-		V3GenerateRequest{FilePath: "solve.py", BaselineCode: "x = 1\n"}, nil)
+		V3GenerateRequest{FilePath: "theme.css", BaselineCode: "body {}\n"}, nil)
 	if err != nil {
 		t.Fatalf("bridge call failed: %v", err)
 	}
@@ -822,7 +824,7 @@ print(json.dumps({
 	if ok, why := v3DeliveryAuthorized(got, got.Code); !ok {
 		t.Fatalf("live verified winner refused: %s", why)
 	}
-	delivered, proposed := proposedV3Candidate(got, "x = 1\n")
+	delivered, proposed := proposedV3Candidate(got, "body {}\n")
 	if !proposed || delivered != code {
 		t.Fatalf("live winner not proposed: %q proposed=%v", delivered, proposed)
 	}

@@ -418,19 +418,15 @@ def test_unmeasurable_is_distinct_from_missing():
 # --- live record bridging --------------------------------------------------
 
 def test_oracle_strength_is_claimed_only_where_an_oracle_ran():
-    io_rec = A.contract_record(
-        adapter=A.ADAPTER_ALGORITHMIC_IO, accepted=True,
-        contract_id="c", contract_version="1", artifact_scope="s.py",
-        evaluation_context_hash=C.content_hash("ctx"),
-        candidate_content_hash=C.content_hash(CODE))
-    compile_rec = A.contract_record(
-        adapter=A.ADAPTER_JAVASCRIPT_COMPILE, accepted=True,
-        contract_id="c", contract_version="1", artifact_scope="s.js",
-        evaluation_context_hash=C.content_hash("ctx"),
-        candidate_content_hash=C.content_hash(CODE))
-
-    assert io_rec["evidence_strength"] == C.ORACLE
-    assert compile_rec["evidence_strength"] == C.SYNTAX
+    """No verifier here runs an oracle, so no live record claims its
+    strength: an accepted artifact demonstrated syntax and nothing above it."""
+    for adapter in A.ALL_ADAPTERS:
+        rec = A.contract_record(
+            adapter=adapter, accepted=True,
+            contract_id="c", contract_version="1", artifact_scope="s",
+            evaluation_context_hash=C.content_hash("ctx"),
+            candidate_content_hash=C.content_hash(CODE))
+        assert rec["evidence_strength"] == C.SYNTAX, adapter
 
 
 # --- ownership boundaries --------------------------------------------------

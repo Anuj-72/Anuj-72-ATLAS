@@ -34,11 +34,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "v3-service"))
 
 import adapters as A
-import obligations as O  # noqa: E402
 import contract as C  # noqa: E402
 
-ALL_SIX = [
-    A.ADAPTER_ALGORITHMIC_IO, A.ADAPTER_CSS_SYNTAX,
+ALL_FIVE = [
+    A.ADAPTER_CSS_SYNTAX,
     A.ADAPTER_PYTHON_COMPILE, A.ADAPTER_JAVASCRIPT_COMPILE,
     A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED, A.ADAPTER_UNSUPPORTED,
 ]
@@ -47,11 +46,11 @@ ALL_SIX = [
 # --- every adapter is declared, for all three facts -------------------------
 
 def test_every_adapter_is_registered():
-    assert set(A.ALL_ADAPTERS) == set(ALL_SIX), (
+    assert set(A.ALL_ADAPTERS) == set(ALL_FIVE), (
         "the registry and the adapter identities disagree")
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_every_adapter_declares_support_explicitly(adapter):
     assert adapter in A.SUPPORT_DECLARATION, (
         f"{adapter} does not declare whether it supports an artifact; "
@@ -59,7 +58,7 @@ def test_every_adapter_declares_support_explicitly(adapter):
     assert A.SUPPORT_DECLARATION[adapter] in A.SUPPORT_KINDS
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_every_declared_capability_has_an_evaluator(adapter):
     caps = set(A._capabilities(adapter))
     evals = set(A.evaluators_for(adapter))
@@ -68,7 +67,7 @@ def test_every_declared_capability_has_an_evaluator(adapter):
         f"{adapter} claims it can measure {missing} with nothing that computes them")
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_no_evaluator_without_a_declared_capability(adapter):
     caps = set(A._capabilities(adapter))
     extra = sorted(set(A.evaluators_for(adapter)) - caps)
@@ -76,7 +75,7 @@ def test_no_evaluator_without_a_declared_capability(adapter):
         f"{adapter} evaluates {extra} without declaring it measurable")
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_requirements_are_declared_not_derived_from_capability(adapter):
     """An obligation is the TASK's. An adapter that reads its own reach and
     calls the result a requirement has decided what the user needed."""
@@ -84,7 +83,7 @@ def test_requirements_are_declared_not_derived_from_capability(adapter):
         f"{adapter} has no declared requirement set")
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_every_requirement_is_measurable_or_registered_unmeasurable(adapter):
     caps = set(A._capabilities(adapter))
     declared = {r["id"] for r in A._requirements(adapter)}
@@ -95,22 +94,22 @@ def test_every_requirement_is_measurable_or_registered_unmeasurable(adapter):
         "reason; a requirement it cannot measure must be declared as such")
 
 
-@pytest.mark.parametrize("adapter", ALL_SIX)
+@pytest.mark.parametrize("adapter", ALL_FIVE)
 def test_a_criterion_is_never_both_measurable_and_unmeasurable(adapter):
     both = sorted(set(A._capabilities(adapter)) & set(A.unmeasurable_requirements(adapter)))
     assert not both, f"{adapter} declares {both} as both measurable and not"
 
 
-# --- the quarantine is lifted, and what replaced it --------------------------
+# --- no adapter requires what it cannot measure -----------------------------
 
 def test_no_adapter_demands_a_criterion_it_cannot_measure():
     """The defect the sealed run paid for is gone at the source.
 
     python_compile required four browser criteria it cannot observe, so 100 of
     103 candidate evaluations carried two of them in missing_required and no
-    Python candidate could reach closure by any route. It required them because an adapter used to declare
-    the TASK's obligations; obligations.py owns that now, so an adapter has
-    nothing to over-declare.
+    Python candidate could reach closure by any route. Each adapter now
+    requires exactly the criteria it observes, so it has nothing to
+    over-declare.
     """
     for adapter in A.ALL_ADAPTERS:
         assert not A.unmeasurable_requirements(adapter), (
@@ -120,55 +119,6 @@ def test_no_adapter_demands_a_criterion_it_cannot_measure():
         assert declared <= set(A._capabilities(adapter)), (
             f"{adapter} requires {sorted(declared - set(A._capabilities(adapter)))} "
             "with nothing to measure it")
-
-
-def test_the_corrected_obligation_capability_matrix():
-    """What each verifier may now speak for, stated once.
-
-    A compile owns structural validity and nothing above it. algorithmic_io
-    owns declared examples, and select_adapter reaches it only under a trusted
-    declared case source. The two unsupported adapters own nothing.
-    """
-    assert A.obligation_capabilities(A.ADAPTER_PYTHON_COMPILE) == [O.KIND_SYNTACTIC_VALIDITY]
-    assert A.obligation_capabilities(A.ADAPTER_JAVASCRIPT_COMPILE) == [O.KIND_SYNTACTIC_VALIDITY]
-    assert A.obligation_capabilities(A.ADAPTER_CSS_SYNTAX) == [O.KIND_SYNTACTIC_VALIDITY]
-    assert A.obligation_capabilities(A.ADAPTER_ALGORITHMIC_IO) == [
-        O.KIND_SYNTACTIC_VALIDITY, O.KIND_DECLARED_EXAMPLE]
-    assert A.obligation_capabilities(A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED) == []
-    assert A.obligation_capabilities(A.ADAPTER_UNSUPPORTED) == []
-
-
-def test_no_adapter_claims_a_kind_nothing_can_evaluate():
-    """unsupported is a real answer, never an evaluable one."""
-    for adapter in A.ALL_ADAPTERS:
-        assert O.KIND_UNSUPPORTED not in A.obligation_capabilities(adapter)
-
-
-def test_a_behavioral_obligation_on_a_syntax_only_adapter_is_never_complete():
-    """The rule this pins: capability is an upper bound, never a substitute for
-    the obligation. A syntax-only verifier facing a behavioural obligation is
-    unverifiable -- it is NOT syntax-authorized.
-
-    It is pinned against a real declared-command obligation now. It used to
-    pass off the quarantine: python_compile happened to require browser
-    criteria, so every record was incomplete for a reason that had nothing to
-    do with the obligation in front of it.
-    """
-    command = O.obligation(kind=O.KIND_DECLARED_COMMAND, subject="pytest -q",
-                           baseline_strength=C.BEHAVIORAL)
-    rec = A.contract_record(
-        adapter=A.ADAPTER_PYTHON_COMPILE, accepted=True,
-        contract_id="c.v1", contract_version="1", artifact_scope="s",
-        evaluation_context_hash="ctx", candidate_content_hash="h",
-        task_obligations=[command])
-    assert rec["evidence_strength"] == C.SYNTAX
-    assert rec["requirements_complete"] is False
-    assert rec["closure_eligible"] is False
-    assert rec["missing_required"] == [command["id"]]
-    # Unmeasured, not refuted: the compile did not observe the command fail.
-    assert rec["observations"][command["id"]]["status"] == C.NOT_APPLICABLE
-    assert rec["required_coverage_score"] == 0.0
-    assert rec["missing_required"], "a behavioural obligation vanished"
 
 
 def test_an_unsupported_adapter_is_neither_failed_nor_vacuously_complete():

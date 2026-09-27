@@ -63,18 +63,12 @@ def test_interactive_python_never_gets_complete_evidence_from_compile():
             "compile smoke cannot close a Pygame artifact"
 
 
-def test_algorithmic_python_with_an_oracle_keeps_the_fast_path():
-    adapter = A.select_adapter("solve.py", ALGO_PY, has_io_oracle=True)
-    assert adapter == A.ADAPTER_ALGORITHMIC_IO
-    rec = _record(adapter, True)
-    assert rec["evidence_strength"] == C.ORACLE
-    assert rec["closure_eligible"] is True
-
-
-def test_algorithmic_python_without_an_oracle_is_only_syntax():
-    adapter = A.select_adapter("solve.py", ALGO_PY, has_io_oracle=False)
+def test_algorithmic_python_is_only_syntax():
+    adapter = A.select_adapter("solve.py", ALGO_PY)
     assert adapter == A.ADAPTER_PYTHON_COMPILE
-    assert _record(adapter, True)["closure_eligible"] is False
+    rec = _record(adapter, True)
+    assert rec["evidence_strength"] == C.SYNTAX
+    assert rec["closure_eligible"] is False
 
 
 def test_css_is_never_sent_through_the_javascript_probe():
@@ -130,8 +124,6 @@ def _matrix():
 # unsupported, execution status and evidence strength for every observation
 # shape the pipeline can produce.
 CHARACTERIZED = {
-    "algorithmic_io:smoke=True": ("oracle", "ok", True),
-    "algorithmic_io:smoke=False": ("syntax", "error", False),
     "python_compile:smoke=True": ("syntax", "ok", True),
     "python_compile:smoke=False": ("syntax", "error", False),
     "javascript_compile:smoke=True": ("syntax", "ok", True),
@@ -202,7 +194,6 @@ def test_adapter_ids_are_the_ones_records_carry():
     as literals rather than compared against another copy."""
     assert A.ADAPTER_JAVASCRIPT_COMPILE == "javascript_compile"
     assert A.ADAPTER_CSS_SYNTAX == "css_syntax"
-    assert A.ADAPTER_ALGORITHMIC_IO == "algorithmic_io"
     assert A.ADAPTER_PYTHON_COMPILE == "python_compile"
     assert A.ADAPTER_INTERACTIVE_PYTHON_UNSUPPORTED == "interactive_python_unsupported"
     assert A.ADAPTER_UNSUPPORTED == "unsupported"
