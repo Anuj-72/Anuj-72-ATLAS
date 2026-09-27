@@ -129,11 +129,16 @@ class Model:
     # trained on Qwen residuals won't steer Llama correctly).
     #
     # asa_status values:
-    #   "supported"    — vector exists + validated against this base
+    #   "supported"    — vector exists + an A/B measurement on this base
+    #                    showed its effect
     #   "no-artifacts" — no vector trained yet
-    #   "unverified"   — a structurally-applicable vector exists (e.g.
-    #                    different quant of same model family) but the
-    #                    exact combo hasn't been end-to-end checked
+    #   "unverified"   — a vector exists for this base (or a quant of the
+    #                    same family) but its effect is not measured
+    #
+    # The status labels evidence; it does not switch steering. Steering is
+    # always on: install-artifacts writes the model marker for a
+    # "supported" or "unverified" vector, and the entrypoint loads any
+    # vector marked for the served model.
     asa_status: str = "no-artifacts"
     # Files that must exist for the asa_status claim to be honest. Today
     # this is just `ast_edit_steering.gguf`; the list keeps the door
@@ -404,7 +409,12 @@ REGISTRY: List[Model] = [
               "(3840-dim) at https://huggingface.co/itigges22/atlas-lens-gemma4-12b. "
               "download_url not captured at publish time; maintainers "
               "can fill it in for `atlas model install` support.",
-        asa_status="supported",
+        # Unverified: built from contrast prompts that named the tool
+        # ast_edit (now structural_edit) and never A/B measured on gemma.
+        # It is installed and active all the same (steering is always on);
+        # the label says only what has been shown. Rebuild with `atlas asa
+        # build`, measure, then promote.
+        asa_status="unverified",
         asa_artifact_files=["ast_edit_steering.gguf"],
         asa_hf_repo="itigges22/atlas-asa-gemma4-12b",
         asa_artifact_url_base=(
@@ -493,7 +503,9 @@ def artifact_download_hint(model_name: str, kind: str) -> str:
     if m is None:
         return ""
     status = getattr(m, f"{kind}_status", "")
-    if (status == "supported"
+    # The same set install-artifacts downloads: an unverified vector or
+    # bundle is still published and hash-pinned.
+    if (status in ("supported", "unverified")
             and getattr(m, f"{kind}_artifact_url_base", None)
             and getattr(m, f"{kind}_artifact_files", None)):
         return (f" Published artifacts for this model exist: "

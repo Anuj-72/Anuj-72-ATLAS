@@ -740,7 +740,7 @@ func renderCalibrationBadge(s *calibrationStatus) string {
 
 func renderOneBadge(name, verdict string) string {
 	switch verdict {
-	case "supported":
+	case "supported", "active":
 		return badgeOK.Render(name + " ✓")
 	case "no-artifacts", "incomplete-artifacts", "uncalibrated", "missing", "dim-mismatch", "unverified":
 		return badgeWarn.Render(name + " ⚠")

@@ -101,8 +101,8 @@ func TestProbeASAStatusRequiresMatchingModelMarker(t *testing.T) {
 	if err := os.WriteFile(vector+".model", []byte("selected-model\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := probeASAStatus(); got.Verdict != "supported" {
-		t.Fatalf("matching marker verdict = %q, want supported", got.Verdict)
+	if got := probeASAStatus(); got.Verdict != "active" {
+		t.Fatalf("matching marker verdict = %q, want active", got.Verdict)
 	}
 }
 

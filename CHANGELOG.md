@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Changed: steering is always on, and its labels say what was measured
+
+ASA steering was on in production and in every recorded dev-server
+measurement, while the docs said gemma's vector was "off by default" and
+the registry, the proxy and the TUI called it "supported" or "verified".
+Steering stays always on wherever a vector is installed for the served
+model; the labels now match the evidence.
+
+- The gemma entry's `asa_status` is `unverified`: its vector was built from
+  prompts that named the tool `ast_edit` (now `structural_edit`) and was
+  never A/B measured. `atlas model install-artifacts` still installs and
+  marks it, as it did.
+- `atlas asa publish` and `atlas publish` record a new vector as
+  `unverified`; promoting it to `supported` is a manual edit that cites an
+  A/B result.
+- The proxy reports a vector marked for the served model as `active`, not
+  `supported` ("control vector active for …"); the TUI shows it as ✓.
+- SUPPORT_MATRIX says gemma runs steered by default with an unmeasured
+  effect, and that Qwen's May 2026 A/B predates the tool rename.
+
 ### Fixed: work requests without a task verb were read as questions
 
 The message classifier called a request conversational (T0) when it

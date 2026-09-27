@@ -121,6 +121,16 @@ def test_qwen_9b_q6k_claims_asa_supported():
     assert "ast_edit_steering.gguf" in m.asa_artifact_files
 
 
+def test_gemma_asa_is_unverified_until_measured():
+    """The gemma vector was built from prompts that named the tool ast_edit
+    (now structural_edit) and was never A/B measured on gemma. The label
+    says only that; it does not switch steering off."""
+    m = model_registry.by_name("gemma-4-12b-it-Q4_K_M")
+    assert m is not None
+    assert m.asa_status == "unverified"
+    assert "ast_edit_steering.gguf" in m.asa_artifact_files
+
+
 # ---------------------------------------------------------------------------
 # Lookups
 # ---------------------------------------------------------------------------

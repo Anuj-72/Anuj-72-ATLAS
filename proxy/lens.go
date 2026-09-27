@@ -630,8 +630,11 @@ func probeASAStatus() ASAStatus {
 			size := strconv.FormatInt(info.Size(), 10)
 			switch {
 			case expected != "" && sameModelIdentity(markedFor, expected):
-				out.Verdict = "supported"
-				out.Hint = "control vector verified for " + expected +
+				// Active, not "supported": the marker says which model the
+				// vector is for, not that its effect was measured. That is
+				// the registry's asa_status, which the proxy does not hold.
+				out.Verdict = "active"
+				out.Hint = "control vector active for " + expected +
 					" (" + size + " bytes)"
 			case expected != "" && markedFor != "":
 				out.Verdict = "incompatible"

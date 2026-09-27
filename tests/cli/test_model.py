@@ -954,6 +954,24 @@ def test_install_artifacts_replaces_cross_model_asa_vector(tmp_path,
         "Qwen3.5-9B-Q6_K"
 
 
+def test_install_artifacts_activates_an_unverified_vector(tmp_path, monkeypatch):
+    """Steering is always on. An unverified vector (gemma: never A/B
+    measured) is installed and marked for its model like a supported one;
+    the registry status labels the evidence and switches nothing."""
+    monkeypatch.setenv("ATLAS_LENS_MODELS", str(tmp_path / "lens"))
+    _install_with_fake_urlopen(monkeypatch, body=b"gemma vector", status=200,
+                                captured=[])
+    _patch_registry_artifact_hashes(monkeypatch, "gemma-4-12b-it-Q4_K_M",
+                                    b"gemma vector")
+
+    rc = model.main(["install-artifacts", "gemma-4-12b-it-Q4_K_M",
+                     "--models-dir", str(tmp_path), "--no-color"])
+    assert rc == 0
+    assert (tmp_path / "ast_edit_steering.gguf").read_bytes() == b"gemma vector"
+    assert (tmp_path / "ast_edit_steering.gguf.model").read_text().strip() == \
+        "gemma-4-12b-it-Q4_K_M"
+
+
 def test_install_artifacts_rejects_hash_mismatch(tmp_path, monkeypatch, capsys):
     """A downloaded artifact whose bytes don't match the registry hash
     must fail the install and leave nothing at the target path — lens
