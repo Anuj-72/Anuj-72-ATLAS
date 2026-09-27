@@ -1,9 +1,6 @@
 package main
 
-import (
-	"log"
-	"strings"
-)
+import "log"
 
 // Where an authorization becomes bytes on disk.
 //
@@ -75,13 +72,21 @@ type deliveryAuthorization struct {
 // mayDeliver reports whether the candidate may land under the typed answer.
 //
 // A contractless request returns true because the typed path is not its owner:
-// saying "no" for a request that declared nothing would change the behaviour of
-// every caller that never opted in.
+// it has no target a candidate could be delivered to, and the model's own
+// bytes are what its route writes.
 func (a deliveryAuthorization) mayDeliver() bool {
 	if !a.Typed {
 		return true
 	}
 	return a.Grant != nil
+}
+
+// holds reports whether basis b earned this candidate a licence: minted, or
+// minted but for an acquisition control. The policy owner reads this rather
+// than the eligibility answer, because the mint can still refuse what the
+// eligibility check allowed.
+func (a deliveryAuthorization) holds(b grantBasis) bool {
+	return a.Typed && a.Basis == b && (a.Grant != nil || a.WouldAuthorize)
 }
 
 // authorizeCandidateDelivery is THE live authorization owner for a candidate.
@@ -119,15 +124,14 @@ func authorizeCandidateDelivery(ctx *AgentContext, entry routeEntry, path, code 
 	// The one question that decides ownership, asked of the obligation owner
 	// rather than inferred from how many obligations came back.
 	declared := outputKnowledgeDeclared(ctx)
-	// The second way a request can be this owner's: the user selected
-	// automatic_v3, the client declared no outputs, and the model's own
-	// structured tool call names exactly this target. Read from the contract's
-	// mode and the scope derived from the parsed arguments -- never from what
-	// anyone wrote. Declared outputs are never widened by a call, so the
+	// The second way a request can be this owner's: the request declared
+	// work and no outputs, and the model's own structured tool call names
+	// exactly this target. Read from the contract's task mode and the scope
+	// derived from the parsed arguments -- never from what anyone wrote. Declared outputs are never widened by a call, so the
 	// structured target is consulted only when there are none.
 	structured := false
 	if !declared {
-		structured, _ = structuredMutationTargetGrounds(ctx, automatic.Mode, scope, resolved)
+		structured, _ = structuredMutationTargetGrounds(ctx, scope, resolved)
 	}
 	obligations := requestObligations(ctx)
 	// Whether the target has any grounding at all. Decided here, once, and
@@ -160,10 +164,10 @@ func authorizeCandidateDelivery(ctx *AgentContext, entry routeEntry, path, code 
 	vetoIn := automatic.VetoInput
 	vetoIn.Unmet, vetoIn.Decision = unmet, d
 	vetoes := advisoryVetoes(vetoIn)
-	// Contractless traffic, a contract that stated no output knowledge under
-	// strict or advisory, and an automatic request whose tool call named no
-	// usable target: there is nothing for a typed answer to be about, and the
-	// existing delivery decision keeps its exact previous behaviour.
+	// Contractless traffic, a question, and a work request whose tool call
+	// named no usable target: there is nothing for a typed answer to be
+	// about, and the existing delivery decision keeps its exact previous
+	// behaviour.
 	if !declared && !structured {
 		return deliveryAuthorization{Typed: false, Decision: d, Vetoes: vetoes, Unmet: unmet}
 	}
@@ -181,7 +185,7 @@ func authorizeCandidateDelivery(ctx *AgentContext, entry routeEntry, path, code 
 	basis := grantBasisStrict
 	auth.AutomaticEligible, auth.AutomaticRefusal = automaticDeliveryAllowed(
 		automaticEligibilityInput{
-			Mode: automatic.Mode, Vetoes: vetoes,
+			Vetoes:              vetoes,
 			SelectedCandidateID: selectedCandidateID,
 			CandidateHash:       hash,
 			Identity:            asked,
@@ -194,16 +198,31 @@ func authorizeCandidateDelivery(ctx *AgentContext, entry routeEntry, path, code 
 			return auth
 		}
 		// The typed decision could not authorize -- there was no floor to
-		// meet, or no adapter that could measure this class. Under
-		// automatic_v3 that is unavailable evidence rather than failed
+		// meet, or no adapter that could measure this class. For the
+		// selection basis that is unavailable evidence rather than failed
 		// evidence, and the safety requirements below are unchanged.
 		basis = grantBasisAutomaticV3
+	}
+	// Which basis holds, asked of the checks the mint makes and before the
+	// acquisition boundary. Where the strict basis cannot hold, the selection
+	// basis is the other way the one rule can, under the same safety
+	// requirements. Asked once, here, so the policy decision, the capture-only
+	// answer and the mint cannot disagree: a decision that said "delivers"
+	// over a grant the mint then refused wrote nothing at all.
+	_, holds, why := grantFor(ctx, in, d, selectedCandidateID, basis)
+	if !holds && basis == grantBasisStrict && auth.AutomaticEligible {
+		basis = grantBasisAutomaticV3
+		_, holds, why = grantFor(ctx, in, d, selectedCandidateID, basis)
 	}
 	// Which rule earned the licence, recorded before anything can take it
 	// away. A caller that read only WouldAuthorize could not tell a strict
 	// authorization from an automatic one, and would report the wrong decision
 	// for a candidate whose declared floor was never met.
 	auth.Basis = basis
+	if !holds {
+		auth.Refusal = why
+		return auth
+	}
 	// THE acquisition boundary. Every candidate grant in this build is minted
 	// on the next line, so suppressing here suppresses all of them -- and a
 	// structural guard pins that there is no second minting site to route
@@ -453,32 +472,6 @@ func (d *deliveryRefusal) Error() string {
 	return "the candidate is not authorized to land"
 }
 
-// deliveryRefusalMessage is what a typed refusal tells the caller. It names
-// the classification and nothing else -- a reason string is a closed-vocabulary
-// token, not prose about the artifact.
-func deliveryRefusalMessage(reason string) string {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = string(ReasonUnknown)
-	}
-	return "the generated candidate was not authorized to replace your content (" +
-		reason + ") — your own content was kept"
-}
-
-// kind is the validation kind an observation implies, using exactly the
-// mapping overlayValidation already applies. Having it in one place is what
-// stops a refusal path from classifying the same outcome differently.
-func (o checkOutcome) kind() ValidationKind {
-	switch o.Status {
-	case ValidationNotApplicable:
-		return ValidationKindNone
-	case ValidationUnknown:
-		return ValidationKindUnknown
-	default:
-		return ValidationKindSyntax
-	}
-}
-
 // baselineObligationsSatisfied reports whether every preservation obligation
 // the task stated was among the ones the decision satisfied.
 //
@@ -536,4 +529,18 @@ func classifyStructuralUnmet(ctx *AgentContext, resolved string,
 		}
 	}
 	return unmet
+}
+
+// kind is the validation kind an observation implies, using exactly the
+// mapping overlayValidation already applies. Having it in one place is what
+// stops a refusal path from classifying the same outcome differently.
+func (o checkOutcome) kind() ValidationKind {
+	switch o.Status {
+	case ValidationNotApplicable:
+		return ValidationKindNone
+	case ValidationUnknown:
+		return ValidationKindUnknown
+	default:
+		return ValidationKindSyntax
+	}
 }

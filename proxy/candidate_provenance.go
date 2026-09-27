@@ -19,10 +19,6 @@ const (
 	// client-declared verification passed at the declared strength against
 	// exactly these bytes.
 	DeliveryFromStrictCandidate = "strict_trusted_candidate"
-	// DeliveryFromAdvisoryCandidate: a V3 candidate replaced it under the
-	// advisory policy. Bounded evidence preferred it. Nothing proved it, and
-	// the UI must not present it as proven.
-	DeliveryFromAdvisoryCandidate = "advisory_candidate"
 	// DeliveryFromAutomaticV3: a V3 candidate replaced it because the pipeline
 	// selected it and every hard safety requirement held. Nothing about its
 	// correctness was proven, and the UI must not present it as proven -- what
@@ -32,17 +28,16 @@ const (
 )
 
 var deliveryProvenanceValues = map[string]bool{
-	DeliveryFromModelProposal:     true,
-	DeliveryFromStrictCandidate:   true,
-	DeliveryFromAdvisoryCandidate: true,
-	DeliveryFromAutomaticV3:       true,
+	DeliveryFromModelProposal:   true,
+	DeliveryFromStrictCandidate: true,
+	DeliveryFromAutomaticV3:     true,
 }
 
 // deliveryProvenanceFor maps a policy answer to what the user is looking at.
 //
 // Only the decisions that actually deliver map to a candidate origin. Everything
-// else -- a veto, insufficient confidence, a retained baseline -- means the
-// bytes on disk are the model's own, and
+// else -- a veto or a retained baseline -- means the bytes on disk are the
+// model's own, and
 // saying anything else about them would be a false claim in the one place a
 // person is relying on it.
 func deliveryProvenanceFor(out candidatePolicyOutcome) string {
@@ -52,8 +47,6 @@ func deliveryProvenanceFor(out candidatePolicyOutcome) string {
 	switch out.Decision {
 	case PolicyCandidateAuthorizedStrict:
 		return DeliveryFromStrictCandidate
-	case PolicyCandidatePreferredAdvisory:
-		return DeliveryFromAdvisoryCandidate
 	case PolicyCandidateAutomaticV3:
 		return DeliveryFromAutomaticV3
 	}

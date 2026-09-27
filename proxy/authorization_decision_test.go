@@ -40,7 +40,7 @@ func (w *authWorld) observe(t *testing.T) (proxyEvidence, candidateEvidenceIdent
 // stage runs the client-declared producer through the real staging wiring
 // against the world's executor, exactly as production does.
 func (w *authWorld) stage(id candidateEvidenceIdentity) []proxyEvidence {
-	behavioral, _, _ := observeCandidateVerification(w.ctx, w.path, w.code, id)
+	behavioral, _, _ := observeCandidateVerification(w.ctx, w.path, w.code, id, mutationScope{})
 	return behavioral
 }
 
@@ -126,8 +126,9 @@ func expectReason(t *testing.T, row string, d AuthorizationDecision,
 // would have made every record a lie about its own weight.
 //
 // It is a property of the REQUEST, not of the outcome: a request that declared
-// structured obligations is one this owns however the decision comes out, and
-// a request that declared none is one it has nothing to say about.
+// outputs, or declared work so the model's own call names the target, is one
+// this owns however the decision comes out. A question, or a request with no
+// contract, is one it has nothing to say about.
 func TestTheDecisionSaysTruthfullyWhetherItDecides(t *testing.T) {
 	for _, c := range []struct {
 		name, contract string
@@ -138,15 +139,13 @@ func TestTheDecisionSaysTruthfullyWhetherItDecides(t *testing.T) {
 		{"declared outputs and commands", `{"task_mode":"work","output_knowledge":"declared",` +
 			`"expected_outputs":["solve.py"],"verification_knowledge":"declared",` +
 			`"verification":["pytest -q"]}`, true},
-		{"task mode only", `{"task_mode":"work"}`, false},
-		// Verification knowledge is a different class. Declaring it says
-		// nothing about what this request produces, so the output route stays
-		// where it was.
+		{"task mode only", `{"task_mode":"work"}`, true},
 		{"verification declared, outputs not", `{"task_mode":"work",` +
-			`"verification_knowledge":"declared","verification":["pytest -q"]}`, false},
+			`"verification_knowledge":"declared","verification":["pytest -q"]}`, true},
 		{"declared and authoritatively empty", `{"task_mode":"work",` +
 			`"output_knowledge":"declared","expected_outputs":[]}`, true},
-		{"declared nothing", `{"task_mode":"work","output_knowledge":"unspecified"}`, false},
+		{"declared nothing", `{"task_mode":"work","output_knowledge":"unspecified"}`, true},
+		{"a question", `{"task_mode":"question"}`, false},
 		{"no contract at all", "", false},
 	} {
 		w := newAuthWorld(t, c.contract, "solve.py", authPy, true)

@@ -172,7 +172,11 @@ func observeDeliveredCandidateSyntax(ctx *AgentContext, entry routeEntry, path, 
 // not declare its own provenance trusted.
 //
 // Runs only when a client actually declared commands. A request that declared
-// none stages nothing, so no command executes on its behalf.
+// none stages nothing, so no command executes on its behalf. The target must be
+// grounded the way a grant needs it: a declared output, or, where the request
+// declared no outputs, the target the model's own structured call named.
+// Staging only for declared outputs meant a request that declared commands and
+// no outputs could never have its candidate verified, so it could never land.
 //
 // Returns the evidence for the caller's own inspection in tests. Production
 // ignores the return value: records go to private telemetry and no delivery,
@@ -183,7 +187,7 @@ func observeDeliveredCandidateSyntax(ctx *AgentContext, entry routeEntry, path, 
 // one that ran and failed are four different facts, and only the last is a
 // fact about the candidate.
 func observeCandidateVerification(ctx *AgentContext, path, code string,
-	id candidateEvidenceIdentity) ([]proxyEvidence, map[string]AuthorizationReason, bool) {
+	id candidateEvidenceIdentity, scope mutationScope) ([]proxyEvidence, map[string]AuthorizationReason, bool) {
 	if ctx == nil || ctx.TaskContract == nil {
 		return nil, nil, false
 	}
@@ -197,7 +201,12 @@ func observeCandidateVerification(ctx *AgentContext, path, code string,
 	}
 	resolved := resolveAgentPath(ctx, path)
 	if !targetIsAuthorized(obs, resolved) {
-		return nil, nil, false
+		if outputKnowledgeDeclared(ctx) {
+			return nil, nil, false
+		}
+		if grounded, _ := structuredMutationTargetGrounds(ctx, scope, resolved); !grounded {
+			return nil, nil, false
+		}
 	}
 
 	// The declared commands, from the proxy's own derivation of the validated

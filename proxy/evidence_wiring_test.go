@@ -286,7 +286,7 @@ func TestStagingRunsOnlyForARequestThatDeclaredCommands(t *testing.T) {
 	} {
 		w := wiringWorld(t, contract, "solve.py", "print(7)\n", true)
 		id := nextInvocationIdentity(w.ctx, mintRouteEntry(w.ctx), contentSHA256("print(7)\n"))
-		evidence, unmet, _ := observeCandidateVerification(w.ctx, w.path, "print(7)\n", id)
+		evidence, unmet, _ := observeCandidateVerification(w.ctx, w.path, "print(7)\n", id, mutationScope{})
 		if len(evidence) != 0 || len(unmet) != 0 {
 			t.Errorf("a request declaring no commands staged one: %s", contract)
 		}

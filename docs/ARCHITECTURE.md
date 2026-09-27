@@ -485,8 +485,9 @@ whether the observer and its sink can influence policy, and stays false. A schem
 new version with a closed field set and a reader for it — never a redefinition of an existing
 version, and never a parser that shrugs at unknown fields.
 
-Clients: the TUI sends `work` for an ordinary message and `question` for a one-shot `/ask <message>`, and always sends the session's `candidate_policy` (strict unless the user selected otherwise with `/candidate-policy`), so what the header shows is what the proxy applies;
-the e2e and reliability harnesses send `work`. `expected_outputs` and `verification` are carried and
+Clients: the TUI sends `work` for an ordinary message and `question` for a one-shot `/ask <message>`;
+the e2e and reliability harnesses send `work`. The VS Code extension sends no contract yet, so its
+requests get no V3 candidate ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). `expected_outputs` and `verification` are carried and
 validated but **not yet migrated** — deliverable and verification obligations are still derived the
 old way.
 

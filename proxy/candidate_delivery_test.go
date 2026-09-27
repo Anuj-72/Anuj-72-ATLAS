@@ -321,9 +321,6 @@ func TestTheDeliveryOwnerLeaksNoContent(t *testing.T) {
 			t.Errorf("the outcome reason carries %q", needle)
 		}
 	}
-	if strings.Contains(deliveryRefusalMessage(out.Reason), "hunter2") {
-		t.Error("the refusal message carries content")
-	}
 }
 
 // --- the live route ---------------------------------------------------------------
@@ -528,17 +525,15 @@ func TestATypedRefusalKeepsTheCallersContent(t *testing.T) {
 	}
 }
 
-// A request that declared nothing keeps the MODEL's bytes.
+// A request with no contract, or a question, keeps the MODEL's bytes.
 //
 // It used to keep the service's, on the service's own closure verdict, which
 // is the producer of a candidate certifying that candidate. There is no target
-// the client named, no obligation and no floor, so nothing here can be
-// authorized against -- and the honest answer under strict is the caller's own
-// content. What such a request still has is a structured mutation scope, which
-// says WHERE a future calibrated decision could act and never whether.
+// the client named and no work the model's own call could ground, so nothing
+// here can be authorized against, and the honest answer is the caller's own
+// content. A work request is different: its own call names the target.
 func TestContractlessTrafficKeepsItsPreviousRoute(t *testing.T) {
-	for _, contract := range []string{"", `{"task_mode":"work"}`,
-		`{"task_mode":"work","output_knowledge":"unspecified"}`} {
+	for _, contract := range []string{"", `{"task_mode":"question"}`} {
 		w := newRouteWorld(t, contract, nil)
 		res, err := w.write(t)
 		if err != nil {

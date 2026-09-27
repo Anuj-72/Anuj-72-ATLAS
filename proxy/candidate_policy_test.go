@@ -60,16 +60,13 @@ func TestServiceMetadataCannotAuthorizeADelivery(t *testing.T) {
 	}
 }
 
-// Strict is the default, and it refuses a candidate nothing trusted spoke for.
-func TestStrictRefusesWithoutTrustedEvidence(t *testing.T) {
+// A declared check that could not run is not evidence, and the candidate it
+// was owed for does not land.
+func TestADeclaredCheckThatCouldNotRunKeepsTheBaseline(t *testing.T) {
 	w := newRouteWorldWithClosure(t,
 		`{"task_mode":"work","output_knowledge":"declared","expected_outputs":["solve.py"],`+
 			`"verification_knowledge":"declared","verification":["pytest -q"]}`,
 		map[string]stubEffect{"pytest -q": {HTTPStatus: 503}}, true)
-	mode, source := candidatePolicyOf(w.ctx)
-	if mode != CandidatePolicyStrict || source != CandidatePolicySourceDefault {
-		t.Fatalf("default policy is %q from %q, want strict from default", mode, source)
-	}
 	if _, err := w.write(t); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
@@ -124,50 +121,68 @@ func TestLegacyVerificationCannotProduceBehavioralAuthority(t *testing.T) {
 	}
 }
 
-// Advisory prefers a candidate only when every hard veto passes, and even then
-// it does not deliver in this build.
-func TestAdvisoryPrefersOnlyWithNoVetoAndDeliversNothing(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAdvisory)
+// The one rule: a candidate the V3 selection path named lands when no hard
+// veto fired; a declared verification that passed is the stronger basis;
+// otherwise the model's own bytes stand.
+func TestTheOneDeliveryRule(t *testing.T) {
+	ctx := policyContext(t)
 	clean := advisoryInput{
 		Observed:         checkOutcome{Status: ValidationPassed},
 		TargetDeclared:   true,
 		TargetAuthorized: true,
 		ScopeAdmits:      true,
-		Evidence: []proxyEvidence{{
-			Provenance: V3EvidenceProvenance{Source: ProvenanceClientDeclaredVerification},
-			Outcome:    ValidationPassed,
-		}},
 	}
-	out := decideCandidatePolicy(ctx, clean, false)
-	if out.Decision != PolicyCandidatePreferredAdvisory {
-		t.Fatalf("decision %q, want candidate_preferred_advisory", out.Decision)
+	if out := decideCandidatePolicy(ctx, clean, false); out.Decision != PolicyBaselineRetained || out.Delivers {
+		t.Errorf("no basis: %q delivers=%v, want the baseline", out.Decision, out.Delivers)
 	}
-	if out.Delivers || out.mayDeliverUnderPolicy() {
-		t.Fatal("advisory preference delivered without a measured policy")
+	selected := clean
+	selected.AutomaticEligible = true
+	if out := decideCandidatePolicy(ctx, selected, false); out.Decision != PolicyCandidateAutomaticV3 || !out.Delivers {
+		t.Errorf("selected and safe: %q delivers=%v, want automatic_v3", out.Decision, out.Delivers)
+	}
+	if out := decideCandidatePolicy(ctx, selected, true); out.Decision != PolicyCandidateAuthorizedStrict || !out.Delivers {
+		t.Errorf("declared verification passed: %q delivers=%v, want strict", out.Decision, out.Delivers)
 	}
 	// One veto is enough, whatever else was observed.
-	vetoed := clean
+	vetoed := selected
 	vetoed.Observed = checkOutcome{Status: ValidationFailed}
-	if out := decideCandidatePolicy(ctx, vetoed, false); out.Decision != PolicyCandidateRejectedHardVeto {
-		t.Fatalf("a failing gate produced %q", out.Decision)
+	if out := decideCandidatePolicy(ctx, vetoed, true); out.Decision != PolicyCandidateRejectedHardVeto || out.Delivers {
+		t.Fatalf("a failing gate produced %q delivers=%v", out.Decision, out.Delivers)
 	}
 }
 
-// Nothing observed either way is its own answer, not a preference.
+// A check that never ran is not evidence either way, and the selection basis
+// cannot stand on it: the candidate is vetoed and the caller's bytes stand.
+// Before this veto, a candidate whose syntax check never ran was delivered.
 func TestWeakEvidenceRetainsTheBaseline(t *testing.T) {
-	advisory := policyContext(t, CandidatePolicyAdvisory)
-	nothing := advisoryInput{
-		Observed:         checkOutcome{Status: ValidationNotRun},
-		TargetDeclared:   true,
-		TargetAuthorized: true,
-		ScopeAdmits:      true,
+	ctx := policyContext(t)
+	for _, status := range []ValidationStatus{ValidationNotRun, ValidationUnknown} {
+		nothing := advisoryInput{
+			Observed:          checkOutcome{Status: status},
+			TargetDeclared:    true,
+			TargetAuthorized:  true,
+			ScopeAdmits:       true,
+			AutomaticEligible: true,
+		}
+		out := decideCandidatePolicy(ctx, nothing, false)
+		if out.Decision != PolicyCandidateRejectedHardVeto || out.Delivers {
+			t.Errorf("%q observed: %q delivers=%v", status, out.Decision, out.Delivers)
+		}
+		if !hasVeto(out.Vetoes, VetoExecutionUnavailable) {
+			t.Errorf("%q observed: vetoes %v do not say the check never ran", status, out.Vetoes)
+		}
 	}
-	if out := decideCandidatePolicy(advisory, nothing, false); out.Decision != PolicyInsufficientConfidence {
-		t.Errorf("advisory with nothing observed said %q", out.Decision)
+	// A class with no syntax check is a different fact: nothing could run, so
+	// nothing is vetoed on that ground.
+	na := advisoryInput{
+		Observed:          checkOutcome{Status: ValidationNotApplicable},
+		TargetDeclared:    true,
+		TargetAuthorized:  true,
+		ScopeAdmits:       true,
+		AutomaticEligible: true,
 	}
-	strict := policyContext(t, CandidatePolicyStrict)
-	if out := decideCandidatePolicy(strict, nothing, false); out.Decision != PolicyBaselineRetained {
-		t.Errorf("strict with nothing observed said %q", out.Decision)
+	if out := decideCandidatePolicy(ctx, na, false); !out.Delivers {
+		t.Errorf("a class with no syntax check: %q, vetoes %v", out.Decision, out.Vetoes)
 	}
 	// Conflicting: a trusted pass alongside an unmet declared command. The
 	// unmet obligation is a fact and it decides.
@@ -182,7 +197,7 @@ func TestWeakEvidenceRetainsTheBaseline(t *testing.T) {
 			Outcome:    ValidationPassed,
 		}},
 	}
-	out := decideCandidatePolicy(advisory, conflicting, false)
+	out := decideCandidatePolicy(ctx, conflicting, false)
 	if out.Decision != PolicyCandidateRejectedHardVeto {
 		t.Errorf("conflicting evidence said %q", out.Decision)
 	}
@@ -193,7 +208,7 @@ func TestWeakEvidenceRetainsTheBaseline(t *testing.T) {
 
 // Every hard veto is reachable, and each is named for the fact that fired it.
 func TestEveryHardVetoIsReachable(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAdvisory)
+	ctx := policyContext(t)
 	base := advisoryInput{Observed: checkOutcome{Status: ValidationPassed},
 		TargetDeclared: true, TargetAuthorized: true, ScopeAdmits: true}
 	for _, tc := range []struct {
@@ -255,7 +270,7 @@ func TestEveryHardVetoIsReachable(t *testing.T) {
 
 // A veto outranks a strict authorization: the disqualifying fact wins.
 func TestAVetoOutranksStrictAuthorization(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyStrict)
+	ctx := policyContext(t)
 	in := advisoryInput{
 		Observed:         checkOutcome{Status: ValidationFailed},
 		TargetDeclared:   true,
@@ -327,16 +342,17 @@ func TestHiddenEvaluatorCannotInfluenceThePolicy(t *testing.T) {
 	}
 }
 
-// Advisory lowers the evidence bar for PREFERRING a candidate. It lowers
-// nothing about identity, permission or delivery.
-func TestAdvisoryCannotAuthorizeDestructiveActions(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAdvisory)
+// No basis lowers anything about identity, permission or delivery: a
+// selected candidate that implies a destructive action is refused.
+func TestNoBasisAuthorizesADestructiveAction(t *testing.T) {
+	ctx := policyContext(t)
 	in := advisoryInput{
 		Observed:           checkOutcome{Status: ValidationPassed},
 		TargetDeclared:     true,
 		TargetAuthorized:   true,
 		ScopeAdmits:        true,
 		DestructiveImplied: true,
+		AutomaticEligible:  true,
 		Evidence: []proxyEvidence{{
 			Provenance: V3EvidenceProvenance{Source: ProvenanceClientDeclaredVerification},
 			Outcome:    ValidationPassed,
@@ -351,73 +367,42 @@ func TestAdvisoryCannotAuthorizeDestructiveActions(t *testing.T) {
 	}
 }
 
-// Neither the model nor the service can select the mode.
-func TestOnlyTheClientOrTheOperatorSelectsTheMode(t *testing.T) {
-	// Source-level: the resolver reads the validated contract and the process
-	// environment, and nothing else.
-	src, err := os.ReadFile("candidate_policy.go")
+// Nothing selects the rule. A contract that still carries candidate_policy,
+// with any value, is accepted and the value is not kept; the operator
+// variable that once set a default changes nothing.
+func TestNothingSelectsTheRule(t *testing.T) {
+	for _, value := range []string{"strict", "advisory", "automatic_v3", "yolo"} {
+		var in TaskContract
+		if err := json.Unmarshal([]byte(`{"task_mode":"work","candidate_policy":"`+value+`"}`), &in); err != nil {
+			t.Fatal(err)
+		}
+		out, err := validateTaskContract(&in, t.TempDir())
+		if err != nil {
+			t.Fatalf("candidate_policy %q was refused: %v", value, err)
+		}
+		if out.CandidatePolicy != "" {
+			t.Errorf("candidate_policy %q was kept on the contract", value)
+		}
+	}
+	t.Setenv("ATLAS_CANDIDATE_POLICY", "strict")
+	in := advisoryInput{Observed: checkOutcome{Status: ValidationPassed},
+		TargetDeclared: true, TargetAuthorized: true, ScopeAdmits: true, AutomaticEligible: true}
+	out := decideCandidatePolicy(policyContext(t), in, false)
+	if out.Decision != PolicyCandidateAutomaticV3 || out.Mode != CandidatePolicyAutomaticV3 ||
+		out.Source != CandidatePolicySourceFixed {
+		t.Errorf("under ATLAS_CANDIDATE_POLICY=strict: %q %q %q", out.Decision, out.Mode, out.Source)
+	}
+	// Source-level: the policy owner reads no contract field and no variable.
+	src, err := os.ReadFile("advisory_policy.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := string(src)
-	resolver := body[strings.Index(body, "func candidatePolicyOf("):]
-	resolver = resolver[:strings.Index(resolver, "\n}")]
-	for _, banned := range []string{"V3GenerateResponse", "Evidence", "Envelope",
-		"Selection", "model", "Message"} {
-		if strings.Contains(resolver, banned) {
-			t.Errorf("the mode resolver reads %q", banned)
-		}
-	}
-	// A contract carrying a mode the build does not know is refused at the
-	// boundary rather than defaulted.
-	var in TaskContract
-	if err := json.Unmarshal([]byte(`{"task_mode":"work","candidate_policy":"yolo"}`),
-		&in); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := validateTaskContract(&in, t.TempDir()); err == nil {
-		t.Fatal("an unknown candidate policy was accepted")
-	}
-	// The client's own statement wins over the deployment's.
-	ctx := policyContext(t, CandidatePolicyAutomaticV3)
-	if mode, source := candidatePolicyOf(ctx); mode != CandidatePolicyAutomaticV3 ||
-		source != CandidatePolicySourceClient {
-		t.Errorf("client mode resolved to %q from %q", mode, source)
-	}
-}
-
-// The operator's setting answers for requests that said nothing, and the
-// shipped default is unchanged.
-func TestOperatorConfigurationAnswersForSilentRequests(t *testing.T) {
-	t.Setenv("ATLAS_CANDIDATE_POLICY", string(CandidatePolicyAdvisory))
-	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
-	if mode, source := candidatePolicyOf(ctx); mode != CandidatePolicyAdvisory ||
-		source != CandidatePolicySourceOperator {
-		t.Errorf("operator mode resolved to %q from %q", mode, source)
-	}
-	t.Setenv("ATLAS_CANDIDATE_POLICY", "nonsense")
-	if mode, _ := candidatePolicyOf(ctx); mode != CandidatePolicyStrict {
-		t.Errorf("an unreadable operator value resolved to %q, want strict", mode)
-	}
-	t.Setenv("ATLAS_CANDIDATE_POLICY", "")
-	if mode, source := candidatePolicyOf(ctx); mode != CandidatePolicyStrict ||
-		source != CandidatePolicySourceDefault {
-		t.Errorf("the shipped default is %q from %q", mode, source)
-	}
-}
-
-// Advisory is not the shipped default, and nothing in the build makes it one.
-func TestAdvisoryIsNotTheShippedDefault(t *testing.T) {
-	if defaultCandidatePolicy() != CandidatePolicyStrict {
-		t.Fatal("the default policy is not strict")
-	}
-	for _, f := range []string{"main.go", "agent.go", "tools.go", "edit_route_delivery.go"} {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(src), "CandidatePolicyAdvisory") {
-			t.Errorf("%s names the advisory mode; it must be reached only through configuration", f)
+	body := codeWithoutComments(string(src))
+	owner := body[strings.Index(body, "func decideCandidatePolicy("):]
+	owner = owner[:strings.Index(owner, "\n}")]
+	for _, banned := range []string{"TaskContract", "Getenv"} {
+		if strings.Contains(owner, banned) {
+			t.Errorf("the policy owner reads %s", banned)
 		}
 	}
 }
@@ -431,12 +416,10 @@ func TestDeliveryProvenanceNamesTheOrigin(t *testing.T) {
 		want     string
 	}{
 		{PolicyCandidateAuthorizedStrict, true, DeliveryFromStrictCandidate},
-		{PolicyCandidatePreferredAdvisory, true, DeliveryFromAdvisoryCandidate},
 		{PolicyCandidateAutomaticV3, true, DeliveryFromAutomaticV3},
 		{PolicyCandidateAuthorizedStrict, false, DeliveryFromModelProposal},
 		{PolicyBaselineRetained, false, DeliveryFromModelProposal},
 		{PolicyCandidateRejectedHardVeto, false, DeliveryFromModelProposal},
-		{PolicyInsufficientConfidence, false, DeliveryFromModelProposal},
 	} {
 		got := deliveryProvenanceFor(candidatePolicyOutcome{
 			Decision: tc.decision, Delivers: tc.delivers})
@@ -497,13 +480,12 @@ func TestNoAdvisoryValueClaimsCorrectness(t *testing.T) {
 
 // --- helpers -----------------------------------------------------------------
 
-func policyContext(t *testing.T, mode candidatePolicyMode) *AgentContext {
+func policyContext(t *testing.T) *AgentContext {
 	t.Helper()
 	dir := t.TempDir()
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.TaskContract = mustContract(t, dir,
-		`{"task_mode":"work","output_knowledge":"declared","expected_outputs":["solve.py"],`+
-			`"candidate_policy":"`+string(mode)+`"}`)
+		`{"task_mode":"work","output_knowledge":"declared","expected_outputs":["solve.py"]}`)
 	return ctx
 }
 

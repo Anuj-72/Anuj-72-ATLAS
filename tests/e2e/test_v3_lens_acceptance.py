@@ -147,7 +147,16 @@ class _FakeLlamaHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        req = json.loads(self.rfile.read(length))
+        raw = self.rfile.read(length)
+        if self.path.startswith("/slots"):
+            # The proxy's per-session slot erase, a POST with no body. This
+            # fake has no slots, like a llama-server without
+            # --slot-save-path, and says so instead of failing to parse.
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        req = json.loads(raw)
         if self.path.startswith("/v1/embeddings") or self.path.startswith("/embedding"):
             self.send_response(404)  # EmbedAdapter fail-softs to []
             self.send_header("Content-Length", "0")
@@ -310,25 +319,14 @@ def _agent_body(workspace, **overrides):
     return body
 
 
-# The request contract that lets the V3 winner land. Strict, the default,
-# asks whether trusted client-declared verification met a declared floor; a
-# request that declares no verification has no floor, so strict keeps the
-# model's own bytes on purpose. These tests are about what V3 selects and
-# how it behaves with the Lens gone, so they select automatic_v3 explicitly,
-# by name, in the typed contract the proxy validates -- the output declared
-# as a canonical workspace-relative path, nothing read from the prose.
-AUTOMATIC_V3_CONTRACT = {
+# The request contract these tests send: work, with the output declared as a
+# canonical workspace-relative path, nothing read from the prose. One rule
+# decides what lands (docs/CANDIDATE_POLICY.md); nothing in the contract
+# selects another.
+DECLARED_OUTPUT_CONTRACT = {
     "task_mode": "work",
     "output_knowledge": "declared",
     "expected_outputs": ["todo_app.py"],
-    "candidate_policy": "automatic_v3",
-}
-
-STRICT_CONTRACT = {
-    "task_mode": "work",
-    "output_knowledge": "declared",
-    "expected_outputs": ["todo_app.py"],
-    "candidate_policy": "strict",
 }
 
 
@@ -368,7 +366,7 @@ def _assert_no_human_gate_inside_v3(events):
 def test_v3_pipeline_with_lens_winner_selection(proxy, workspace):
     _FakeLensHandler.calls.clear()
     events = drive_agent_turn(
-        proxy, _agent_body(workspace, task_contract=AUTOMATIC_V3_CONTRACT),
+        proxy, _agent_body(workspace, task_contract=DECLARED_OUTPUT_CONTRACT),
         deadline_s=180.0)
 
     # No stage silently skipped: the v3_* event subsequence of a full
@@ -433,50 +431,43 @@ def test_v3_pipeline_with_lens_winner_selection(proxy, workspace):
     _assert_no_human_gate_inside_v3(events)
 
 
-# Control: the same request, same fakes, same winner, under the default
-# policy. The default request declares no output knowledge, so no candidate
-# can be authorized on any basis: V3 runs, scores and selects, and the proxy
-# keeps the model's own bytes. This is what the two tests above used to
-# depend on not happening; it is pinned so the default cannot drift to
-# deliver without someone changing this test.
-def test_default_policy_runs_v3_and_keeps_the_baseline(proxy, workspace):
-    events = drive_agent_turn(proxy, _agent_body(workspace), deadline_s=180.0)
+# Control: the same request with no contract at all, as a client that sends
+# none (the VS Code extension today). No target is grounded, so no candidate
+# could land, and the proxy does not ask V3 for one: the model's own bytes
+# land. Pinned so a contractless client cannot start receiving candidates
+# without someone changing this test.
+def test_a_contractless_request_keeps_the_models_bytes(proxy, workspace):
+    # An explicit null: the harness adds a work contract to any body that
+    # names none.
+    events = drive_agent_turn(proxy, _agent_body(workspace, task_contract=None),
+                              deadline_s=180.0)
 
-    # V3 was not bypassed: it generated, scored and selected.
-    assert any(e["type"] == "v3_select" for e in events), "V3 never selected"
+    assert not any(e["type"] == "v3_select" for e in events), (
+        "V3 was asked for a candidate no contractless request can receive: "
+        f"{[(e['type'], e.get('data', {}).get('tool') or e.get('data', {}).get('name')) for e in events]}")
     result = _write_result(events)
     assert result["data"].get("success") is True
     payload = _payload(result)
     assert payload.get("v3_used") is not True, payload
     written = (workspace / "todo_app.py").read_text()
-    assert written == T2_CONTENT, "the default did not keep the model's own bytes"
+    assert written == T2_CONTENT, "a contractless request did not keep the model's own bytes"
     assert "# cand-" not in written
     _assert_no_human_gate_inside_v3(events)
 
 
-# Control: strict, named explicitly, over the same declared output. Strict is
-# an evidence question -- every obligation derived from the declared output
-# must be met by trusted evidence at its required strength -- and in this
-# fixture the service's sandbox evidence is supported and complete, so strict
-# authorizes on its own basis (strict_trusted_evidence). The client sees the
-# same bytes and the same v3_used as under automatic_v3; the basis is recorded
-# on the grant and in private telemetry, not in the event stream. What this
-# pins is that strict still decides by evidence and that declaring the output
-# is what makes any authorization possible at all.
-def test_explicit_strict_with_a_declared_output_decides_by_evidence(proxy, workspace):
+# An older client that still names a policy gets the same rule: the same
+# winner lands, byte for byte.
+def test_an_older_strict_spelling_changes_nothing(proxy, workspace):
     events = drive_agent_turn(
-        proxy, _agent_body(workspace, task_contract=STRICT_CONTRACT),
+        proxy, _agent_body(workspace, task_contract={
+            **DECLARED_OUTPUT_CONTRACT, "candidate_policy": "strict"}),
         deadline_s=180.0)
 
     assert any(e["type"] == "v3_select" for e in events), "V3 never selected"
     result = _write_result(events)
     assert result["data"].get("success") is True
-    payload = _payload(result)
-    written = (workspace / "todo_app.py").read_text()
-    if payload.get("v3_used") is True:
-        assert written in (CAND_A, CAND_B), "strict delivered bytes that are no candidate's"
-    else:
-        assert written == T2_CONTENT, "strict refused and yet the baseline changed"
+    assert _payload(result).get("v3_used") is True, _payload(result)
+    assert (workspace / "todo_app.py").read_text() == CAND_A
     _assert_no_human_gate_inside_v3(events)
 
 
@@ -607,7 +598,7 @@ def test_lens_unreachable_pipeline_completes_uncalibrated(
     })
     try:
         events = drive_agent_turn(
-            port, _agent_body(workspace, task_contract=AUTOMATIC_V3_CONTRACT),
+            port, _agent_body(workspace, task_contract=DECLARED_OUTPUT_CONTRACT),
             deadline_s=180.0)
         result = _write_result(events)
         assert result["data"]["success"] is True

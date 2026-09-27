@@ -65,15 +65,25 @@ func expectBaselineKept(t *testing.T, w *automaticWorld, why string) {
 	}
 }
 
-// Every policy but automatic_v3, and the default, keep the model's own bytes
-// for a request that declared no outputs. Unchanged by this slice.
-func TestStructuredTargetGroundsNothingUnderStrictAdvisoryOrDefault(t *testing.T) {
+// The structured target grounds the same under every policy spelling an older
+// client may send, and under none: nothing a request says selects a mode.
+func TestStructuredTargetGroundsTheSameUnderEveryOlderSpelling(t *testing.T) {
 	for name, contract := range map[string]string{
-		"omitted policy": tuiDefaultContract, "explicit strict": tuiStrictContract, "advisory": tuiAdvisoryContract,
+		"omitted policy": tuiDefaultContract, "explicit strict": tuiStrictContract,
+		"advisory": tuiAdvisoryContract, "automatic_v3": tuiAutomaticContract,
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newAutomaticWorld(t, contract, routeWinner, nil, true)
-			expectBaselineKept(t, w, name)
+			res, err := w.write(t)
+			if err != nil || res == nil || !res.Success {
+				t.Fatalf("the write did not land: %+v, %v", res, err)
+			}
+			if got := w.disk(t); got != routeWinner {
+				t.Errorf("disk holds %q, want the selected candidate", got)
+			}
+			if res.AuthorizedDeliveryHash != contentSHA256(routeWinner) {
+				t.Errorf("no authorization was spent on the candidate")
+			}
 		})
 	}
 }
@@ -132,7 +142,7 @@ func TestStructuredRouteStillHonoursHardVetoes(t *testing.T) {
 		VetoExecutionUnavailable, VetoIncompleteEvidence,
 		VetoWeakerThanBaseline, VetoStaleIdentity,
 	} {
-		out := decideCandidatePolicy(policyContext(t, CandidatePolicyAutomaticV3),
+		out := decideCandidatePolicy(policyContext(t),
 			advisoryInput{
 				Observed:          checkOutcome{Status: ValidationPassed},
 				TargetDeclared:    false,
@@ -266,7 +276,9 @@ func TestStructuredMutationTargetOwnership(t *testing.T) {
 			t.Errorf("the structured target reads %q", banned)
 		}
 	}
-	// It is consumed only by the automatic-delivery owners.
+	// It is consumed only by the automatic-delivery owners, and by the staged
+	// verification producer, which asks it only whether declared commands
+	// should run against a target a grant could later be minted for.
 	entries, _ := os.ReadDir(".")
 	readers := map[string]bool{}
 	for _, e := range entries {
@@ -280,7 +292,8 @@ func TestStructuredMutationTargetOwnership(t *testing.T) {
 	}
 	for n := range readers {
 		switch n {
-		case "structured_mutation_target.go", "candidate_delivery.go", "authorization_grant.go":
+		case "structured_mutation_target.go", "candidate_delivery.go", "authorization_grant.go",
+			"evidence_wiring.go":
 		default:
 			t.Errorf("%s consults the structured mutation target; only the authorization owners may", n)
 		}
@@ -341,7 +354,7 @@ func TestProseAndAbsentCallsGroundNothing(t *testing.T) {
 	if len(requestObligations(w.ctx)) != 0 || outputKnowledgeDeclared(w.ctx) {
 		t.Fatal("a filename in the prose became an obligation")
 	}
-	ok, why := structuredMutationTargetGrounds(w.ctx, CandidatePolicyAutomaticV3, mutationScope{}, w.path)
+	ok, why := structuredMutationTargetGrounds(w.ctx, mutationScope{}, w.path)
 	if ok || why != structuredTargetNoScope {
 		t.Errorf("no tool call grounded a target: ok=%v why=%q", ok, why)
 	}
@@ -351,7 +364,7 @@ func TestProseAndAbsentCallsGroundNothing(t *testing.T) {
 	if !scopeOK {
 		t.Fatal("scope for helper.py did not derive")
 	}
-	if ok, why := structuredMutationTargetGrounds(w.ctx, CandidatePolicyAutomaticV3, scope, w.path); ok || why != structuredTargetMismatch {
+	if ok, why := structuredMutationTargetGrounds(w.ctx, scope, w.path); ok || why != structuredTargetMismatch {
 		t.Errorf("a call naming helper.py grounded solve.py: ok=%v why=%q", ok, why)
 	}
 	// And a deletion tool derives no scope at all.

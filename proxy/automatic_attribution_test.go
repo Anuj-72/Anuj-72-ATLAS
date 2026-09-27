@@ -20,7 +20,7 @@ import (
 // --- the vocabulary -------------------------------------------------------------
 
 var everyAutomaticRefusal = []automaticRefusal{
-	automaticRefusalNone, automaticRefusalPolicyNotAutomatic, automaticRefusalRouteNotEntered,
+	automaticRefusalNone, automaticRefusalRouteNotEntered,
 	automaticRefusalNoCandidate, automaticRefusalV3Unavailable, automaticRefusalV3TimedOut,
 	automaticRefusalCancelled, automaticRefusalRouteGateRevoked, automaticRefusalHardVeto,
 	automaticRefusalNoSelection, automaticRefusalSelectedHashMismatch,
@@ -49,7 +49,7 @@ func TestAutomaticRefusalVocabularyIsClosed(t *testing.T) {
 		"no_candidate_produced", "route_not_entered", "target_not_grounded", "target_mismatch",
 		"scope_expansion", "hard_veto", "stale_baseline", "selected_hash_mismatch",
 		"v3_unavailable", "v3_timed_out", "cancelled", "authorization_unavailable",
-		"grant_not_minted", "delivery_failed", "policy_not_automatic",
+		"grant_not_minted", "delivery_failed",
 	} {
 		if !automaticRefusalVocabulary[want] {
 			t.Errorf("required reason %q missing", want)
@@ -69,19 +69,15 @@ func lifecycleWith(t *testing.T, build func(l *routeLifecycle)) *routeLifecycle 
 }
 
 func TestDeriveAutomaticRefusalCoversEveryValue(t *testing.T) {
-	auto := CandidatePolicyAutomaticV3
-	src := CandidatePolicySourceClient
 	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-attr")
 	ended := func(d routingDisposition, reason AuthorizationReason) func(*routeLifecycle) {
 		return func(l *routeLifecycle) {
-			l.notePolicy(auto, src)
 			l.finish(ctx, d, "", reason)
 		}
 	}
 	refused := func(d deliveryAuthorization, vetoes ...string) func(*routeLifecycle) {
 		return func(l *routeLifecycle) {
-			l.notePolicy(auto, src)
 			l.noteAuthorization(d, candidateEvidenceIdentity{InvocationID: "i", CandidateInstanceID: "c"},
 				"h", vetoes)
 			l.finish(ctx, routingAuthorizationRefused, "h", AuthorizationReason(d.Refusal))
@@ -89,7 +85,6 @@ func TestDeriveAutomaticRefusalCoversEveryValue(t *testing.T) {
 	}
 	delivered := func(out deliveryOutcome) func(*routeLifecycle) {
 		return func(l *routeLifecycle) {
-			l.notePolicy(auto, src)
 			l.noteAuthorization(deliveryAuthorization{AutomaticEligible: true,
 				Grant: &authorizationGrant{}}, candidateEvidenceIdentity{}, "h", nil)
 			l.finish(ctx, routingCandidateAuthorized, "h", "")
@@ -103,19 +98,6 @@ func TestDeriveAutomaticRefusalCoversEveryValue(t *testing.T) {
 		refusal automaticRefusal
 	}{
 		{"landed", delivered(deliveryOutcome{Delivered: true}), automaticOutcomeLanded, automaticRefusalNone},
-		{"strict landed is not applicable", func(l *routeLifecycle) {
-			l.notePolicy(CandidatePolicyStrict, src)
-			l.finish(ctx, routingCandidateAuthorized, "h", "")
-			l.noteDelivery(deliveryOutcome{Delivered: true})
-		}, automaticOutcomeNotApplicable, automaticRefusalPolicyNotAutomatic},
-		{"strict retained", func(l *routeLifecycle) {
-			l.notePolicy(CandidatePolicyStrict, src)
-			l.finish(ctx, routingBaselineRetained, "", "")
-		}, automaticOutcomeNotApplicable, automaticRefusalPolicyNotAutomatic},
-		{"advisory", func(l *routeLifecycle) {
-			l.notePolicy(CandidatePolicyAdvisory, src)
-			l.finish(ctx, routingAuthorizationRefused, "h", "")
-		}, automaticOutcomeNotApplicable, automaticRefusalPolicyNotAutomatic},
 		{"no candidate", ended(routingNoCandidate, ""), automaticOutcomeNotLanded, automaticRefusalNoCandidate},
 		{"producer offered the same bytes", ended(routingBaselineRetained, ""),
 			automaticOutcomeNotLanded, automaticRefusalNoCandidate},
@@ -181,12 +163,11 @@ func TestDeriveAutomaticRefusalCoversEveryValue(t *testing.T) {
 		{"delivery: workspace moved", delivered(deliveryOutcome{Reason: "the workspace moved since the authorization"}),
 			automaticOutcomeNotLanded, automaticRefusalStaleBaseline},
 		{"eligible and minted but never delivered", func(l *routeLifecycle) {
-			l.notePolicy(auto, src)
 			l.noteAuthorization(deliveryAuthorization{AutomaticEligible: true, Grant: &authorizationGrant{}},
 				candidateEvidenceIdentity{}, "h", nil)
 			l.finish(ctx, routingAuthorizationRefused, "h", "")
 		}, automaticOutcomeNotLanded, automaticRefusalUnattributed},
-		{"never ended", func(l *routeLifecycle) { l.notePolicy(auto, src) },
+		{"never ended", func(l *routeLifecycle) {},
 			automaticOutcomeNotLanded, automaticRefusalUnattributed},
 		{"unclassified ending", ended(routingUnclassified, ""), automaticOutcomeNotLanded, automaticRefusalUnattributed},
 	}
@@ -238,7 +219,7 @@ func TestALandedAutomaticCandidateHasNoRefusalAndJoins(t *testing.T) {
 	if a["outcome"] != string(automaticOutcomeLanded) || a["refusal"] != "" {
 		t.Fatalf("landed candidate attributed as %v/%v", a["outcome"], a["refusal"])
 	}
-	if a["policy_mode"] != string(CandidatePolicyAutomaticV3) || a["policy_source"] != string(CandidatePolicySourceClient) {
+	if a["policy_mode"] != string(CandidatePolicyAutomaticV3) || a["policy_source"] != string(CandidatePolicySourceFixed) {
 		t.Errorf("policy %v/%v", a["policy_mode"], a["policy_source"])
 	}
 	if a["request_id"] != "req-automatic" {
@@ -268,25 +249,29 @@ func TestALandedAutomaticCandidateHasNoRefusalAndJoins(t *testing.T) {
 	}
 }
 
-// Under strict the automatic question does not apply, and the record says so
-// rather than inventing a refusal.
-func TestStrictEntriesAreNotApplicable(t *testing.T) {
+// A client that still sends candidate_policy "strict" -- every older TUI
+// does -- gets the one rule: the selected candidate lands, and the record
+// names the fixed rule rather than the mode the client asked for.
+func TestAnOlderClientsStrictModeIsIgnored(t *testing.T) {
 	w := newAutomaticWorld(t, tuiStrictContract, routeWinner, nil, true)
 	recs := captureShadow(t, func() {
 		if _, err := w.write(t); err != nil {
 			t.Fatal(err)
 		}
 	})
+	if got := w.disk(t); got != routeWinner {
+		t.Fatalf("disk holds %q, want the selected candidate", got)
+	}
 	attr := attributionRecords(recs)
 	if len(attr) != 1 {
 		t.Fatalf("%d attribution records, want 1", len(attr))
 	}
-	if attr[0]["outcome"] != string(automaticOutcomeNotApplicable) ||
-		attr[0]["refusal"] != string(automaticRefusalPolicyNotAutomatic) {
-		t.Fatalf("strict entry attributed as %v/%v", attr[0]["outcome"], attr[0]["refusal"])
+	if attr[0]["outcome"] != string(automaticOutcomeLanded) {
+		t.Fatalf("attributed as %v/%v", attr[0]["outcome"], attr[0]["refusal"])
 	}
-	if attr[0]["policy_mode"] != string(CandidatePolicyStrict) {
-		t.Errorf("policy mode %v", attr[0]["policy_mode"])
+	if attr[0]["policy_mode"] != string(CandidatePolicyAutomaticV3) ||
+		attr[0]["policy_source"] != string(CandidatePolicySourceFixed) {
+		t.Errorf("policy %v/%v", attr[0]["policy_mode"], attr[0]["policy_source"])
 	}
 }
 
@@ -627,20 +612,21 @@ func TestAttributionMethodsReturnNothingToTheRoutes(t *testing.T) {
 	}
 }
 
-// Each route reads the policy exactly once, and the delivery owner not at all.
-func TestEachRouteReadsThePolicyOnce(t *testing.T) {
-	for _, f := range []string{"edit_route_delivery.go", "tools.go"} {
+// No route reads a delivery mode: there is one rule, and nothing a client or
+// an operator sends selects another.
+func TestNoRouteReadsADeliveryMode(t *testing.T) {
+	for _, f := range []string{"edit_route_delivery.go", "tools.go", "candidate_delivery.go",
+		"advisory_policy.go", "automatic_delivery.go", "structured_mutation_target.go"} {
 		body, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n := strings.Count(string(body), "candidatePolicyOf("); n != 1 {
-			t.Errorf("%s reads the policy %d times, want once", f, n)
+		code := codeWithoutComments(string(body))
+		for _, banned := range []string{".CandidatePolicy", "ATLAS_CANDIDATE_POLICY"} {
+			if strings.Contains(code, banned) {
+				t.Errorf("%s reads %s", f, banned)
+			}
 		}
-	}
-	body, _ := os.ReadFile("candidate_delivery.go")
-	if strings.Contains(string(body), "candidatePolicyOf(") {
-		t.Error("the delivery owner reads the policy")
 	}
 }
 

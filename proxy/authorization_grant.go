@@ -166,10 +166,51 @@ func evidenceSetIdentity(evidence []proxyEvidence) string {
 
 // mintAuthorizationGrant turns an authorized decision into a spendable one.
 //
-// It mints nothing it is not sure of. Every condition below is a fact the
-// decision already established or an identity the grant must bind, and a
-// missing one is a refusal rather than a grant with a hole in it.
+// It mints nothing it is not sure of: grantFor decides whether the basis
+// holds, and only then is the grant stored where a delivery can spend it.
 func mintAuthorizationGrant(ctx *AgentContext, in authorizationInput,
+	d AuthorizationDecision, selectedCandidateID string,
+	basis grantBasis) (*authorizationGrant, bool, string) {
+	g, ok, why := grantFor(ctx, in, d, selectedCandidateID, basis)
+	if !ok {
+		return nil, false, why
+	}
+	ctx.grantMu.Lock()
+	defer ctx.grantMu.Unlock()
+	if ctx.grantsOff != "" {
+		return nil, false, ctx.grantsOff
+	}
+	if ctx.grants == nil {
+		ctx.grants = map[string]*authorizationGrant{}
+	}
+	// Overflow refuses BEFORE anything is stored. A capacity check that
+	// evicted would silently retire a grant somebody else is about to spend.
+	//
+	// Counts LIVE grants: a spent one holds no authority, so keeping it as a
+	// tombstone -- which is what distinguishes "already spent" from "never
+	// existed" -- must not consume the budget for the next one.
+	if _, exists := ctx.grants[g.ID]; !exists && liveGrantsLocked(ctx) >= grantCapacity {
+		return nil, false, "too many live authorizations for one request"
+	}
+	// A later decision for the same target supersedes the earlier grant. Two
+	// live licences for one delivery is the state this whole type exists to
+	// make impossible.
+	supersedeGrantsForTarget(ctx, g)
+	ctx.grantSeq++
+	g.DecisionGeneration = ctx.grantSeq
+	ctx.grants[g.ID] = g
+	recordGrantEvent(ctx, g, "minted", "")
+	return g, true, ""
+}
+
+// grantFor builds the grant a basis would earn, without storing it.
+//
+// Every condition below is a fact the decision already established or an
+// identity the grant must bind, and a missing one is a refusal rather than a
+// grant with a hole in it. It stores nothing, so the delivery owner can ask
+// which basis holds before the acquisition boundary, and the decision, the
+// capture-only answer and the mint all read the same answer.
+func grantFor(ctx *AgentContext, in authorizationInput,
 	d AuthorizationDecision, selectedCandidateID string,
 	basis grantBasis) (*authorizationGrant, bool, string) {
 	if ctx == nil {
@@ -220,7 +261,7 @@ func mintAuthorizationGrant(ctx *AgentContext, in authorizationInput,
 	case basis == grantBasisAutomaticV3:
 		// No declared outputs: only the model's own structured call can
 		// ground the target, and only for the automatic basis.
-		ok, why := structuredMutationTargetGrounds(ctx, CandidatePolicyAutomaticV3, in.Scope, target)
+		ok, why := structuredMutationTargetGrounds(ctx, in.Scope, target)
 		if !ok {
 			return nil, false, why
 		}
@@ -261,8 +302,8 @@ func mintAuthorizationGrant(ctx *AgentContext, in authorizationInput,
 				return nil, false, "the service record is not usable"
 			}
 			// An adapter that cannot measure this artifact class cannot
-			// support a claim ABOUT evidence. Under automatic_v3 no such claim
-			// is being made, which is why this check belongs to strict alone:
+			// support a claim ABOUT evidence. The selection basis makes no such
+			// claim, which is why this check belongs to the strict basis alone:
 			// "nobody could measure it" is unavailable evidence, not failed
 			// evidence, and refusing on it would be treating the absence of an
 			// oracle as a fault of the candidate.
@@ -322,32 +363,6 @@ func mintAuthorizationGrant(ctx *AgentContext, in authorizationInput,
 		TargetGrounding:     grounding,
 		MutationScopeID:     in.Scope.identity(),
 	}
-
-	ctx.grantMu.Lock()
-	defer ctx.grantMu.Unlock()
-	if ctx.grantsOff != "" {
-		return nil, false, ctx.grantsOff
-	}
-	if ctx.grants == nil {
-		ctx.grants = map[string]*authorizationGrant{}
-	}
-	// Overflow refuses BEFORE anything is stored. A capacity check that
-	// evicted would silently retire a grant somebody else is about to spend.
-	//
-	// Counts LIVE grants: a spent one holds no authority, so keeping it as a
-	// tombstone -- which is what distinguishes "already spent" from "never
-	// existed" -- must not consume the budget for the next one.
-	if _, exists := ctx.grants[g.ID]; !exists && liveGrantsLocked(ctx) >= grantCapacity {
-		return nil, false, "too many live authorizations for one request"
-	}
-	// A later decision for the same target supersedes the earlier grant. Two
-	// live licences for one delivery is the state this whole type exists to
-	// make impossible.
-	supersedeGrantsForTarget(ctx, g)
-	ctx.grantSeq++
-	g.DecisionGeneration = ctx.grantSeq
-	ctx.grants[g.ID] = g
-	recordGrantEvent(ctx, g, "minted", "")
 	return g, true, ""
 }
 

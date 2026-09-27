@@ -45,12 +45,13 @@ const (
 	// A syntax or structural guard answered before the producer could be
 	// asked, so no candidate was generated for these bytes.
 	bypassProposalFailedSyntaxGuard candidateBypassReason = "proposal_failed_syntax_guard"
-	// Nothing the producer returned could reach disk in this session: the
-	// policy is strict or advisory and the request declared no outputs, so the
-	// model's own bytes are retained whatever comes back. Measured on c5927b3:
-	// 32 activations, 3866 s -- about half of all session time -- and 0
-	// candidate deliveries.
-	bypassCandidateUndeliverable candidateBypassReason = "candidate_undeliverable_under_policy"
+	// No candidate could reach disk in this session: the request is a
+	// question, or it declared nothing at all (a client that sends no
+	// contract), so no target is grounded and whatever comes back is
+	// discarded. A cost rule, not a switch: a request that declares work or
+	// outputs always reaches the producer. Measured before the rule: 32
+	// activations, 3866 s, 0 deliveries.
+	bypassCandidateUndeliverable candidateBypassReason = "candidate_undeliverable"
 	// Generation's time cap would leave the session less than the declared
 	// work allowance (workAllowance) for everything after this write.
 	bypassWorkAllowance candidateBypassReason = "work_budget_allowance"
@@ -86,7 +87,7 @@ func writeGenerationBypass(ctx *AgentContext, fileTier Tier, iterating bool) can
 		return bypassProducerNotConfigured
 	case iterating:
 		return bypassActiveDebugIteration
-	case !candidateDeliverableUnderPolicy(ctx):
+	case !candidateDeliverable(ctx):
 		return bypassCandidateUndeliverable
 	case !generationLeavesWorkAllowance(ctx):
 		return bypassWorkAllowance
@@ -106,7 +107,7 @@ func editGenerationBypass(ctx *AgentContext, fileTier Tier, warrants bool,
 		return bypassProducerNotConfigured
 	case iterating:
 		return bypassActiveDebugIteration
-	case !candidateDeliverableUnderPolicy(ctx):
+	case !candidateDeliverable(ctx):
 		return bypassCandidateUndeliverable
 	case !generationLeavesWorkAllowance(ctx):
 		return bypassWorkAllowance
@@ -114,23 +115,15 @@ func editGenerationBypass(ctx *AgentContext, fileTier Tier, warrants bool,
 	return bypassNone
 }
 
-// candidateDeliverableUnderPolicy reports whether a candidate could reach disk
-// in this session, asked before generation rather than after it. It mirrors
-// the delivery owners (authorizeCandidateDelivery, decideCandidatePolicy): a
-// delivery needs strict authorization against declared outputs, or
-// automatic_v3. It errs toward "could": a false "could" costs generation time
-// as before, a false "could not" would lose a delivery.
-//
-// Capture-only acquisition keeps generating: it exists to record what would
-// have been authorized.
-func candidateDeliverableUnderPolicy(ctx *AgentContext) bool {
+// candidateDeliverable reports whether a candidate could reach disk in this
+// session at all: the request declared outputs, or it declared work so the
+// model's own call grounds the target, or the process is a capture-only
+// acquisition that generates without delivering.
+func candidateDeliverable(ctx *AgentContext) bool {
 	if candidateCaptureOnly() {
 		return true
 	}
-	if mode, _ := candidatePolicyOf(ctx); mode == CandidatePolicyAutomaticV3 {
-		return true
-	}
-	return outputKnowledgeDeclared(ctx)
+	return outputKnowledgeDeclared(ctx) || requestDeclaresWork(ctx)
 }
 
 // workAllowance is what optional generation must leave for the rest of the

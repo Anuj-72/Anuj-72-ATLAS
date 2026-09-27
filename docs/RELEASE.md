@@ -38,10 +38,12 @@ marks *audience* rather than maturity and composes with a level:
 
 **Release-blocked:** V3 candidate generation and selection. Its automated
 check, the `tests/e2e` V3-selection assertions, failed at `c3a881d` ("V3 never
-selected", 2026-09 audit), and the cause is not established. Under the default
-candidate policy (`strict`, no declared outputs), write and edit tools do not
-run V3 generation at all ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). No
-release is qualified against this row until the check passes.
+selected", 2026-09 audit), and the cause is not established. At that commit,
+under the default candidate policy (`strict`, no declared outputs), write and
+edit tools did not run V3 generation at all. Since 2026-09-26 there is one
+delivery rule and V3 runs for every work request whose file clears the cost
+rules ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)); the check has not been
+re-run since. No release is qualified against this row until the check passes.
 
 ## Service contracts
 

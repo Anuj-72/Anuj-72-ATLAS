@@ -4434,15 +4434,9 @@ func validateTaskContract(in *TaskContract, workingDir string) (*TaskContract, e
 	if err != nil {
 		return nil, err
 	}
-	// The candidate policy is refused rather than defaulted, for the same
-	// reason every other mode on this boundary is: a mode nobody registered is
-	// a state nobody has reasoned about, and a typo must not silently deliver
-	// under a rule the caller did not ask for.
-	if _, ok := ParseCandidatePolicy(in.CandidatePolicy); !ok {
-		return nil, fmt.Errorf(
-			"task_contract.candidate_policy %q is not supported (want strict, advisory or automatic_v3)",
-			in.CandidatePolicy)
-	}
+	// candidate_policy is accepted and not read: there is one delivery rule
+	// (candidate_policy.go), and a client that still sends a mode -- an
+	// older TUI sends "strict" on every request -- keeps working.
 	outKnow, err := normalizeKnowledge("output_knowledge", in.OutputKnowledge,
 		in.OutputsPresent(), len(in.OutputPaths()))
 	if err != nil {
@@ -4471,8 +4465,7 @@ func validateTaskContract(in *TaskContract, workingDir string) (*TaskContract, e
 	probe := &AgentContext{WorkingDir: workingDir}
 	seen := map[string]bool{}
 	out := &TaskContract{TaskMode: in.TaskMode,
-		OutputKnowledge: outKnow, VerificationKnowledge: verKnow,
-		CandidatePolicy: strings.TrimSpace(in.CandidatePolicy)}
+		OutputKnowledge: outKnow, VerificationKnowledge: verKnow}
 	var paths []string
 	for _, p := range in.OutputPaths() {
 		if strings.TrimSpace(p) == "" {

@@ -132,13 +132,6 @@ type tuiModel struct {
 	// which is work. Deliberately not sticky: a mode that persisted would
 	// quietly declare later real work to be a question.
 	pendingTaskMode taskMode
-	// candidatePolicy is the session's selection from /candidate-policy, in
-	// the proxy's typed value. Strict by default and sent explicitly, so the
-	// header and the request always agree. Session-wide on purpose -- a
-	// person who chose automatic delivery chose it for the work they are
-	// doing, not for one message -- and reset to strict by a new session so
-	// the choice never outlives the work.
-	candidatePolicy string
 
 	// Session persistence. sessionUID is the stable id for the on-disk
 	// transcript (distinct from turnSessionID, which is minted per turn for
@@ -377,9 +370,6 @@ func newTUIModel(proxyURL string) tuiModel {
 	)
 
 	return tuiModel{
-		// Strict from the first frame, and sent as such: the header never shows
-		// a policy the request does not carry.
-		candidatePolicy:     candidatePolicyStrict,
 		proxyURL:            proxyURL,
 		events:              make(chan Envelope, 256),
 		state:               newPipelineState(),
@@ -612,7 +602,6 @@ func (m *tuiModel) sendChatCmd(message string) tea.Cmd {
 	// is work again. A sticky question mode would quietly declare later real
 	// work to be a question, which is the failure this design exists to avoid.
 	declared := m.takeTaskMode()
-	policy := m.candidatePolicy
 
 	// Persist the transcript at turn start — the process is often killed or
 	// execv'd, so the safest moment to snapshot is right after the user row
@@ -622,8 +611,7 @@ func (m *tuiModel) sendChatCmd(message string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			err := sendChatOpts(ctx, proxyURL, message, workingDir, mode, sessionID,
-				history, demoOpts{allowedTools: allowed, taskMode: declared,
-					candidatePolicy: policy}, out)
+				history, demoOpts{allowedTools: allowed, taskMode: declared}, out)
 			// Signal turn end via the same channel using a sentinel
 			// chatEvent (type="__turn_done__") — keeps the event
 			// ordering: all messages drain before the done marker.
@@ -1435,7 +1423,7 @@ func (m tuiModel) View() string {
 	if height <= 0 {
 		height = 30
 	}
-	header := renderHeader(m.proxyURL, m.workingDir, m.mode+" · "+candidatePolicyHeader(m.candidatePolicy), m.turnActive,
+	header := renderHeader(m.proxyURL, m.workingDir, m.mode, m.turnActive,
 		m.spinnerFrame, width)
 	sel := selectionState{}
 	if m.selecting {
@@ -1590,18 +1578,6 @@ func findPaneByName(name string) *paneSnapshot {
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// candidatePolicyHeader is the short form the header carries beside the
-// permission mode, so the current selection is always in view.
-func candidatePolicyHeader(policy string) string {
-	switch policy {
-	case candidatePolicyAdvisory:
-		return "candidates:advisory"
-	case candidatePolicyAutomatic:
-		return "candidates:automatic"
-	}
-	return "candidates:strict"
-}
 
 func renderHeader(proxyURL, workingDir, mode string, busy bool,
 	spinnerFrame, width int) string {

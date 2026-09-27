@@ -10,33 +10,6 @@ import (
 // Configuration, telemetry and provenance, audited as facts about the build
 // rather than as intentions.
 
-// No production path treats an unknown mode as anything but strict, and the
-// mode reaches the resolver from exactly two places.
-func TestUnknownModesFailClosedToStrict(t *testing.T) {
-	for _, raw := range []string{"advisory ", "ADVISORY", "auto", "yolo", "confirm!", "1"} {
-		mode, ok := ParseCandidatePolicy(raw)
-		if raw == "advisory " {
-			// Trimmed, so this one is a legitimate spelling of advisory.
-			if !ok || mode != CandidatePolicyAdvisory {
-				t.Errorf("%q resolved to %q/%v", raw, mode, ok)
-			}
-			continue
-		}
-		if ok {
-			t.Errorf("%q was accepted", raw)
-		}
-		if mode != CandidatePolicyStrict {
-			t.Errorf("%q fell back to %q, want strict", raw, mode)
-		}
-	}
-	// And an unreadable operator value is strict, never advisory.
-	t.Setenv("ATLAS_CANDIDATE_POLICY", "advisorY")
-	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
-	if mode, _ := candidatePolicyOf(ctx); mode != CandidatePolicyStrict {
-		t.Errorf("an unreadable operator value resolved to %q", mode)
-	}
-}
-
 // Neither the model nor the service can reach the mode, and no route reads a
 // mode off anything they produce.
 func TestNeitherModelNorServiceSelectsTheMode(t *testing.T) {
@@ -76,42 +49,6 @@ func TestNeitherModelNorServiceSelectsTheMode(t *testing.T) {
 	}
 }
 
-// Advisory is reachable for an experiment and cannot deliver.
-func TestAdvisoryIsReachableAndInert(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAdvisory)
-	mode, source := candidatePolicyOf(ctx)
-	if mode != CandidatePolicyAdvisory || source != CandidatePolicySourceClient {
-		t.Fatalf("advisory unreachable: %q/%q", mode, source)
-	}
-	clean := advisoryInput{
-		Observed:         checkOutcome{Status: ValidationPassed},
-		TargetDeclared:   true,
-		TargetAuthorized: true,
-		ScopeAdmits:      true,
-		Evidence: []proxyEvidence{{
-			Provenance: V3EvidenceProvenance{Source: ProvenanceClientDeclaredVerification},
-			Outcome:    ValidationPassed,
-		}},
-	}
-	out := decideCandidatePolicy(ctx, clean, false)
-	if out.Decision != PolicyCandidatePreferredAdvisory {
-		t.Fatalf("advisory decided %q", out.Decision)
-	}
-	if out.Delivers || out.mayDeliverUnderPolicy() {
-		t.Fatal("advisory delivered")
-	}
-	// And the only decision that sets Delivers is the strict one.
-	for _, d := range []candidatePolicyDecision{
-		PolicyBaselineRetained, PolicyCandidatePreferredAdvisory,
-		PolicyCandidateRejectedHardVeto,
-		PolicyInsufficientConfidence,
-	} {
-		if deliveryProvenanceFor(candidatePolicyOutcome{Decision: d}) != DeliveryFromModelProposal {
-			t.Errorf("%s claimed a candidate origin without delivering", d)
-		}
-	}
-}
-
 // automatic_v3 delivers what the pipeline selected, and only that.
 //
 // Its own precondition -- that these are the exact bytes the selection path
@@ -119,7 +56,7 @@ func TestAdvisoryIsReachableAndInert(t *testing.T) {
 // decided its own authorization would be the service certifying itself with
 // one more step in between.
 func TestAutomaticDeliversOnlyWhatTheOwnerAuthorized(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAutomaticV3)
+	ctx := policyContext(t)
 	in := advisoryInput{
 		Observed:         checkOutcome{Status: ValidationPassed},
 		TargetDeclared:   true,
@@ -174,7 +111,9 @@ func TestAutomaticDeliversOnlyWhatTheOwnerAuthorized(t *testing.T) {
 	}
 	body := codeWithoutComments(string(src))
 	decide := body[strings.Index(body, "func decideCandidatePolicy("):]
-	decide = decide[:strings.Index(decide, "\nfunc ")]
+	if next := strings.Index(decide, "\nfunc "); next >= 0 {
+		decide = decide[:next]
+	}
 	if n := strings.Count(decide, "out.Delivers ="); n != 1 {
 		t.Fatalf("the policy owner assigns Delivers %d times, want once", n)
 	}

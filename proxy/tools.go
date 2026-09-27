@@ -1897,12 +1897,9 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	// fail-closed member instead of leaving an entry that never ended.
 	lifecycle := newRouteLifecycle(entry)
 	// The attribution is deferred first so it runs last, over the recorded
-	// ending. The one read of the request's policy on this route happens
-	// here, where the entry is minted, so every ending knows its mode.
+	// ending.
 	defer lifecycle.recordAttribution(ctx)
 	defer lifecycle.finalizeDefault(ctx)
-	mode, policySource := candidatePolicyOf(ctx)
-	lifecycle.notePolicy(mode, policySource)
 	// Recorded, never enforced: generation proceeds whatever it says.
 	observeInvocationFeasibility(ctx, entry)
 
@@ -2225,7 +2222,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		// budget bounds what it may spend on one. It no longer waits for a
 		// syntax obligation: a declared main.rs has none, so its declared
 		// command was owed and never run.
-		behavioral, why, mutatedAssets := observeCandidateVerification(ctx, path, code, evID)
+		behavioral, why, mutatedAssets := observeCandidateVerification(ctx, path, code, evID, scope)
 		observed, unmet = append(observed, behavioral...), why
 		stagingMutatedAssets = mutatedAssets
 	}
@@ -2270,7 +2267,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	if candidateProposed {
 		delivery = authorizeCandidateDelivery(ctx, entry, path, code, evID,
 			v3Result.Evidence, observed, selected, unmet, deliveredCheck, scope,
-			automaticIntent{Mode: mode, VetoInput: vetoInput})
+			automaticIntent{VetoInput: vetoInput})
 		vetoes = delivery.Vetoes
 		vetoInput.Unmet = delivery.Unmet
 		lifecycle.noteAuthorization(delivery, evID, contentSHA256(code), vetoes)
@@ -2281,7 +2278,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	policyInput := vetoInput
 	policyInput.Decision = delivery.Decision
 	policyInput.CaptureOnlySuppressed = delivery.CaptureOnly
-	policyInput.AutomaticEligible = delivery.AutomaticEligible
+	policyInput.AutomaticEligible = delivery.holds(grantBasisAutomaticV3)
 	// The vetoes the authorization owner computed, verbatim. Recomputing them
 	// here is exactly the duplication that lets two answers drift apart.
 	policyInput.Vetoes = vetoes
@@ -2292,8 +2289,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	// reporting it as a strict authorization would name the wrong rule in the
 	// record a calibration is computed from.
 	policy := decideCandidatePolicy(ctx, policyInput,
-		candidateProposed && delivery.Typed && delivery.Basis == grantBasisStrict &&
-			(delivery.mayDeliver() || delivery.WouldAuthorize))
+		candidateProposed && delivery.holds(grantBasisStrict))
 	if candidateProposed {
 		recordCandidatePolicyDecision(ctx, entry, contentSHA256(code), policy)
 		if delivery.CaptureOnly {
@@ -2558,6 +2554,24 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		})
 	}
 
+	// The caller's own bytes, checked before they land, for a delivery that
+	// cannot go ahead after the policy said it could.
+	writeCallersContent := func() (*ToolResult, error) {
+		baseCheck := fallbackSyntaxOutcomeFor(ctx, path, baselineContent).aggregate()
+		if baseCheck.Status == ValidationFailed {
+			return &ToolResult{Success: false,
+				Error:            fallbackSyntaxRejection(path, baselineContent, baseCheck.Detail),
+				MutationStatus:   MutationRefused,
+				ValidationKind:   ValidationKindSyntax,
+				ValidationStatus: ValidationFailed,
+				ValidationDetail: baseCheck.Detail}, nil
+		}
+		fbRes, fbErr := writeFileRecorded(path, baselineContent, ctx)
+		out, outErr := applyRouteObservation(fbRes, fbErr, baseCheck)
+		emitDeliveryProvenance(ctx, path, DeliveryFromModelProposal, policy)
+		return withDeliveryProvenance(out, DeliveryFromModelProposal), outErr
+	}
+
 	// THE consumer of the authorization grant, and the only mutation on this
 	// route that a typed request can reach. Everything it needs is re-read
 	// from disk inside it: the grant froze a moment and this is a later one.
@@ -2567,11 +2581,20 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 			delivery.Grant, final, delivery.MetCommands, delivery.BaselinePreserved)
 		lifecycle.noteDelivery(outcome)
 		if err != nil {
+			if result == nil && errors.Is(err, errDeliveryUnauthorized) {
+				// Refused before any byte moved. The caller's own content is
+				// still the alternative, exactly as on the edit route and on
+				// every other refusal here. Refusing the whole write told the
+				// model its content was kept when nothing had been written.
+				log.Printf("[write_file] the candidate was not spendable (%s) — writing the caller's content",
+					outcome.Reason)
+				return writeCallersContent()
+			}
 			if result == nil {
-				// Refused before any byte moved. Nothing mutated, nothing
-				// recorded, and the caller is told which check said no.
+				// The write itself failed. The licence was spent on bytes that
+				// never reached disk: nothing moved and nothing is claimed.
 				return &ToolResult{Success: false,
-					Error:            deliveryRefusalMessage(outcome.Reason),
+					Error:            "the file could not be written (" + outcome.Reason + ") — nothing was changed",
 					MutationStatus:   MutationRefused,
 					ValidationKind:   final.kind(),
 					ValidationStatus: final.Status,
@@ -2599,11 +2622,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	// nobody reviewed.
 	log.Printf("[write_file] authorized delivery reached the ungranted path for %s — writing the caller's content",
 		logPath(path))
-	fbRes, fbErr := writeFileRecorded(path, baselineContent, ctx)
-	out, outErr := applyRouteObservation(fbRes, fbErr,
-		fallbackSyntaxOutcomeFor(ctx, path, baselineContent).aggregate())
-	emitDeliveryProvenance(ctx, path, DeliveryFromModelProposal, policy)
-	return withDeliveryProvenance(out, DeliveryFromModelProposal), outErr
+	return writeCallersContent()
 }
 
 // originalForScope is the artifact as it stands before this call, or "" when

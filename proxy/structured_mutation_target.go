@@ -6,8 +6,7 @@ import "strings"
 // named, read off that call's parsed arguments and nothing else.
 //
 // It exists for the interactive request. A person types into the TUI, the
-// client declares work and, by explicit selection, automatic_v3 -- and it
-// declares no expected outputs, because it knows nothing structured about
+// client declares work -- and it declares no expected outputs, because it knows nothing structured about
 // which files the task requires and guessing them from the prose is the thing
 // the contract replaces. Without a declared output there was no target for an
 // automatic delivery to bind to, so the pipeline's selected candidate never
@@ -15,8 +14,8 @@ import "strings"
 //
 // The model's write_file or edit call is a third thing, and it is structured
 // rather than inferred: fields, not sentences. It names a canonical target and
-// bounds a mutation, and under automatic_v3 that target may ground the delivery
-// of the selected candidate to that exact path.
+// bounds a mutation, and that target may ground the delivery of the selected
+// candidate to that exact path.
 //
 // What it is NOT, and structural tests pin each one:
 //
@@ -29,9 +28,9 @@ import "strings"
 //     completion gates;
 //   - not evidence. A candidate delivered on this ground is exactly as
 //     unproven as it was, and every hard veto still applies;
-//   - not available to strict or advisory, which keep their evidence question
-//     and their answer, and not available to a question request, which can
-//     create no mutation authority at all.
+//   - not a widening of declared outputs: a request that named outputs is
+//     bound to them, and a question request can create no mutation authority
+//     at all.
 //
 // The mutation scope owner derives the target (deriveMutationScope, from the
 // parsed call); the authorization owner decides on it and the grant records
@@ -41,10 +40,11 @@ import "strings"
 // in telemetry; never a path and never prose.
 const (
 	// targetGroundingDeclaredOutput: the client declared this path as an
-	// expected output. The only authority strict ever accepts.
+	// expected output. The only grounding the declared-verification basis
+	// accepts.
 	targetGroundingDeclaredOutput = "declared_output"
 	// targetGroundingStructuredMutationTarget: the model's own structured tool call
-	// named this path, and the request selected automatic_v3.
+	// named this path, in a work request that declared no outputs.
 	targetGroundingStructuredMutationTarget = "structured_mutation_target"
 )
 
@@ -52,7 +52,6 @@ const (
 // about the request and the call, closed, never a score, never a path.
 const (
 	structuredTargetNoContract     = "request_declared_no_contract"
-	structuredTargetNotAutomatic   = "policy_is_not_automatic_v3"
 	structuredTargetNotWork        = "task_mode_is_not_work"
 	structuredTargetNoScope        = "no_structured_mutation_scope"
 	structuredTargetMismatch       = "target_is_not_the_structured_mutation_target"
@@ -64,20 +63,16 @@ const (
 // the first fact that stood in the way when it may not.
 //
 // Every condition is a fact about the request and the call, none about the
-// candidate: the request selected automatic_v3 and is work, the scope was
-// fully derived from a supported mutating tool, it belongs to this request,
-// and its canonical target IS the target being decided. A scope for another
-// path, a partial scope, a question, or any policy but automatic_v3 grounds
-// nothing. The scope's own admission checks -- workspace and target identity,
+// candidate: the request is work, the scope was fully derived from a
+// supported mutating tool, it belongs to this request, and its canonical
+// target IS the target being decided. A scope for another path, a partial
+// scope or a question grounds nothing. The scope's own admission checks -- workspace and target identity,
 // the edit boundary -- are applied by the grant after this, exactly as they
 // are for a declared target.
-func structuredMutationTargetGrounds(ctx *AgentContext, mode candidatePolicyMode,
+func structuredMutationTargetGrounds(ctx *AgentContext,
 	scope mutationScope, target string) (bool, string) {
 	if ctx == nil {
 		return false, structuredTargetNoContract
-	}
-	if mode != CandidatePolicyAutomaticV3 {
-		return false, structuredTargetNotAutomatic
 	}
 	// Asked of the obligation owner, which is the one reader of the validated
 	// contract; this file reads no contract field.

@@ -4,7 +4,7 @@ import (
 	"sort"
 )
 
-// What the advisory policy may look at, and what disqualifies a candidate
+// What the delivery rule may look at, and what disqualifies a candidate
 // outright.
 //
 // The split matters more than either half. A veto is a FACT about this
@@ -158,6 +158,14 @@ func advisoryVetoes(in advisoryInput) []string {
 	if in.Observed.Status == ValidationFailed {
 		fired[VetoSyntaxOrStructural] = true
 	}
+	if in.Observed.Status == ValidationNotRun || in.Observed.Status == ValidationUnknown {
+		// A check that applies to these bytes did not run -- the sandbox was
+		// down or stopped the checker -- or answered nothing readable. Nothing
+		// spoke for the candidate, and replacing what the model wrote needs
+		// something that did. Without this, an automatic delivery landed on a
+		// syntax check that never ran.
+		fired[VetoExecutionUnavailable] = true
+	}
 	if in.LanguageOrBoundaryViolation {
 		fired[VetoLanguageOrTargetMismatch] = true
 	}
@@ -267,26 +275,19 @@ func advisorySignals(in advisoryInput) map[string]interface{} {
 // decideCandidatePolicy is THE policy owner.
 //
 // Order is the whole design. Vetoes first, because a disqualifying fact is not
-// something a strong signal elsewhere can outweigh. Then the strict answer,
-// because trusted evidence meeting a declared floor is the strongest thing a
-// candidate can show. Then automatic_v3, which delivers the candidate the
-// selection path named once nothing disqualifying was observed and the
-// authorization owner approved its identity. Then advisory preference, which
-// is a quality opinion this build records and does not act on.
-//
-// insufficient_confidence is a real answer, not a fallback. A candidate that
-// nothing disqualified and nothing supported is exactly that, and saying so is
-// how a later calibration can tell "we had no evidence" apart from "we had
-// evidence against".
+// something a strong signal elsewhere can outweigh. Then a declared
+// verification that passed, the strongest thing a candidate can show. Then the
+// V3 selection basis, once nothing disqualifying was observed and the
+// authorization owner approved the candidate's identity. Otherwise the
+// model's own bytes stand.
 func decideCandidatePolicy(ctx *AgentContext, in advisoryInput,
 	strictAuthorized bool) candidatePolicyOutcome {
-	mode, source := candidatePolicyOf(ctx)
 	vetoes := in.Vetoes
 	if vetoes == nil {
 		vetoes = advisoryVetoes(in)
 	}
 	out := candidatePolicyOutcome{
-		Mode: mode, Source: source,
+		Mode: CandidatePolicyAutomaticV3, Source: CandidatePolicySourceFixed,
 		Vetoes:  vetoes,
 		Signals: advisorySignals(in),
 	}
@@ -300,25 +301,9 @@ func decideCandidatePolicy(ctx *AgentContext, in advisoryInput,
 	delivers := false
 	switch {
 	case strictAuthorized:
-		// Trusted evidence, bound to these exact bytes, meeting the floor the
-		// client declared.
 		out.Decision, delivers = PolicyCandidateAuthorizedStrict, true
-	case mode == CandidatePolicyAutomaticV3 && in.AutomaticEligible:
-		// The V3 selection path chose these exact bytes and every hard safety
-		// requirement held. No floor was met because the client declared none;
-		// the vetoes above are what stands in for one, and they are facts
-		// rather than a lowered bar.
+	case in.AutomaticEligible:
 		out.Decision, delivers = PolicyCandidateAutomaticV3, true
-	case mode == CandidatePolicyAutomaticV3:
-		// Automatic was asked for and the authorization owner declined. The
-		// model's own bytes stand.
-		out.Decision = PolicyBaselineRetained
-	case mode == CandidatePolicyAdvisory:
-		if advisoryHasPositiveEvidence(in) {
-			out.Decision = PolicyCandidatePreferredAdvisory
-		} else {
-			out.Decision = PolicyInsufficientConfidence
-		}
 	default:
 		out.Decision = PolicyBaselineRetained
 	}
@@ -326,27 +311,4 @@ func decideCandidatePolicy(ctx *AgentContext, in advisoryInput,
 	// place, for every decision that earned one.
 	out.Delivers = delivers && !in.CaptureOnlySuppressed
 	return out
-}
-
-// advisoryHasPositiveEvidence reports whether anything trusted was actually
-// observed in the candidate's favour.
-//
-// Deliberately a presence test rather than a score. The trusted producers are
-// the proxy's own gate and the client's declared commands; a candidate that
-// passed at least one of them, on these exact bytes, has something in its
-// favour. How much that is worth is the question a calibration answers, and
-// until one exists this build refuses to turn it into a number.
-func advisoryHasPositiveEvidence(in advisoryInput) bool {
-	if in.Observed.Status != ValidationPassed {
-		return false
-	}
-	for _, ev := range in.Evidence {
-		if ev.Outcome != ValidationPassed {
-			continue
-		}
-		if _, trusted := provenanceCeiling[ev.Provenance.Source]; trusted {
-			return true
-		}
-	}
-	return false
 }

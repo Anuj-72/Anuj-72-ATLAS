@@ -343,10 +343,8 @@ func TestSuppressionDoesNotRewriteTheAnswer(t *testing.T) {
 		want     string
 	}{
 		{PolicyCandidateAuthorizedStrict, CaptureWouldAuthorizeStrict},
-		{PolicyCandidatePreferredAdvisory, CaptureWouldPreferAdvisory},
 		{PolicyCandidateAutomaticV3, CaptureWouldDeliverAutomaticV3},
 		{PolicyCandidateRejectedHardVeto, CaptureRejectedHardVeto},
-		{PolicyInsufficientConfidence, CaptureInsufficientConfidence},
 		{PolicyBaselineRetained, CaptureBaselineRetained},
 	} {
 		if got := captureOnlyDispositionFor(tc.decision); got != tc.want {
@@ -362,7 +360,7 @@ func TestSuppressionDoesNotRewriteTheAnswer(t *testing.T) {
 // Path, identity and permission rules are untouched by the control.
 func TestCaptureOnlyWeakensNothingElse(t *testing.T) {
 	t.Setenv(CandidateCaptureOnlyEnv, "1")
-	ctx := policyContext(t, CandidatePolicyStrict)
+	ctx := policyContext(t)
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-capture-only")
 	entry := mintRouteEntry(ctx)
 	path := filepath.Join(ctx.WorkingDir, "solve.py")

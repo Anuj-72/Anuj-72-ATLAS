@@ -96,7 +96,16 @@ class _FakeLlamaHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        req = json.loads(self.rfile.read(length))
+        raw = self.rfile.read(length)
+        if self.path.startswith("/slots"):
+            # The proxy's per-session slot erase, a POST with no body. This
+            # fake has no slots, like a llama-server without
+            # --slot-save-path, and says so instead of failing to parse.
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        req = json.loads(raw)
         tool_results = sum(
             1 for m in req.get("messages", [])
             if m.get("role") == "user"

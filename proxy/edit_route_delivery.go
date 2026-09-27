@@ -54,12 +54,6 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	// fail-closed default.
 	defer lifecycle.recordAttribution(ctx)
 	defer lifecycle.finalizeDefault(ctx)
-	// The one read of the request's policy on this route, made where the
-	// entry is minted so every ending, however early, knows the mode it ran
-	// under. Read once here and handed down; the delivery owner never reads it.
-	mode, source := candidatePolicyOf(ctx)
-	lifecycle.notePolicy(mode, source)
-
 	// The structured intent of THIS call: the tool the model actually invoked,
 	// the canonical target it named, the pre-edit artifact and the caller's own
 	// post-edit result. The difference between the last two is the boundary a
@@ -144,7 +138,7 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	}
 	// Declared commands are staged whether or not a syntax obligation exists,
 	// as on the new-file route.
-	behavioral, unmet, mutatedAssets := observeCandidateVerification(ctx, path, improved, evID)
+	behavioral, unmet, mutatedAssets := observeCandidateVerification(ctx, path, improved, evID, scope)
 	pool = append(pool, behavioral...)
 
 	scopeAdmits, scopeRefusal := false, scopeRefusedNoScope
@@ -177,7 +171,7 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	}
 	delivery := authorizeCandidateDelivery(ctx, entry, path, improved, evID,
 		meta.Envelope, pool, selected, unmet, observed, scope,
-		automaticIntent{Mode: mode, VetoInput: vetoInput})
+		automaticIntent{VetoInput: vetoInput})
 	vetoes := delivery.Vetoes
 	vetoInput.Unmet = delivery.Unmet
 	lifecycle.noteAuthorization(delivery, evID, contentSHA256(improved), vetoes)
@@ -187,11 +181,9 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	policyInput := vetoInput
 	policyInput.Decision = delivery.Decision
 	policyInput.CaptureOnlySuppressed = delivery.CaptureOnly
-	policyInput.AutomaticEligible = delivery.AutomaticEligible
+	policyInput.AutomaticEligible = delivery.holds(grantBasisAutomaticV3)
 	policyInput.Vetoes = vetoes
-	policy := decideCandidatePolicy(ctx, policyInput,
-		delivery.Typed && delivery.Basis == grantBasisStrict &&
-			(delivery.mayDeliver() || delivery.WouldAuthorize))
+	policy := decideCandidatePolicy(ctx, policyInput, delivery.holds(grantBasisStrict))
 	recordCandidatePolicyDecision(ctx, entry, contentSHA256(improved), policy)
 	if delivery.CaptureOnly {
 		recordCaptureOnlyDisposition(ctx, entry, contentSHA256(improved), policy, true)

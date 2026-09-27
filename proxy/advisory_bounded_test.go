@@ -94,7 +94,7 @@ func TestRepeatedProposalsStayBounded(t *testing.T) {
 // Cancellation reaches the policy as a fact, and a cancelled request prefers
 // nothing.
 func TestCancellationStopsThePolicy(t *testing.T) {
-	ctx := policyContext(t, CandidatePolicyAdvisory)
+	ctx := policyContext(t)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	ctx.Ctx = cancelled

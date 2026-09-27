@@ -205,7 +205,7 @@ func TestStagingSeparatesAStoppedCommandFromAFailedOne(t *testing.T) {
 // A resource kill fires the veto that says nothing was observed, never the one
 // that says the candidate's own verification went against it.
 func TestResourceExhaustionVetoesForTheRightReason(t *testing.T) {
-	out := decideCandidatePolicy(policyContext(t, CandidatePolicyStrict), advisoryInput{
+	out := decideCandidatePolicy(policyContext(t), advisoryInput{
 		Observed:         checkOutcome{Status: ValidationPassed},
 		TargetDeclared:   true,
 		TargetAuthorized: true,
@@ -339,13 +339,11 @@ func TestResourceExhaustionReachesNoGrant(t *testing.T) {
 	}
 }
 
-// A product mode cannot weaken it: advisory and confirm read the same unmet
-// reason and reach the same veto.
-func TestNoProductModeWeakensResourceSafety(t *testing.T) {
-	for _, mode := range []candidatePolicyMode{
-		CandidatePolicyStrict, CandidatePolicyAdvisory, CandidatePolicyAutomaticV3,
-	} {
-		out := decideCandidatePolicy(policyContext(t, mode), advisoryInput{
+// Neither delivery basis weakens it: a stopped verification is a veto
+// whether or not the V3 selection path named the candidate.
+func TestNoDeliveryBasisWeakensResourceSafety(t *testing.T) {
+	for _, eligible := range []bool{false, true} {
+		out := decideCandidatePolicy(policyContext(t), advisoryInput{
 			Observed:         checkOutcome{Status: ValidationPassed},
 			TargetDeclared:   true,
 			TargetAuthorized: true,
@@ -353,9 +351,10 @@ func TestNoProductModeWeakensResourceSafety(t *testing.T) {
 			Unmet: map[string]AuthorizationReason{
 				"declared_command:abc": ReasonEvidenceResourceExhausted,
 			},
+			AutomaticEligible: eligible,
 		}, false)
 		if out.Decision != PolicyCandidateRejectedHardVeto {
-			t.Errorf("%s decided %q over a stopped verification", mode, out.Decision)
+			t.Errorf("eligible=%v decided %q over a stopped verification", eligible, out.Decision)
 		}
 	}
 }

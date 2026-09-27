@@ -47,7 +47,6 @@ func knownGrantBasis(b grantBasis) bool {
 // automaticRefusal is the closed set of reasons an automatic delivery was not
 // available. Each names a fact, and none of them is a score.
 const (
-	automaticNotRequested       = "policy_is_not_automatic_v3"
 	automaticHardVeto           = "hard_veto_observed"
 	automaticNoSelection        = "no_selected_candidate_identity"
 	automaticNotTheWinner       = "candidate_is_not_the_selected_winner"
@@ -65,7 +64,6 @@ const (
 // the target by the obligation owner. Re-deriving any of them here would be a
 // second opinion able to disagree with the first.
 type automaticEligibilityInput struct {
-	Mode candidatePolicyMode
 	// Vetoes are the disqualifying facts, computed once by the single owner.
 	Vetoes []string
 	// SelectedCandidateID is what the V3 selection path named as its winner.
@@ -80,8 +78,8 @@ type automaticEligibilityInput struct {
 	// Scope is the structured intent of the tool call that produced them.
 	Scope mutationScope
 	// TargetGrounded says the target has a grounding: the client declared it
-	// as an output, or the request selected automatic_v3, declared no outputs,
-	// and the model's own structured call names exactly this path. Decided by
+	// as an output, or the request declared work and no outputs, and the
+	// model's own structured call names exactly this path. Decided by
 	// the authorization owner, the only reader of both; a target nobody
 	// grounded gets no automatic delivery however good the candidate looks.
 	TargetGrounded bool
@@ -97,9 +95,6 @@ type automaticEligibilityInput struct {
 // something other than what arrived, gets no automatic delivery -- which is the
 // fail-closed behaviour for every legacy or ambiguous record.
 func automaticDeliveryAllowed(in automaticEligibilityInput) (bool, string) {
-	if in.Mode != CandidatePolicyAutomaticV3 {
-		return false, automaticNotRequested
-	}
 	if len(in.Vetoes) > 0 {
 		return false, automaticHardVeto
 	}
@@ -150,7 +145,6 @@ func automaticDeliveryAllowed(in automaticEligibilityInput) (bool, string) {
 // reader of the mode is a second place the answer can be different from the
 // one the policy owner reached.
 type automaticIntent struct {
-	Mode candidatePolicyMode
 	// VetoInput is what the route knows about the candidate before the
 	// authorization decision. The vetoes are computed from it only after the
 	// decision and the structural classification, which they also read.

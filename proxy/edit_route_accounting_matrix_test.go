@@ -230,9 +230,10 @@ func TestAliasSpellingsAreOneChangedPath(t *testing.T) {
 	}
 }
 
-// Strict and advisory keep the caller's own edit even when V3 offers a
-// winner, and the caller's landed edit is accounted for like any other.
-func TestStrictAndAdvisoryEditsKeepTheCallersBytesAndStillAccount(t *testing.T) {
+// An older client's strict or advisory spelling selects nothing: V3's winner
+// lands on the edit route as it does for any work request, and the landed
+// edit is accounted for like any other.
+func TestOlderPolicySpellingsGetTheSameEditAndStillAccount(t *testing.T) {
 	winner := strings.Replace(accountingSeed, "    return 1\n", "    return 9\n", 1)
 	for _, contract := range []string{tuiStrictWork, tuiAdvisoryContract} {
 		r := editLoopFixture(t, map[string]string{"mod.py": accountingSeed}, contract,
@@ -243,11 +244,11 @@ func TestStrictAndAdvisoryEditsKeepTheCallersBytesAndStillAccount(t *testing.T) 
 				stepDone("edited and ran mod.py")),
 			editLoopOptions{v3Winner: winner})
 		disk := r.disk(t, "mod.py")
-		if strings.Contains(disk, "return 9") || !strings.Contains(disk, "return 2") {
-			t.Fatalf("%s: disk holds %q, want the caller's own edit", contract, disk[len(disk)-80:])
+		if !strings.Contains(disk, "return 9") {
+			t.Fatalf("%s: disk holds %q, want the selected candidate", contract, disk[len(disk)-80:])
 		}
 		if !r.tracked("mod.py") {
-			t.Errorf("%s: the caller's landed edit is not in the ledger", contract)
+			t.Errorf("%s: the landed edit is not in the ledger", contract)
 		}
 		if r.terminal["status"] != "completed" {
 			t.Errorf("%s: terminal %q/%q, want completed: %s", contract,

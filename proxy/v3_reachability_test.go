@@ -215,22 +215,22 @@ func (w *reachWorld) disk(t *testing.T) string {
 	return string(b)
 }
 
-// The contract a person's request carries when the client selects the
-// interactive mode: work, automatic_v3, and nothing about the task.
-const reachAutomatic = `{"task_mode":"work","candidate_policy":"automatic_v3"}`
+// The contract a person's request carries from the interactive client: work,
+// and nothing about the task.
+const reachWork = `{"task_mode":"work"}`
 
-// --- 1. What the product does today -----------------------------------------
+// --- 1. Where no candidate could land ----------------------------------------
 
-// The observed live state, pinned. A prose request declares no outputs, the
-// default policy is strict, and nothing the producer could return would be
-// allowed to land -- so it is never asked.
+// A request with no contract, or a question, names no target a candidate
+// could be delivered to, so the producer is never asked and the model's own
+// bytes land. A work request is asked: section 2.
 //
-// This is not a defect report. It is the contract, made executable, so a
-// change to it cannot happen silently.
-func TestAProseOnlyRequestNeverReachesTheProducer(t *testing.T) {
+// Pinned, so a change to it cannot happen silently. A client that sends no
+// contract gets no V3 candidate, which is why every client must send one.
+func TestARequestWithNoDeliverableTargetNeverReachesTheProducer(t *testing.T) {
 	for _, tc := range []struct{ name, contract string }{
 		{"no task_contract at all", ""},
-		{"a contract that states only its mode", `{"task_mode":"work"}`},
+		{"a question", `{"task_mode":"question"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newReachWorld(t, tc.contract)
@@ -265,7 +265,7 @@ func TestAProseOnlyRequestNeverReachesTheProducer(t *testing.T) {
 // requirements, and the prose is unchanged. The target the candidate lands on
 // comes from the model's own tool call, not from anything supplied here.
 func TestTheSelectedCandidateIsAppliedByteExactlyAndRechecked(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	var res *ToolResult
 	recs := captureShadow(t, func() { res = w.write(t) })
 	if res == nil || !res.Success {
@@ -325,7 +325,7 @@ func TestTheSelectedCandidateIsAppliedByteExactlyAndRechecked(t *testing.T) {
 // The completion boundary must be exactly as unconvinced as it was before the
 // pipeline contributed anything.
 func TestADeliveryIsNotAClaimThatTheRequestIsComplete(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	if res := w.write(t); res == nil || !res.Success {
 		t.Fatalf("the write failed: %+v", res)
 	}
@@ -350,7 +350,7 @@ func TestADeliveryIsNotAClaimThatTheRequestIsComplete(t *testing.T) {
 // The identity binding is the whole story: the proxy hashes the bytes it
 // holds, and a selection naming anything else is a candidate nobody chose.
 func TestACandidateTheServiceDidNotSelectIsRefused(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	w.selects = contentSHA256("some other candidate entirely\n")
 	res := w.write(t)
 	if res == nil || !res.Success {
@@ -378,7 +378,7 @@ func TestACandidateTheServiceDidNotSelectIsRefused(t *testing.T) {
 // pipeline allowed to deliver broken bytes over working ones would be worse
 // than not running.
 func TestACandidateThatFailsItsCheckDoesNotDisplaceWorkingBytes(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	w.winner = reachBrokenWinner
 	w.broken[reachBrokenWinner] = true
 	res := w.write(t)
@@ -424,27 +424,23 @@ func TestStructuredGroundingRefusesWhatIsNotThisCall(t *testing.T) {
 	dir := t.TempDir()
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-reach")
-	ctx.TaskContract = mustContract(t, dir, reachAutomatic)
+	ctx.TaskContract = mustContract(t, dir, reachWork)
 	target := filepath.Join(dir, "inventory.py")
 	scope := testMutationScope(ctx, mintRouteEntry(ctx), target, reachBaseline)
-	if ok, _ := structuredMutationTargetGrounds(ctx, CandidatePolicyAutomaticV3, scope, target); !ok {
+	if ok, _ := structuredMutationTargetGrounds(ctx, scope, target); !ok {
 		t.Fatal("precondition: this call does not ground its own target")
 	}
 	for _, tc := range []struct {
 		name, want string
-		mode       candidatePolicyMode
 		scope      mutationScope
 		target     string
 	}{
-		{"strict never uses it", structuredTargetNotAutomatic, CandidatePolicyStrict, scope, target},
-		{"advisory never uses it", structuredTargetNotAutomatic, CandidatePolicyAdvisory, scope, target},
 		{"another path in the same request", structuredTargetMismatch,
-			CandidatePolicyAutomaticV3, scope, filepath.Join(dir, "other.py")},
-		{"no scope at all", structuredTargetNoScope,
-			CandidatePolicyAutomaticV3, mutationScope{}, target},
+			scope, filepath.Join(dir, "other.py")},
+		{"no scope at all", structuredTargetNoScope, mutationScope{}, target},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, why := structuredMutationTargetGrounds(ctx, tc.mode, tc.scope, tc.target)
+			ok, why := structuredMutationTargetGrounds(ctx, tc.scope, tc.target)
 			if ok {
 				t.Fatalf("grounded a delivery it should have refused")
 			}
@@ -458,7 +454,7 @@ func TestStructuredGroundingRefusesWhatIsNotThisCall(t *testing.T) {
 	other := NewAgentContext(dir, Tier2Medium)
 	other.Ctx = context.WithValue(context.Background(), requestIDKey, "req-other")
 	other.TaskContract = ctx.TaskContract
-	if ok, why := structuredMutationTargetGrounds(other, CandidatePolicyAutomaticV3,
+	if ok, why := structuredMutationTargetGrounds(other,
 		scope, target); ok || why != structuredTargetNotThisRequest {
 		t.Errorf("another request's scope grounded a delivery: ok=%v why=%q", ok, why)
 	}
@@ -468,7 +464,7 @@ func TestStructuredGroundingRefusesWhatIsNotThisCall(t *testing.T) {
 // one. If it ever did, the completion boundary would start counting a file the
 // model happened to write as a file the user asked for.
 func TestAnAutomaticDeliveryCreatesNoObligation(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	before := len(requestObligations(w.ctx))
 	if res := w.write(t); res == nil || !res.Success {
 		t.Fatalf("the write failed: %+v", res)
@@ -499,7 +495,7 @@ func TestAnAutomaticDeliveryCreatesNoObligation(t *testing.T) {
 // fires before generation. So the pipeline cannot repair a broken first draft:
 // the draft is the one input it will not look at.
 func TestBrokenBytesStillNeverReachTheProducer(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	w.broken[reachBrokenWinner] = true
 	args, _ := json.Marshal(map[string]string{"path": "inventory.py", "content": reachBrokenWinner})
 	var res *ToolResult
@@ -544,7 +540,7 @@ func TestBrokenBytesStillNeverReachTheProducer(t *testing.T) {
 // naming it, is being debugged -- and execution is the feedback. The producer
 // is not consulted there either, under any policy.
 func TestTheRepairLoopStillTakesTheFastPath(t *testing.T) {
-	w := newReachWorld(t, reachAutomatic)
+	w := newReachWorld(t, reachWork)
 	if err := os.WriteFile(filepath.Join(w.dir, "inventory.py"), []byte(reachBaseline), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -578,89 +574,57 @@ func TestTheRepairLoopStillTakesTheFastPath(t *testing.T) {
 	}
 }
 
-// A question request generates candidates it can never deliver.
-//
-// Recorded as a finding, not fixed here. candidateDeliverableUnderPolicy
-// documents itself as mirroring the delivery owners and erring toward "could";
-// for automatic_v3 it returns true without asking whether the request declares
-// work, while structuredMutationTargetGrounds refuses a question outright. With
-// no declared outputs that is a delivery which is impossible rather than
-// merely uncertain, so the generation budget is spent for nothing. The
-// smallest correction would be to ask requestDeclaresWork in that branch and
-// fall through to outputKnowledgeDeclared otherwise, which changes no
-// delivery that happens today. It is specified here and deliberately left
-// unimplemented: it is a cost defect in a mode this cycle does not measure,
-// and shipping it would not change any decision in front of us.
-func TestAQuestionUnderAutomaticV3GeneratesWhatItCannotDeliver(t *testing.T) {
-	w := newReachWorld(t, `{"task_mode":"question","candidate_policy":"automatic_v3"}`)
+// A question generates nothing it cannot deliver. It grounds no target, so
+// under the one delivery rule a candidate for it could only be discarded; the
+// cost rule that skips an undeliverable candidate now asks whether the
+// request declared work, where it once asked only about the policy mode.
+func TestAQuestionGeneratesNothingItCannotDeliver(t *testing.T) {
+	w := newReachWorld(t, `{"task_mode":"question"}`)
 	if res := w.write(t); res == nil || !res.Success {
 		t.Fatalf("the write failed: %+v", res)
 	}
-	if w.v3Calls != 1 {
-		t.Fatalf("the producer was consulted %d times, want 1 -- the finding has changed", w.v3Calls)
+	if w.v3Calls != 0 {
+		t.Fatalf("the producer was consulted %d times for a question", w.v3Calls)
 	}
 	if got := w.disk(t); got != reachBaseline {
 		t.Fatal("a question request delivered a candidate")
 	}
-	// Both halves of the finding, so a later correction fails here loudly
-	// rather than silently changing what this documents.
-	if !candidateDeliverableUnderPolicy(w.ctx) {
-		t.Error("generation is no longer permitted here; update this finding")
+	if candidateDeliverable(w.ctx) {
+		t.Error("a question counts as deliverable")
 	}
 	scope := testMutationScope(w.ctx, mintRouteEntry(w.ctx),
 		filepath.Join(w.dir, "inventory.py"), reachBaseline)
-	if ok, why := structuredMutationTargetGrounds(w.ctx, CandidatePolicyAutomaticV3,
+	if ok, why := structuredMutationTargetGrounds(w.ctx,
 		scope, filepath.Join(w.dir, "inventory.py")); ok || why != structuredTargetNotWork {
 		t.Errorf("delivery grounding: ok=%v why=%q, want the question refusal", ok, why)
 	}
 }
 
-// --- 6. What the two policies each refuse -----------------------------------
+// --- 6. Evidence nobody could measure ---------------------------------------
 
-// Strict refuses what it cannot show. Automatic delivers it, and says so.
+// A class no adapter can measure is unavailable evidence, not failed evidence.
 //
 // Same producer, same candidate, same prose, same target -- and an evidence
-// envelope reporting that no adapter could measure this class. Strict has no
-// floor it can demonstrate was met, so the baseline stays: that is the
-// inadequate-evidence refusal, taken through the real tool call rather than
-// asserted about the authorization owner.
-//
-// Under automatic_v3 the same candidate lands, because automatic is not a
-// lower bar for the same question -- it is a different question, and the
-// safety requirements are what it answers. The pair is tested together so the
-// record can never describe the automatic delivery as evidence it is not.
-func TestStrictRefusesUnmeasurableEvidenceWhereAutomaticDelivers(t *testing.T) {
+// envelope reporting that no adapter could measure this class. No declared
+// floor can be shown to have been met, so the strict basis does not hold; the
+// selection basis does, and the candidate lands. The record must name that
+// rule, so it can never describe the delivery as evidence it is not.
+func TestUnmeasurableEvidenceLandsOnTheSelectionBasis(t *testing.T) {
 	const declared = `{"task_mode":"work","output_knowledge":"declared",` +
 		`"expected_outputs":["inventory.py"]}`
-	strict := newReachWorld(t, declared)
-	strict.unsupported = true
-	res := strict.write(t)
+	w := newReachWorld(t, declared)
+	w.unsupported = true
+	var res *ToolResult
+	recs := captureShadow(t, func() { res = w.write(t) })
 	if res == nil || !res.Success {
 		t.Fatalf("the write failed: %+v", res)
 	}
-	if strict.v3Calls != 1 {
-		t.Fatalf("the producer was consulted %d times under strict, want 1", strict.v3Calls)
+	if w.v3Calls != 1 {
+		t.Fatalf("the producer was consulted %d times, want 1", w.v3Calls)
 	}
-	if got := strict.disk(t); got != reachBaseline {
-		t.Errorf("strict delivered on evidence it could not measure: %q", got)
+	if got := w.disk(t); got != reachWinner {
+		t.Fatalf("the selected candidate did not land: %q", got)
 	}
-	if res.AuthorizedDeliveryHash != "" {
-		t.Errorf("strict named an authorization it did not have: %q", res.AuthorizedDeliveryHash)
-	}
-
-	auto := newReachWorld(t, reachAutomatic)
-	auto.unsupported = true
-	var autoRes *ToolResult
-	recs := captureShadow(t, func() { autoRes = auto.write(t) })
-	if autoRes == nil || !autoRes.Success {
-		t.Fatalf("the automatic write failed: %+v", autoRes)
-	}
-	if got := auto.disk(t); got != reachWinner {
-		t.Fatalf("automatic did not deliver the selected candidate: %q", got)
-	}
-	// And the record names the rule that earned it. This is the disclosure the
-	// honesty of the whole arrangement rests on: a reader must be able to see
-	// that no declared floor was met here, because there was none to meet.
 	sawAutomatic := false
 	for _, r := range recordsOfKind(recs, "candidate_policy_decision") {
 		switch fmt.Sprint(r["decision"]) {
@@ -671,6 +635,6 @@ func TestStrictRefusesUnmeasurableEvidenceWhereAutomaticDelivers(t *testing.T) {
 		}
 	}
 	if !sawAutomatic {
-		t.Error("the automatic delivery did not record the rule it used")
+		t.Error("the delivery did not record the rule it used")
 	}
 }

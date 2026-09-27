@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+### Changed: one rule decides which V3 candidate lands
+
+The candidate policy modes (`strict`, `advisory`, `automatic_v3`) and
+`ATLAS_CANDIDATE_POLICY` are removed. Under the default, `strict`, a request
+that declared no outputs never generated a candidate. The ordinary
+interactive request declares no outputs, so V3 ran only for clients that
+opted in, and the measured configuration was not the shipped one.
+`advisory` delivered nothing.
+
+- V3's selected candidate replaces the model's bytes when no hard veto fired
+  and a basis holds: a declared verification passed, or the V3 selection
+  path named these exact bytes and every safety requirement holds. Otherwise
+  the model's own bytes land. See `docs/CANDIDATE_POLICY.md`.
+- `task_contract.candidate_policy` is accepted and ignored, so older clients
+  keep working. `ATLAS_CANDIDATE_POLICY` is no longer read; `atlas config
+  validate` flags it.
+- The TUI's `/candidate-policy` command and its header label are removed.
+- A request with no contract, or a `question`, still gets no V3 candidate:
+  no target is grounded. The VS Code extension sends no contract yet.
+
+### Fixed: faults found while removing the modes
+
+- A candidate whose applicable syntax check never ran (for example, the
+  sandbox was down) could be delivered. It is now a hard veto
+  (`execution_evidence_unavailable`).
+- The delivery decision could say "delivers" for a candidate the grant step
+  then refused. The write route then wrote nothing and told the model its
+  content was kept. The decision now reads which basis earned a grant, and a
+  delivery refused before any byte moves writes the model's own bytes, as
+  the edit route already did.
+- Declared verification commands ran against the candidate only for a
+  declared output, so a request that declared commands and no outputs could
+  never have its candidate verified or delivered. They now also run for the
+  file the model's own call named.
+- The e2e fake llama servers crashed on the proxy's body-less slot-erase
+  POST, which filled the e2e log with `JSONDecodeError` tracebacks. They now
+  answer it as a llama-server without slot support does.
+
 ### Removed: the lens retrain endpoint
 
 `POST /internal/lens/retrain` answered 503 in every shipped deployment:

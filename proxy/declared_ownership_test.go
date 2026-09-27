@@ -248,39 +248,45 @@ func TestDeclaredEmptyOwnsTheRouteAndAuthorizesNothing(t *testing.T) {
 	}
 }
 
-func TestUnspecifiedOutputsKeepTheLegacyRoute(t *testing.T) {
-	for _, contract := range []string{
-		"", `{"task_mode":"work"}`,
-		`{"task_mode":"work","output_knowledge":"unspecified"}`,
-		// Verification declared, outputs not: independent classes, and the
-		// output route is the legacy one.
-		`{"task_mode":"work","verification_knowledge":"declared","verification":["pytest -q"]}`,
+// A work request that stated no outputs is grounded by the model's own call:
+// the typed path owns it, the selected candidate lands on one grant, and a
+// declared command still binds. A request with no contract names nothing, so
+// the model's own bytes land and the typed path has no opinion.
+func TestUnspecifiedOutputsAreGroundedByTheModelsCall(t *testing.T) {
+	for _, c := range []struct {
+		contract string
+		owned    bool
+	}{
+		{"", false},
+		{`{"task_mode":"work"}`, true},
+		{`{"task_mode":"work","output_knowledge":"unspecified"}`, true},
+		{`{"task_mode":"work","verification_knowledge":"declared","verification":["pytest -q"]}`, true},
 	} {
-		w := newRouteWorld(t, contract, map[string]stubEffect{"pytest -q": {ExitCode: 0}})
+		w := newRouteWorld(t, c.contract, map[string]stubEffect{"pytest -q": {ExitCode: 0}})
 		recs := captureShadow(t, func() {
 			if _, err := w.write(t); err != nil {
-				t.Fatalf("%q: %v", contract, err)
+				t.Fatalf("%q: %v", c.contract, err)
 			}
 		})
 		onDisk, err := os.ReadFile(w.path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A request that stated no outputs names no target, so nothing can be
-		// authorized against it and the model's own bytes are what land. The
-		// typed path still declines to have an opinion, which is the half of
-		// this invariant that has not changed.
-		if string(onDisk) != routeBaseline {
-			t.Errorf("%q: a request that declared no outputs delivered %q",
-				contract, string(onDisk))
+		want, grants := routeBaseline, 0
+		if c.owned {
+			want, grants = routeWinner, 1
+		}
+		if string(onDisk) != want {
+			t.Errorf("%q: disk holds %q, want %q", c.contract, string(onDisk), want)
 		}
 		for _, r := range recordsOfKind(recs, "candidate_authorization_decision") {
-			if r["influences_live_decision"] != false {
-				t.Errorf("%q: the typed path claimed a request that stated no outputs", contract)
+			if r["influences_live_decision"] != c.owned {
+				t.Errorf("%q: influences_live_decision=%v, want %v",
+					c.contract, r["influences_live_decision"], c.owned)
 			}
 		}
-		if consumedGrants(recs) != 0 {
-			t.Errorf("%q: unowned traffic spent an authorization", contract)
+		if got := consumedGrants(recs); got != grants {
+			t.Errorf("%q: %d grants spent, want %d", c.contract, got, grants)
 		}
 	}
 }

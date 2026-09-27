@@ -126,18 +126,14 @@ func automaticTestScope(t *testing.T) mutationScope {
 	return testMutationScope(ctx, mintRouteEntry(ctx), filepath.Join(dir, "solve.py"), routeWinner)
 }
 
-const automaticContract = `{"task_mode":"work","output_knowledge":"declared",` +
-	`"expected_outputs":["solve.py"],"candidate_policy":"automatic_v3"}`
-const strictContract = `{"task_mode":"work","output_knowledge":"declared",` +
+const workContract = `{"task_mode":"work","output_knowledge":"declared",` +
 	`"expected_outputs":["solve.py"]}`
-const advisoryContract = `{"task_mode":"work","output_knowledge":"declared",` +
-	`"expected_outputs":["solve.py"],"candidate_policy":"advisory"}`
 
-// --- the three modes over one candidate ------------------------------------
+// --- one rule over one candidate --------------------------------------------
 
 // No declared verification, a safe selected candidate: the exact bytes land.
 func TestAutomaticDeliversTheSelectedCandidate(t *testing.T) {
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, true)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, true)
 	res, err := w.write(t)
 	if err != nil {
 		t.Fatalf("write failed: %v", err)
@@ -156,52 +152,50 @@ func TestAutomaticDeliversTheSelectedCandidate(t *testing.T) {
 	}
 }
 
-// Where strict CANNOT authorize, automatic can.
-//
-// A declared .py output owes syntactic validity, which the proxy measures
-// itself -- so a request declaring an output and no commands already reaches
-// strict authorization on syntax alone, and automatic changes nothing for it.
-// The gap automatic_v3 fills is the class strict cannot speak for at all: an
-// artifact no adapter supports, where the honest strict answer is that no
-// floor can be shown to have been met.
-func TestStrictKeepsTheBaselineWhereAutomaticDelivers(t *testing.T) {
-	strictWorld := newAutomaticWorld(t, strictContract, routeWinner, nil, false)
-	if _, err := strictWorld.write(t); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	if got := strictWorld.disk(t); got != routeBaseline {
-		t.Errorf("strict delivered over an unsupported adapter: %q", got)
-	}
-	auto := newAutomaticWorld(t, automaticContract, routeWinner, nil, false)
-	if _, err := auto.write(t); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	if got := auto.disk(t); got != routeWinner {
-		t.Errorf("automatic kept the baseline where it should deliver: %q", got)
+// An older client may still send a candidate_policy. Every spelling gets the
+// same rule and lands the same bytes: nothing a request says selects a mode.
+func TestEveryOlderPolicySpellingLandsTheSameBytes(t *testing.T) {
+	for _, policy := range []string{"", "strict", "advisory", "automatic_v3"} {
+		contract := workContract
+		if policy != "" {
+			contract = strings.TrimSuffix(workContract, "}") + `,"candidate_policy":"` + policy + `"}`
+		}
+		w := newAutomaticWorld(t, contract, routeWinner, nil, false)
+		if _, err := w.write(t); err != nil {
+			t.Fatalf("%q: write failed: %v", policy, err)
+		}
+		if got := w.disk(t); got != routeWinner {
+			t.Errorf("%q: disk holds %q, want the selected candidate", policy, got)
+		}
 	}
 }
 
-// Advisory observes and never delivers.
-//
-// Unsupported adapter, so strict cannot authorize: advisory does not RAISE the
-// strict bar, it lowers the bar for preferring, and a candidate strict would
-// have authorized still lands under advisory exactly as it would under strict.
-// The question here is what advisory adds on its own, which is nothing that
-// reaches disk.
-func TestAdvisoryStillNeverDelivers(t *testing.T) {
-	w := newAutomaticWorld(t, advisoryContract, routeWinner, nil, false)
+// The delivery decision reads which basis earned a grant, not the eligibility
+// answer: the mint can still refuse what eligibility allowed. Before, the
+// decision said "delivers", the mint refused, and nothing at all was written.
+func TestTheDecisionReadsTheGrantNotTheEligibility(t *testing.T) {
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, true)
+	// The request can no longer deliver: minting refuses from here on.
+	retireAuthorizationGrants(w.ctx, grantTerminal)
 	recs := captureShadow(t, func() {
-		if _, err := w.write(t); err != nil {
+		res, err := w.write(t)
+		if err != nil {
 			t.Fatalf("write failed: %v", err)
+		}
+		if res == nil || !res.Success {
+			t.Fatalf("the caller's write did not land: %+v", res)
 		}
 	})
 	if got := w.disk(t); got != routeBaseline {
-		t.Errorf("advisory delivered %q", got)
+		t.Errorf("disk holds %q, want the caller's bytes", got)
 	}
-	for _, rec := range recordsOfKind(recs, "candidate_policy_decision") {
-		if rec["delivers"] == true {
-			t.Error("an advisory decision claimed to deliver")
-		}
+	decisions := recordsOfKind(recs, "candidate_policy_decision")
+	if len(decisions) != 1 {
+		t.Fatalf("%d delivery decisions, want 1", len(decisions))
+	}
+	if decisions[0]["delivers"] == true {
+		t.Errorf("the decision %v says it delivers over a grant the mint refused",
+			decisions[0]["decision"])
 	}
 }
 
@@ -210,7 +204,7 @@ func TestAdvisoryStillNeverDelivers(t *testing.T) {
 // The proxy delivers the bytes the selection NAMED. A service whose winning
 // score points elsewhere changes nothing: identity decides.
 func TestOnlyTheNamedWinnerIsDelivered(t *testing.T) {
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, true)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, true)
 	if _, err := w.write(t); err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +213,11 @@ func TestOnlyTheNamedWinnerIsDelivered(t *testing.T) {
 	}
 	// And when the service names a candidate that is not what arrived, nothing
 	// lands: the bytes in hand won nothing.
-	other := newAutomaticWorld(t, automaticContract, routeWinner, nil, true)
+	other := newAutomaticWorld(t, workContract, routeWinner, nil, true)
 	*other.selected = contentSHA256("def solve(v):\n    return 0\n")
 	ok, why := automaticDeliveryAllowed(automaticEligibilityInput{
-		Mode: CandidatePolicyAutomaticV3, SelectedCandidateID: *other.selected,
-		CandidateHash: contentSHA256(routeWinner),
+		SelectedCandidateID: *other.selected,
+		CandidateHash:       contentSHA256(routeWinner),
 		Identity: V3EvidenceProvenance{RequestID: "r", InvocationID: "i",
 			CandidateInstanceID: "c", WorkspaceStateHash: "w",
 			CandidateHash: contentSHA256(routeWinner)},
@@ -237,7 +231,6 @@ func TestOnlyTheNamedWinnerIsDelivered(t *testing.T) {
 // A missing, blank or legacy selection identity fails closed.
 func TestAmbiguousSelectionIdentityFailsClosed(t *testing.T) {
 	base := automaticEligibilityInput{
-		Mode:                CandidatePolicyAutomaticV3,
 		SelectedCandidateID: contentSHA256(routeWinner),
 		CandidateHash:       contentSHA256(routeWinner),
 		Identity: V3EvidenceProvenance{RequestID: "r", InvocationID: "i",
@@ -276,8 +269,6 @@ func TestAmbiguousSelectionIdentityFailsClosed(t *testing.T) {
 			automaticTargetNotGrounded},
 		{"a veto fired", func(i *automaticEligibilityInput) { i.Vetoes = []string{VetoSyntaxOrStructural} },
 			automaticHardVeto},
-		{"not automatic", func(i *automaticEligibilityInput) { i.Mode = CandidatePolicyStrict },
-			automaticNotRequested},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,30 +290,28 @@ func TestAmbiguousSelectionIdentityFailsClosed(t *testing.T) {
 // An adapter that cannot measure this class is unavailable evidence, not
 // failed evidence. With no declared requirement, the candidate may still land.
 func TestAnUnsupportedAdapterDoesNotBlockAutomaticDelivery(t *testing.T) {
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, false)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, false)
 	if _, err := w.write(t); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 	if got := w.disk(t); got != routeWinner {
 		t.Errorf("an unsupported adapter blocked an otherwise safe candidate: %q", got)
 	}
-	// Strict still refuses it: there the adapter's silence means no floor can
-	// be shown to have been met.
-	s := newAutomaticWorld(t, strictContract, routeWinner, nil, false)
-	if _, err := s.write(t); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.disk(t); got != routeBaseline {
-		t.Errorf("strict delivered over an unsupported adapter: %q", got)
-	}
 }
 
 // --- declared requirements stay binding --------------------------------------
 
-func TestADeclaredCheckStaysBindingUnderAutomatic(t *testing.T) {
-	const withCommand = `{"task_mode":"work","output_knowledge":"declared",` +
-		`"expected_outputs":["solve.py"],"candidate_policy":"automatic_v3",` +
-		`"verification_knowledge":"declared","verification":["pytest -q"]}`
+// A declared command binds whether the client named the output or the
+// model's own call did. Both targets are staged and checked; before, the
+// model-named one was never staged, so its candidate could never land.
+func TestADeclaredCheckStaysBinding(t *testing.T) {
+	contracts := map[string]string{
+		"declared output": `{"task_mode":"work","output_knowledge":"declared",` +
+			`"expected_outputs":["solve.py"],` +
+			`"verification_knowledge":"declared","verification":["pytest -q"]}`,
+		"target the call named": `{"task_mode":"work",` +
+			`"verification_knowledge":"declared","verification":["pytest -q"]}`,
+	}
 	cases := []struct {
 		name   string
 		effect stubEffect
@@ -334,17 +323,23 @@ func TestADeclaredCheckStaysBindingUnderAutomatic(t *testing.T) {
 		{"it was memory-killed", stubEffect{ExitCode: -9, Outcome: ExecutionMemoryExhausted}, routeBaseline},
 		{"it flooded its output", stubEffect{ExitCode: -13, Outcome: ExecutionOutputLimit}, routeBaseline},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newAutomaticWorld(t, withCommand, routeWinner,
-				map[string]stubEffect{"pytest -q": tc.effect}, true)
-			if _, err := w.write(t); err != nil {
-				t.Fatalf("write failed: %v", err)
-			}
-			if got := w.disk(t); got != tc.want {
-				t.Errorf("disk holds %q, want %q", got, tc.want)
-			}
-		})
+	for target, contract := range contracts {
+		for _, tc := range cases {
+			t.Run(target+"/"+tc.name, func(t *testing.T) {
+				w := newAutomaticWorld(t, contract, routeWinner,
+					map[string]stubEffect{"pytest -q": tc.effect}, true)
+				res, err := w.write(t)
+				if err != nil {
+					t.Fatalf("write failed: %v", err)
+				}
+				if res == nil || !res.Success {
+					t.Fatalf("the write did not land: %+v", res)
+				}
+				if got := w.disk(t); got != tc.want {
+					t.Errorf("disk holds %q, want %q", got, tc.want)
+				}
+			})
+		}
 	}
 }
 
@@ -359,7 +354,7 @@ func TestEveryHardVetoStillRefusesUnderAutomatic(t *testing.T) {
 		VetoExecutionUnavailable, VetoIncompleteEvidence,
 		VetoWeakerThanBaseline, VetoStaleIdentity,
 	} {
-		out := decideCandidatePolicy(policyContext(t, CandidatePolicyAutomaticV3),
+		out := decideCandidatePolicy(policyContext(t),
 			advisoryInput{
 				Observed:          checkOutcome{Status: ValidationPassed},
 				TargetDeclared:    true,
@@ -383,7 +378,7 @@ func TestCaptureOnlySuppressesAutomaticDelivery(t *testing.T) {
 	t.Setenv(CandidateCaptureOnlyEnv, "1")
 	// Unsupported adapter, so the decision under test is the automatic one
 	// rather than a strict authorization that would have happened anyway.
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, false)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, false)
 	recs := captureShadow(t, func() {
 		if _, err := w.write(t); err != nil {
 			t.Fatalf("write failed: %v", err)
@@ -416,7 +411,7 @@ func TestCaptureOnlySuppressesAutomaticDelivery(t *testing.T) {
 // The label matches the bytes. A user reviewing the diff is told where they
 // came from and under which rule, and nothing about how good they are.
 func TestProvenanceMatchesTheBytesOnDisk(t *testing.T) {
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, true)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, true)
 	if _, err := w.write(t); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +425,6 @@ func TestProvenanceMatchesTheBytesOnDisk(t *testing.T) {
 	// A decision that did not deliver never claims a candidate origin.
 	for _, d := range []candidatePolicyDecision{
 		PolicyBaselineRetained, PolicyCandidateRejectedHardVeto,
-		PolicyInsufficientConfidence, PolicyCandidatePreferredAdvisory,
 		PolicyCandidateAutomaticV3,
 	} {
 		if got := deliveryProvenanceFor(candidatePolicyOutcome{Decision: d}); got != DeliveryFromModelProposal {
@@ -532,28 +526,6 @@ func TestNoCandidateApprovalSurfaceExists(t *testing.T) {
 			}
 		}
 	}
-	// And the mode vocabulary is exactly the three product modes.
-	if len(candidatePolicyModes) != 3 {
-		t.Errorf("%d policy modes, want strict, advisory and automatic_v3",
-			len(candidatePolicyModes))
-	}
-	for _, mode := range []candidatePolicyMode{
-		CandidatePolicyStrict, CandidatePolicyAdvisory, CandidatePolicyAutomaticV3,
-	} {
-		if !candidatePolicyModes[mode] {
-			t.Errorf("%q is not a registered mode", mode)
-		}
-	}
-	if _, ok := ParseCandidatePolicy("confirm"); ok {
-		t.Error("the withdrawn confirm mode is still accepted on the wire")
-	}
-	// The shipping default is untouched.
-	if defaultCandidatePolicy() != CandidatePolicyStrict {
-		t.Errorf("the shipping default is %q", defaultCandidatePolicy())
-	}
-	if _, ok := ParseCandidatePolicy("automatic_v3"); !ok {
-		t.Error("automatic_v3 is not selectable by a trusted client")
-	}
 }
 
 // The bytes on disk are the bytes the selection path named, terminator and
@@ -569,7 +541,7 @@ func TestDeliveryKeepsTheCandidatesTrailingBytes(t *testing.T) {
 		"no final newline":      strings.TrimSuffix(routeWinner, "\n"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := newAutomaticWorld(t, automaticContract, winner, nil, true)
+			w := newAutomaticWorld(t, workContract, winner, nil, true)
 			res, err := w.write(t)
 			if err != nil {
 				t.Fatalf("write failed: %v", err)

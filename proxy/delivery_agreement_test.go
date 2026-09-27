@@ -19,8 +19,9 @@ import (
 //
 // Two invariants, one per kind of traffic:
 //
-//	structured    the candidate lands if and only if the decision authorized
-//	              it, and the bytes on disk are exactly what it authorized
+//	structured    the candidate lands if and only if the delivery decision
+//	              said it delivers, and the bytes on disk are exactly the
+//	              ones it named
 //	legacy        nothing about the route changed at all
 //
 // Each row drives the real write path against a real stub service. Nothing
@@ -154,10 +155,22 @@ func agreementRows() []agreementRow {
 		// absence of one, and it may not fall through to legacy delivery.
 		{name: "declared empty outputs",
 			contract: `{"task_mode":"work","output_knowledge":"declared","expected_outputs":[]}`},
-		// The same shape without the declaration. Nothing was stated, so there
-		// is no target to authorize against and the caller's own bytes stand.
+		// The same shape without the declaration. The model's own call names
+		// the target, so the selection basis holds and the winner lands.
 		{name: "unspecified outputs",
-			contract: `{"task_mode":"work","output_knowledge":"unspecified"}`},
+			contract: `{"task_mode":"work","output_knowledge":"unspecified"}`, wantWinner: true},
+		// Declared commands bind a target the model's call named, too: staged,
+		// and a failure keeps the caller's bytes.
+		{name: "unspecified outputs, command passes",
+			contract: `{"task_mode":"work","verification_knowledge":"declared","verification":["pytest -q"]}`,
+			commands: pass, wantWinner: true},
+		{name: "unspecified outputs, command fails",
+			contract: `{"task_mode":"work","verification_knowledge":"declared","verification":["pytest -q"]}`,
+			commands: map[string]stubEffect{"pytest -q": {ExitCode: 1}}},
+		// A question produces nothing, and no contract names nothing: the
+		// caller's own bytes stand.
+		{name: "a question", contract: `{"task_mode":"question"}`},
+		{name: "no contract", contract: ""},
 	}
 }
 
@@ -202,15 +215,19 @@ func TestWhatLandsAgreesWithWhatWasDecided(t *testing.T) {
 				return
 			}
 
-			// What the owner concluded, read from its own record rather than
-			// recomputed here: a second computation could agree with the disk
-			// and both be wrong about what production decided.
+			// What the owners concluded, read from their own records rather
+			// than recomputed here: a second computation could agree with the
+			// disk and both be wrong about what production decided.
 			decisions := recordsOfKind(recs, "candidate_authorization_decision")
 			if len(decisions) != 1 {
 				t.Fatalf("%d authorization decisions, want exactly one", len(decisions))
 			}
-			authorized, _ := decisions[0]["authorized"].(bool)
 			influences, _ := decisions[0]["influences_live_decision"].(bool)
+			policies := recordsOfKind(recs, "candidate_policy_decision")
+			if len(policies) != 1 {
+				t.Fatalf("%d delivery decisions, want exactly one", len(policies))
+			}
+			delivers, _ := policies[0]["delivers"].(bool)
 
 			// What landed.
 			onDisk, err := os.ReadFile(w.path)
@@ -223,9 +240,10 @@ func TestWhatLandsAgreesWithWhatWasDecided(t *testing.T) {
 			// request with no structured obligations is owned by nothing: it
 			// has no target to authorize against, so the caller's own bytes
 			// are what land and no winner ever does.
-			if influences && landedWinner != authorized {
-				t.Errorf("decision authorized=%v but the winner %s (reason %v)",
-					authorized, landedOrNot(landedWinner), decisions[0]["reason"])
+			if influences && landedWinner != delivers {
+				t.Errorf("decision %v delivers=%v but the winner %s (reason %v)",
+					policies[0]["decision"], delivers, landedOrNot(landedWinner),
+					decisions[0]["reason"])
 			}
 			if !influences && landedWinner {
 				t.Errorf("a request the typed path does not own delivered a "+
@@ -239,7 +257,7 @@ func TestWhatLandsAgreesWithWhatWasDecided(t *testing.T) {
 			// Exactly one grant is consumed when and only when it landed.
 			consumed := consumedGrants(recs)
 			want := 0
-			if authorized && influences {
+			if delivers && influences {
 				want = 1
 			}
 			if consumed != want {

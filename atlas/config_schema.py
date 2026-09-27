@@ -168,6 +168,8 @@ SCHEMA: Dict[str, Field] = {
         deprecated="removed with the lens training corpus and its retrain prompt"),
     "ATLAS_RPG_PLANNING": Field("bool",
         deprecated="removed; RPG planning was cut — see issue #148"),
+    "ATLAS_CANDIDATE_POLICY": Field("str",
+        deprecated="removed; one delivery rule, not selectable — see docs/CANDIDATE_POLICY.md"),
 }
 
 

@@ -27,9 +27,6 @@ const (
 	// automaticRefusalNone: the candidate landed. A landed candidate has no
 	// refusal reason.
 	automaticRefusalNone automaticRefusal = ""
-	// automaticRefusalPolicyNotAutomatic: strict, advisory or the default was
-	// in force; automatic delivery was not asked for.
-	automaticRefusalPolicyNotAutomatic automaticRefusal = "policy_not_automatic"
 	// automaticRefusalRouteNotEntered is the analysis-side reading of a
 	// mutation the candidate producer was never consulted for. No route entry
 	// exists for it, so no attribution record is written; the
@@ -100,7 +97,7 @@ const (
 // automaticRefusalVocabulary is the closed set an analysis may read. A value
 // outside it is a bug in this file, and the emitter refuses it.
 var automaticRefusalVocabulary = map[automaticRefusal]bool{
-	automaticRefusalNone: true, automaticRefusalPolicyNotAutomatic: true,
+	automaticRefusalNone:            true,
 	automaticRefusalRouteNotEntered: true, automaticRefusalNoCandidate: true,
 	automaticRefusalV3Unavailable: true, automaticRefusalV3TimedOut: true,
 	automaticRefusalCancelled: true, automaticRefusalRouteGateRevoked: true,
@@ -117,9 +114,8 @@ var automaticRefusalVocabulary = map[automaticRefusal]bool{
 type automaticOutcome string
 
 const (
-	automaticOutcomeLanded        automaticOutcome = "landed"
-	automaticOutcomeNotLanded     automaticOutcome = "not_landed"
-	automaticOutcomeNotApplicable automaticOutcome = "not_applicable"
+	automaticOutcomeLanded    automaticOutcome = "landed"
+	automaticOutcomeNotLanded automaticOutcome = "not_landed"
 )
 
 // automaticFacts is what a route hands the attribution as it goes: the live
@@ -127,10 +123,6 @@ const (
 // struct is inert -- no owner reads it -- and nothing is allocated for the
 // record until the sink is known to be on.
 type automaticFacts struct {
-	modeKnown bool
-	mode      candidatePolicyMode
-	source    candidatePolicySource
-
 	identity      candidateEvidenceIdentity
 	candidateHash string
 
@@ -139,14 +131,6 @@ type automaticFacts struct {
 
 	deliveryAttempted bool
 	delivery          deliveryOutcome
-}
-
-// notePolicy records the mode and source the policy resolver returned.
-func (l *routeLifecycle) notePolicy(mode candidatePolicyMode, source candidatePolicySource) {
-	if l == nil {
-		return
-	}
-	l.auto.modeKnown, l.auto.mode, l.auto.source = true, mode, source
 }
 
 // noteAuthorization records the authorization owner's answer over the named
@@ -178,14 +162,7 @@ func deriveAutomaticRefusal(l *routeLifecycle) (automaticOutcome, automaticRefus
 	}
 	a := &l.auto
 	if a.deliveryAttempted && a.delivery.Delivered {
-		if a.modeKnown && a.mode != CandidatePolicyAutomaticV3 {
-			// A strict grant landed; the automatic question did not apply.
-			return automaticOutcomeNotApplicable, automaticRefusalPolicyNotAutomatic
-		}
 		return automaticOutcomeLanded, automaticRefusalNone
-	}
-	if a.modeKnown && a.mode != CandidatePolicyAutomaticV3 {
-		return automaticOutcomeNotApplicable, automaticRefusalPolicyNotAutomatic
 	}
 	if a.deliveryAttempted {
 		return automaticOutcomeNotLanded, deliveryRefusalReason(a.delivery.Reason)
@@ -237,8 +214,6 @@ func authorizationRefusalReason(a *automaticFacts) automaticRefusal {
 		return automaticRefusalNoScope
 	case automaticTargetNotGrounded:
 		return automaticRefusalTargetNotGrounded
-	case automaticNotRequested:
-		return automaticRefusalPolicyNotAutomatic
 	case automaticEligible:
 		if d.Grant == nil {
 			return mintRefusalReason(d.Refusal)
@@ -346,9 +321,9 @@ func (l *routeLifecycle) recordAttribution(ctx *AgentContext) {
 			"record_kind":              "automatic_delivery_attribution",
 			"request_id":               requestIDOf(ctx),
 			"route_entry_id":           l.entry.ID,
-			"policy_mode":              string(a.mode),
-			"policy_source":            string(a.source),
-			"policy_consulted":         a.modeKnown,
+			"policy_mode":              string(CandidatePolicyAutomaticV3),
+			"policy_source":            string(CandidatePolicySourceFixed),
+			"policy_consulted":         true,
 			"disposition":              string(disposition),
 			"outcome":                  string(outcome),
 			"refusal":                  string(refusal),

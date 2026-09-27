@@ -12,11 +12,12 @@ import (
 // Does the pre-generation answer ever refuse an invocation that would in fact
 // have closed?
 //
-// That is the only question enforce has to survive, and it is one-sided. A
-// feasible invocation that produces no authorized candidate is not a defect:
-// feasibility predicts possibility, not outcome. A case classified infeasible
-// that then mints and consumes a valid authorization is a false negative, and
-// there must be none.
+// The question is one-sided. A feasible invocation that produces no
+// authorized candidate is not a defect: feasibility predicts possibility, not
+// outcome. A case classified infeasible that then consumes a grant on the
+// strict basis -- a closure path it said did not exist -- is a false negative,
+// and there must be none. A grant on the selection basis claims no closure
+// path, so it is not one: feasibility does not predict delivery.
 //
 // The corpus is fixed and outcome-independent: every case is a combination of
 // contract shape, baseline, producer availability, command behaviour, adapter
@@ -162,6 +163,7 @@ type corpusRun struct {
 	Reason         string `json:"reason"`
 	Generations    int    `json:"generations"`
 	GrantsConsumed int    `json:"grants_consumed"`
+	StrictConsumed int    `json:"strict_grants_consumed"`
 	LandedWinner   bool   `json:"landed_winner"`
 	Disk           string `json:"disk_sha"`
 	LedgerHash     string `json:"ledger_hash"`
@@ -204,6 +206,11 @@ func runCorpusCase(t *testing.T, c corpusCase) corpusRun {
 		out.Reason, _ = r["reason"].(string)
 	}
 	out.GrantsConsumed = consumedGrants(recs)
+	for _, r := range recordsOfKind(recs, "authorization_grant_event") {
+		if r["event"] == string(grantConsumedAuthorized) && r["grant_basis"] == string(grantBasisStrict) {
+			out.StrictConsumed++
+		}
+	}
 	if body, err := os.ReadFile(w.path); err == nil {
 		out.Disk = contentSHA256(string(body))
 		out.LandedWinner = string(body) == routeWinner
@@ -227,6 +234,7 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 	observed := make(map[string]corpusRun, len(cases))
 	var falseNegatives []string
 	var feasibleUnrealized []string
+	strictGrants := 0
 
 	for _, c := range cases {
 		run := runCorpusCase(t, c)
@@ -243,11 +251,12 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 			t.Errorf("%s: %d generation calls, want %d",
 				c.name, run.Generations, wantGenerations)
 		}
+		strictGrants += run.StrictConsumed
 		// The one-sided rule.
-		if !run.Feasible && run.GrantsConsumed > 0 {
+		if !run.Feasible && run.StrictConsumed > 0 {
 			falseNegatives = append(falseNegatives,
-				fmt.Sprintf("%s (reason %s, %d grants consumed)",
-					c.name, run.Reason, run.GrantsConsumed))
+				fmt.Sprintf("%s (reason %s, %d strict grants consumed)",
+					c.name, run.Reason, run.StrictConsumed))
 		}
 		if run.Feasible && run.GrantsConsumed == 0 {
 			feasibleUnrealized = append(feasibleUnrealized, c.name)
@@ -258,9 +267,12 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 	}
 
 	if len(falseNegatives) != 0 {
-		t.Errorf("%d false negatives — an infeasible invocation consumed a valid "+
+		t.Errorf("%d false negatives — an infeasible invocation consumed a strict "+
 			"authorization:\n  %s", len(falseNegatives),
 			strings.Join(falseNegatives, "\n  "))
+	}
+	if strictGrants == 0 {
+		t.Error("no case consumed a strict grant: the one-sided rule was never exercised")
 	}
 	t.Logf("corpus: %d cases, %d false negatives, %d feasible-but-unrealized",
 		len(cases), len(falseNegatives), len(feasibleUnrealized))

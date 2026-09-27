@@ -127,7 +127,7 @@ func (w *budgetWorld) seed(t *testing.T, rel, content string) {
 	}
 }
 
-// (i) No contract, default strict policy: no generation request, and the
+// (i) No contract: no target is grounded, so no generation request, and the
 // model's bytes land.
 func TestNoGenerationWhenNoCandidateCouldBeDelivered(t *testing.T) {
 	w := newBudgetWorld(t)
@@ -147,7 +147,7 @@ func TestNoGenerationWhenNoCandidateCouldBeDelivered(t *testing.T) {
 }
 
 // (ii) Where a candidate could be delivered, generation is still requested:
-// declared outputs under strict, or automatic_v3.
+// declared outputs, or declared work whose own call grounds the target.
 func TestGenerationStillRunsWhereACandidateCouldBeDelivered(t *testing.T) {
 	t.Run("declared outputs", func(t *testing.T) {
 		w := newBudgetWorld(t)
@@ -157,12 +157,13 @@ func TestGenerationStillRunsWhereACandidateCouldBeDelivered(t *testing.T) {
 			t.Error("no generation request although declared outputs make a candidate deliverable")
 		}
 	})
-	t.Run("automatic_v3", func(t *testing.T) {
-		t.Setenv("ATLAS_CANDIDATE_POLICY", string(CandidatePolicyAutomaticV3))
+	t.Run("declared work", func(t *testing.T) {
 		w := newBudgetWorld(t)
+		w.ctx.TaskContract = &TaskContract{TaskMode: TaskModeWork,
+			OutputKnowledge: KnowledgeUnspecified, VerificationKnowledge: KnowledgeUnspecified}
 		w.write(t, "solve.py", budgetModule)
 		if w.v3Calls() == 0 {
-			t.Error("no generation request under automatic_v3")
+			t.Error("no generation request for declared work")
 		}
 	})
 }
@@ -283,19 +284,18 @@ func TestTheProducerFallbackAppliesTheComparativeChecks(t *testing.T) {
 }
 
 // Skipping generation must not remove a delivery that could have happened.
-// For every contract/policy/capture configuration the skip predicate calls
+// For every contract/capture configuration the skip predicate calls
 // undeliverable, the real candidate route is forced to run with the strongest
 // candidate the fixture can offer; the caller's baseline must be what lands.
 // Where the predicate says deliverable, the same fixture must be able to
 // deliver in at least one configuration, or the matrix proves nothing.
 func TestSkippingGenerationLosesNoDelivery(t *testing.T) {
 	contracts := map[string]string{
+		"no contract":                        "",
+		"question":                           `{"task_mode":"question"}`,
 		"work only (the reliability runner)": `{"task_mode":"work"}`,
-		"automatic_v3, no declared outputs":  `{"task_mode":"work","candidate_policy":"automatic_v3"}`,
-		"advisory, no declared outputs":      `{"task_mode":"work","candidate_policy":"advisory"}`,
-		"strict, declared output":            strictContract,
-		"automatic_v3, declared output":      automaticContract,
-		"advisory, declared output":          advisoryContract,
+		"work, an older client's policy":     `{"task_mode":"work","candidate_policy":"advisory"}`,
+		"declared output":                    workContract,
 		"verification declared, no outputs":  `{"task_mode":"work","verification_knowledge":"declared","verification":["python3 solve.py"]}`,
 	}
 	delivered := 0
@@ -306,8 +306,12 @@ func TestSkippingGenerationLosesNoDelivery(t *testing.T) {
 					if capture {
 						t.Setenv(CandidateCaptureOnlyEnv, "1")
 					}
-					w := newAutomaticWorld(t, contract, routeWinner, nil, supported)
-					deliverable := candidateDeliverableUnderPolicy(w.ctx)
+					w := newAutomaticWorld(t, workContract, routeWinner, nil, supported)
+					w.ctx.TaskContract = nil
+					if contract != "" {
+						w.ctx.TaskContract = mustContract(t, w.dir, contract)
+					}
+					deliverable := candidateDeliverable(w.ctx)
 					if _, err := w.write(t); err != nil {
 						t.Fatalf("write failed: %v", err)
 					}

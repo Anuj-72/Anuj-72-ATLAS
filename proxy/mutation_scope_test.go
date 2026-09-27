@@ -196,15 +196,21 @@ func TestAGrantCannotOutrunItsScope(t *testing.T) {
 	if authorizes, _ := scopes[0]["authorizes"].(bool); authorizes {
 		t.Error("a scope record claims to authorize")
 	}
-	// Source-level: minting reads the scope, and the scope reads no evidence.
+	// Source-level: minting goes through the grant check, the check reads
+	// the scope, and the scope reads no evidence.
 	src, err := os.ReadFile("authorization_grant.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mint := string(src)[strings.Index(string(src), "func mintAuthorizationGrant("):]
 	mint = mint[:strings.Index(mint, "\n}")]
-	if !strings.Contains(mint, "scopeAdmitsCandidate") || !strings.Contains(mint, "in.Scope") {
-		t.Error("minting no longer consults the mutation scope")
+	if !strings.Contains(mint, "grantFor(") {
+		t.Error("minting no longer goes through the grant check")
+	}
+	check := string(src)[strings.Index(string(src), "func grantFor("):]
+	check = check[:strings.Index(check, "\n}")]
+	if !strings.Contains(check, "scopeAdmitsCandidate") || !strings.Contains(check, "in.Scope") {
+		t.Error("the grant check no longer consults the mutation scope")
 	}
 	scopeSrc, err := os.ReadFile("mutation_scope.go")
 	if err != nil {

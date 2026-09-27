@@ -17,7 +17,7 @@ import (
 // output anyway (audit P-delivery/INTEGRITY#4). They are computed after both
 // now, once, for the automatic eligibility and the policy alike.
 func TestAnAutomaticCandidateDoesNotLandWhenItsDeclaredCheckNeverRan(t *testing.T) {
-	w := newAutomaticWorld(t, automaticContract, routeWinner, nil, true)
+	w := newAutomaticWorld(t, workContract, routeWinner, nil, true)
 	origin, err := url.Parse(w.ctx.SandboxURL)
 	if err != nil {
 		t.Fatal(err)
