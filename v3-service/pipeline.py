@@ -85,15 +85,19 @@ for _phase, _stages in {
 _VETO_STAGES = frozenset(("lens_veto", "structural_veto", "call_graph_veto"))
 
 
-def _remaining_budget_ms(start: float) -> Optional[float]:
-    """Remaining wall-clock (ms) in this run's ATLAS_V3_TIMEOUT budget.
+def _remaining_budget_ms(start: float, cap_ms: Optional[float] = None) -> Optional[float]:
+    """Remaining wall-clock (ms) in this run's budget.
 
-    The proxy's V3 bridge abandons a live pipeline call after
-    ``ATLAS_V3_TIMEOUT`` seconds (default 300; 0 disables the cap).
-    The service reads the same knob so late phases can skip work the
-    bridge would abandon mid-flight anyway. Returns None when the cap
-    is disabled.
+    The proxy's V3 bridge abandons a live pipeline call at its cap: at most
+    ``ATLAS_V3_TIMEOUT`` seconds (default 300; 0 disables the cap), and at
+    most half of the session's remaining time. It sends that cap as
+    ``budget_ms``, passed here as ``cap_ms``, so late phases skip work the
+    bridge would abandon mid-flight. Without one (an offline or bench
+    caller), the service reads ``ATLAS_V3_TIMEOUT`` itself. Returns None
+    when the cap is disabled.
     """
+    if cap_ms is not None and cap_ms > 0:
+        return cap_ms - (time.time() - start) * 1000.0
     raw = os.environ.get("ATLAS_V3_TIMEOUT", "").strip()
     try:
         seconds = int(raw) if raw else 300
@@ -1351,7 +1355,8 @@ class V3PipelineService:
             diagnostic_total_candidates=None,
             cancel_scope=None,
             trace_request_id: str = "",
-            v3_invocation_id: str = "") -> Dict[str, Any]:
+            v3_invocation_id: str = "",
+            budget_ms: Optional[float] = None) -> Dict[str, Any]:
         """Run the full V3 pipeline on a coding problem.
 
         Args:
@@ -1369,6 +1374,9 @@ class V3PipelineService:
                 them, before prompt construction. Kept outside the generated
                 pool. Interactive Python replacements are compared against
                 its observed import viability in the sandbox.
+            budget_ms: The wall-clock cap the caller applies to this call.
+                Every budget check plans against it when it is positive;
+                otherwise ATLAS_V3_TIMEOUT applies, as for a bench caller.
 
         Writes one pipeline-summary telemetry line per task (fail-soft;
         see _write_pipeline_summary) around the actual pipeline body.
@@ -1393,7 +1401,7 @@ class V3PipelineService:
                 files=files, file_path=file_path, build_command=build_command,
                 working_dir=working_dir, baseline_code=baseline_code,
                 diagnostic_total_candidates=_diag_floor, _capture=capture,
-                cancel_scope=cancel_scope,
+                cancel_scope=cancel_scope, budget_ms=budget_ms,
                 # Built here, where both halves of the identity are in scope,
                 # and frozen: it reaches PlanSearch's worker threads on the
                 # adapter, which is the only carrier that survives a thread
@@ -1461,7 +1469,8 @@ class V3PipelineService:
                   diagnostic_total_candidates: int = 0,
                   _capture: Optional["_PoolCapture"] = None,
                   cancel_scope=None,
-                  request_identity=None) -> Dict[str, Any]:
+                  request_identity=None,
+                  budget_ms: Optional[float] = None) -> Dict[str, Any]:
         """The pipeline body — see run() for the argument contract.
 
         `_capture` is the benchmark-only pool sink run() owns; it observes
@@ -1536,7 +1545,7 @@ class V3PipelineService:
         # The adapter refuses to start a generation that cannot finish
         # before the cap, so every phase and every loop inside one is
         # covered by a single check rather than a boundary guard each.
-        _budget_ms = _remaining_budget_ms(start)
+        _budget_ms = _remaining_budget_ms(start, budget_ms)
         llm = adapters.LLMAdapter(progress_callback=emit)
         # The request's cancellation handle. Every generation this adapter
         # opens registers with it, so the handler can close them all the
@@ -1637,7 +1646,7 @@ class V3PipelineService:
         if task_type == "interactive" and smoke_language == "python" and baseline_code and file_path:
             import_comparison = PythonImportComparison(
                 sandbox, baseline_code, file_path, working_dir,
-                remaining_ms=lambda: _remaining_budget_ms(start), check_cancel=check_client)
+                remaining_ms=lambda: _remaining_budget_ms(start, budget_ms), check_cancel=check_client)
 
         def verified_sandbox(code, extra_test=""):
             """Sandbox + verification. Algorithmic tasks: execution, with the
@@ -1879,7 +1888,7 @@ class V3PipelineService:
             gx_score=probe_scores["gx_score"],
             gx_available=probe_scores["gx_available"],
             gx_verdict=probe_scores["verdict"],
-            remaining_ms=_remaining_budget_ms(start),
+            remaining_ms=_remaining_budget_ms(start, budget_ms),
             observed_llm_call_ms=getattr(llm, "avg_call_ms", 0.0),
         )
         k, budget_tier = alloc.k, alloc.tier
@@ -1915,7 +1924,7 @@ class V3PipelineService:
             checked once. Everything ahead of it — probe, self-tests,
             PlanSearch, sandbox, PR-CoT — ran unguarded.
             """
-            left = _remaining_budget_ms(start)
+            left = _remaining_budget_ms(start, budget_ms)
             if left is None:
                 return False
             if reserve_ms is None:
@@ -1945,7 +1954,7 @@ class V3PipelineService:
             """
             emit("budget_exhausted", reason,
                  candidates=len(candidates),
-                 remaining_ms=round(_remaining_budget_ms(start) or 0))
+                 remaining_ms=round(_remaining_budget_ms(start, budget_ms) or 0))
             pool = [c for c in candidates if not c.get("vetoed_by")]
             passing = [c for c in pool if c.get("passed")]
             chosen = None
@@ -2654,7 +2663,7 @@ class V3PipelineService:
             run_refinement = bool(failing)
             if run_refinement:
                 est_ms = estimate_iteration_ms(getattr(llm, "avg_call_ms", 0.0))
-                remaining_ms = _remaining_budget_ms(start)
+                remaining_ms = _remaining_budget_ms(start, budget_ms)
                 if (remaining_ms is not None
                         and not can_afford_iteration(remaining_ms, est_ms)):
                     run_refinement = False

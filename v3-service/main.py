@@ -187,6 +187,19 @@ def _safe_progress_detail(stage, detail):
     return text[:80]
 
 
+
+def _positive_budget_ms(value):
+    """The caller's cap in ms, or None when absent or unusable.
+
+    A bool is not a number here, and a non-positive or non-finite value is
+    not a cap: the run then keeps its ATLAS_V3_TIMEOUT behaviour.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value in (float("inf"), float("-inf")) or value <= 0:
+        return None
+    return float(value)
+
 class V3Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         """Token check for every route except /health. Constant-time
@@ -258,6 +271,10 @@ class V3Handler(BaseHTTPRequestHandler):
             constraints: list[str]  — extracted requirements
             tier: int               — 2 or 3
             working_dir: str        — project root
+            budget_ms: int          — optional; the wall-clock cap the
+                                      caller applies to this call. The run
+                                      plans against it instead of
+                                      ATLAS_V3_TIMEOUT when it is positive
 
         Response format (V3GenerateResponse):
             code: str               — winning candidate
@@ -291,6 +308,7 @@ class V3Handler(BaseHTTPRequestHandler):
         user_message = body.get("user_message", "")
         tier = body.get("tier", 2)
         working_dir = body.get("working_dir", "")
+        budget_ms = _positive_budget_ms(body.get("budget_ms"))
 
         if not file_path and not baseline_code:
             self._json_response(400, {"error": "file_path or baseline_code required"})
@@ -357,6 +375,7 @@ class V3Handler(BaseHTTPRequestHandler):
                 # _build_problem_from_request wrapped them in prose. Read
                 # only by the diagnostic capture.
                 baseline_code=baseline_code,
+                budget_ms=budget_ms,
             )
         except (adapters.ClientDisconnected, adapters.Cancelled) as e:
             print(f"[generate] pipeline aborted: {e}", flush=True)

@@ -1408,6 +1408,13 @@ type V3GenerateRequest struct {
 	UserMessage string `json:"user_message,omitempty"`
 	Tier        int    `json:"tier"`
 	WorkingDir  string `json:"working_dir,omitempty"`
+	// BudgetMs is the wall-clock cap the bridge applies to this call, set by
+	// callV3GenerateStreaming and never by a caller. The service plans its
+	// phases against it. Without it the service planned against
+	// ATLAS_V3_TIMEOUT while the bridge cut the call at half of the
+	// session's remaining time, so late phases started work the bridge
+	// then abandoned. Omitted when the call is uncapped.
+	BudgetMs int64 `json:"budget_ms,omitempty"`
 }
 
 // V3GenerateResponse is the response from the V3 service.

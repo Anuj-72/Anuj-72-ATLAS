@@ -433,11 +433,12 @@ Run the V3 pipeline for a file generation task. Streams progress events as SSE.
   "build_command": "npx next build",
   "constraints": ["Must use Tailwind CSS", "Must be a client component"],
   "tier": 2,
-  "working_dir": "/path/to/project"
+  "working_dir": "/path/to/project",
+  "budget_ms": 150000
 }
 ```
 
-All fields are optional except the task itself. `tier` defaults to 2.
+All fields are optional except the task itself. `tier` defaults to 2. `budget_ms` is the wall-clock cap the caller applies to this call; when it is a positive number the pipeline plans every phase against it, and otherwise it reads `ATLAS_V3_TIMEOUT`. The proxy always sends the cap it applies.
 
 **Response (SSE stream):**
 ```

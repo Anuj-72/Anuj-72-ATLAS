@@ -52,11 +52,6 @@ type V3ProgressFn func(stage, detail string, data map[string]interface{})
 // service and streams progress events back via the callback. Returns the
 // final result when the pipeline completes.
 func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3GenerateRequest, onProgress V3ProgressFn) (*V3GenerateResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal V3 request: %w", err)
-	}
-
 	endpoint := v3URL + "/v3/generate"
 	// Bind the agent's request context so a user Ctrl-C (which cancels
 	// ctx.Ctx via /cancel) actually aborts an in-flight V3 run. The
@@ -106,6 +101,17 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 		var cancel context.CancelFunc
 		reqCtx, cancel = context.WithTimeout(reqCtx, d)
 		defer cancel()
+	}
+	// The service plans against the cap this call actually has, not the
+	// configured ceiling: told nothing, it planned a 300s run inside a call
+	// the line above may have cut to a fraction of that.
+	req.BudgetMs = 0
+	if effectiveCap > 0 {
+		req.BudgetMs = effectiveCap.Milliseconds()
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal V3 request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", endpoint, bytes.NewReader(body))

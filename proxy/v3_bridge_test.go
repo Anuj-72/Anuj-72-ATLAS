@@ -1004,6 +1004,51 @@ func TestCallV3GenerateStreamingLeavesHalfTheSessionForTheRestOfTheRun(t *testin
 	}
 }
 
+// The service plans its phases against the cap this call actually has. Told
+// nothing, it planned a 300s run inside a call the bridge had cut to half of
+// the session's remaining time, and started work the bridge then abandoned.
+func TestCallV3GenerateStreamingSendsTheCapItApplies(t *testing.T) {
+	var got []map[string]interface{}
+	srv := fakeGenerateServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = append(got, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseLines(w, `event: result`, `data: {"code":"x = 1\n","passed":true}`, ``, `data: [DONE]`, ``)
+	})
+	defer srv.Close()
+
+	t.Setenv("ATLAS_V3_TIMEOUT", "300")
+	// No session deadline: the configured ceiling.
+	if _, err := callV3GenerateStreaming(context.Background(), srv.URL, V3GenerateRequest{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 6s of session left: half of it, whatever a caller put in the field.
+	sessionCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if _, err := callV3GenerateStreaming(sessionCtx, srv.URL, V3GenerateRequest{BudgetMs: 999999}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Uncapped: no cap is sent, and the service keeps its own reading.
+	t.Setenv("ATLAS_V3_TIMEOUT", "0")
+	if _, err := callV3GenerateStreaming(context.Background(), srv.URL, V3GenerateRequest{BudgetMs: 5}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("%d requests reached the service, want 3", len(got))
+	}
+	if v, _ := got[0]["budget_ms"].(float64); v != 300000 {
+		t.Errorf("an unshortened call sent budget_ms=%v, want 300000", got[0]["budget_ms"])
+	}
+	if v, _ := got[1]["budget_ms"].(float64); v <= 2500 || v > 3000 {
+		t.Errorf("a call with 6s of session left sent budget_ms=%v, want about 3000", got[1]["budget_ms"])
+	}
+	if v, ok := got[2]["budget_ms"]; ok {
+		t.Errorf("an uncapped call sent budget_ms=%v", v)
+	}
+}
+
 // The ceiling still applies when the session has plenty of room: half of a
 // large remainder must not exceed the configured cap.
 func TestCallV3GenerateStreamingKeepsItsCeilingWhenTheSessionIsLong(t *testing.T) {

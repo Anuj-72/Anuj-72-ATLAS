@@ -43,9 +43,9 @@ def test_a_disabled_cap_reports_no_budget(monkeypatch):
     assert pipeline._remaining_budget_ms(time.time()) is None
 
 
-def test_the_cap_default_matches_the_proxy(monkeypatch):
-    """The service and the proxy read the same knob. If these drift, the
-    service plans against a budget the caller does not honour.
+def test_without_a_caller_cap_the_service_default_is_300s(monkeypatch):
+    """A caller that sends no budget_ms (an offline or bench caller) gets
+    the service's own reading of ATLAS_V3_TIMEOUT, default 300s.
 
     300s, not the 180s both shipped with: PlanSearch spends two LLM calls per
     candidate, so k=3 costs ~162s at the measured ~22s per call before the
@@ -59,6 +59,52 @@ def test_the_cap_default_matches_the_proxy(monkeypatch):
     monkeypatch.setenv("ATLAS_V3_TIMEOUT", "not-a-number")
     left = pipeline._remaining_budget_ms(time.time())
     assert 299_000 < left <= 300_000
+
+
+def test_a_caller_cap_replaces_the_configured_one(monkeypatch):
+    """The proxy cuts a call to half of the session's remaining time and
+    sends that cap. The service used to plan a 300s run inside a call the
+    proxy would abandon far sooner."""
+    monkeypatch.setenv("ATLAS_V3_TIMEOUT", "300")
+    left = pipeline._remaining_budget_ms(time.time(), 40_000)
+    assert 39_000 < left <= 40_000
+    # A cap the caller applies holds even where the service's own reading
+    # would be unbounded.
+    monkeypatch.setenv("ATLAS_V3_TIMEOUT", "0")
+    assert pipeline._remaining_budget_ms(time.time(), 40_000) is not None
+    # No usable cap: the configured behaviour, unchanged.
+    assert pipeline._remaining_budget_ms(time.time(), None) is None
+    assert pipeline._remaining_budget_ms(time.time(), 0) is None
+
+
+def test_the_run_plans_against_the_callers_cap(monkeypatch):
+    """The generation deadline, which every phase's budget check shares, is
+    the caller's cap and not ATLAS_V3_TIMEOUT."""
+    import adapters
+
+    made = []
+
+    class RecordingLLM:
+        def __init__(self, progress_callback=None, thinking=False):
+            made.append(self)
+
+    class Stop(Exception):
+        pass
+
+    def no_sandbox(*args, **kwargs):
+        raise Stop()
+
+    monkeypatch.setenv("ATLAS_V3_TELEMETRY_DIR", "off")
+    monkeypatch.setenv("ATLAS_V3_TIMEOUT", "300")
+    monkeypatch.setattr(adapters, "LLMAdapter", RecordingLLM)
+    monkeypatch.setattr(adapters, "SandboxAdapter", no_sandbox)
+    before = time.time()
+    with pytest.raises(Stop):
+        pipeline.V3PipelineService().run(
+            "write a helper", task_id="budget", file_path="helper.py",
+            budget_ms=40_000)
+    assert made, "the run never built its generation adapter"
+    assert 39 < made[0].deadline - before <= 40.5, made[0].deadline - before
 
 
 def test_new_stages_are_registered_for_the_summary():

@@ -342,7 +342,7 @@ def test_budget_exit_describes_its_delivery(monkeypatch):
     # the clock then expires before the repair phase -- which is exactly when
     # an anytime algorithm has to hand back its best verified candidate.
     monkeypatch.setattr(P, "select_candidate", lambda cands, strategy="lens": None)
-    monkeypatch.setattr(P, "_remaining_budget_ms", lambda start: -1.0)
+    monkeypatch.setattr(P, "_remaining_budget_ms", lambda start, cap_ms=None: -1.0)
     service, calls = _service(monkeypatch, task_type="interactive",
                               code=PLAIN_JS)
     result = _run(service, "app.js")

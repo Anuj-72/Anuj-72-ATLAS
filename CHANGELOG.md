@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Fixed: the V3 service planned against a budget the proxy did not honour
+
+The proxy cuts each V3 call to half of the session's remaining time, at
+most `ATLAS_V3_TIMEOUT`, and never told the service, which planned every
+phase against `ATLAS_V3_TIMEOUT` alone. With 6 minutes left in a session,
+the service planned a 300 s run inside a 180 s call and started work the
+proxy then abandoned. The proxy now sends the cap it applies as
+`budget_ms`; the service plans against it, and reads `ATLAS_V3_TIMEOUT` only
+when a caller sends none. `docs/CONFIGURATION.md` also gave the cap's
+default as 180 s; it is 300 s.
+
 ### Changed: the call graph always runs, for Python files only
 
 - `ATLAS_CALL_GRAPH` is removed. The call-graph veto, the multi-hop repair
