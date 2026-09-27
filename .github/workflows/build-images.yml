@@ -137,6 +137,9 @@ jobs:
     name: alias image tag
     if: github.event_name == 'workflow_dispatch' && inputs.alias_tag != ''
     runs-on: ubuntu-latest
+    # An alias can repoint any tag, :latest included, so it takes the same
+    # approval as a release. Dispatch it from main (production's branch).
+    environment: production
     permissions:
       contents: read
       packages: write
@@ -344,6 +347,11 @@ jobs:
     # `needs: build` already guarantees all six services published.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Each promotion is a deployment record (scripts/setup/environments.sh):
+    # dev pushes go to `dev`, release-candidate tags (v*-*) to `staging`,
+    # and main pushes and release tags to `production`, which waits for
+    # the release owner's approval before :latest or a version tag moves.
+    environment: ${{ github.ref == 'refs/heads/dev' && 'dev' || (startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-') && 'staging') || 'production' }}
     permissions:
       contents: read
       packages: write
