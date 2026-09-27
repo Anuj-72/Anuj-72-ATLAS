@@ -742,9 +742,11 @@ func renderOneBadge(name, verdict string) string {
 	switch verdict {
 	case "supported", "active":
 		return badgeOK.Render(name + " ✓")
-	case "no-artifacts", "incomplete-artifacts", "uncalibrated", "missing", "dim-mismatch", "unverified":
+	case "uncalibrated", "missing", "unverified":
 		return badgeWarn.Render(name + " ⚠")
-	case "unreachable", "incompatible":
+	// A lens verdict here means requests are refused: the lens is required.
+	case "no-artifacts", "incomplete-artifacts", "dim-mismatch", "unreachable",
+		"incompatible", "disabled", "drifted", "self-test-failed", "model-server-unreachable":
 		return badgeFail.Render(name + " ✗")
 	default:
 		return badgeDim.Render(name + " ?")
@@ -759,21 +761,35 @@ func renderOneBadge(name, verdict string) string {
 // services are down, not that the artifact is wrong — a "build" hint
 // would be misleading there.
 func badgeActionHint(s *calibrationStatus) string {
-	lensWarn := s.Lens.Verdict == "no-artifacts" ||
+	// The lens is required: while it cannot score, requests are refused.
+	const refused = " (requests are refused until the lens can score)"
+	// A lens that is down may have fine artifacts, so the pointer is
+	// doctor, not a rebuild.
+	switch s.Lens.Verdict {
+	case "unreachable", "disabled", "drifted", "self-test-failed", "model-server-unreachable":
+		return "→ atlas doctor" + refused
+	}
+	// Missing or mismatched artifacts block requests too; uncalibrated ones
+	// do not (the lens scores), but a build calibrates them.
+	lensBlocked := s.Lens.Verdict == "no-artifacts" ||
 		s.Lens.Verdict == "incomplete-artifacts" ||
-		s.Lens.Verdict == "uncalibrated" ||
 		s.Lens.Verdict == "dim-mismatch"
+	lensWarn := lensBlocked || s.Lens.Verdict == "uncalibrated"
 	asaWarn := s.ASA.Verdict == "missing"
 	asaUnverified := s.ASA.Verdict == "unverified"
+	hint := ""
 	switch {
 	case lensWarn && asaWarn:
-		return "→ atlas lens build / atlas asa build · docs/PUBLISHING.md"
+		hint = "→ atlas lens build / atlas asa build · docs/PUBLISHING.md"
 	case lensWarn:
-		return "→ atlas lens build · docs/PUBLISHING.md"
+		hint = "→ atlas lens build · docs/PUBLISHING.md"
 	case asaWarn:
-		return "→ atlas asa build · docs/PUBLISHING.md"
+		hint = "→ atlas asa build · docs/PUBLISHING.md"
 	case asaUnverified:
-		return "→ atlas asa check"
+		hint = "→ atlas asa check"
 	}
-	return ""
+	if lensBlocked {
+		hint += refused
+	}
+	return hint
 }

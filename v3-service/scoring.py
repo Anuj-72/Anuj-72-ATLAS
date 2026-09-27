@@ -48,6 +48,40 @@ class TokenCapacityExceeded(RuntimeError):
         )
 
 
+class LensUnavailable(RuntimeError):
+    """The lens cannot score: unreachable, switched off, no model loaded, a
+    broken answer, or its model server down. The lens is required
+    (docs/adr/0011-the-lens-is-required.md), so the run stops on this rather
+    than ranking candidates on neutral scores. An input the lens declines
+    (embed_capacity, empty, non-finite) is not this: that candidate is
+    unscored and the run goes on."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# Typed lens failures that describe the lens or its model server rather than
+# the input. The lens names them (geometric_lens/embed_capacity.py).
+LENS_DOWN_KINDS = frozenset({"model_server_error", "model_server_unreachable",
+                             "embedding_contract", "internal"})
+
+
+def _raise_if_lens_down(failure: Optional[Dict[str, Any]]) -> None:
+    if failure and failure.get("kind") in LENS_DOWN_KINDS:
+        raise LensUnavailable(describe_lens_failure(failure))
+
+
+def _lens_down_from_exception(exc: BaseException) -> Optional[LensUnavailable]:
+    """The LensUnavailable an exception from a lens call means, or None when
+    it is not about the lens (a defect on this side, kept as unscored)."""
+    if isinstance(exc, (urllib.error.URLError, OSError, TimeoutError,
+                        ConnectionError, ValueError)):
+        # URLError covers HTTPError; ValueError covers a non-JSON answer.
+        return LensUnavailable(describe_lens_failure(_failure_from_exception(exc)))
+    return None
+
+
 def _lens_failure(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The typed failure a Lens answer carries, or None when it scored."""
     failure = data.get("failure")
@@ -191,8 +225,9 @@ def score_candidate_per_step(code: str) -> dict:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
         if not data.get("enabled"):
-            return {}
+            raise LensUnavailable("the lens is switched off or has no model loaded")
         failure = _lens_failure(data)
+        _raise_if_lens_down(failure)
         if failure is None and not int(data.get("n_tokens", 0)):
             # 200 with an empty aggregate and no stated reason: the
             # defaults below would hand back gx=0.500 for every candidate,
@@ -233,14 +268,20 @@ def score_candidate_per_step(code: str) -> dict:
             flush=True,
         )
         return result
+    except LensUnavailable:
+        raise
     except Exception as e:
+        down = _lens_down_from_exception(e)
+        if down is not None:
+            raise down from e
         failure = _failure_from_exception(e)
         print(f"  [lens] per-step unscored ({describe_lens_failure(failure)})", flush=True)
         return {"failure": failure}
 
 
-# The answer of a Lens that is switched off: a configuration state, not a
-# failed score. The allocator reads it as "no signal" and keeps its floor.
+# The probe's scores before it is scored: a run with no probe code has no
+# signal, and the allocator keeps its floor. A lens that cannot score raises
+# LensUnavailable; it is never answered with these.
 NEUTRAL_COMBINED = {
     "cx_energy": 0.0, "cx_normalized": 0.5, "cx_calibrated": False,
     "gx_score": 0.5, "gx_available": False, "verdict": "unavailable",
@@ -267,11 +308,12 @@ def score_candidate_combined(code: str) -> Dict[str, Any]:
     ``gx_available`` and ``verdict``; the CxGx allocation gate reads all
     six, everything else reads the C(x) three through score_candidate.
 
-    A disabled lens yields ``NEUTRAL_COMBINED``. A Lens that could not
-    score (the input exceeded the embedding server's physical batch, an
-    upstream error), could not be reached, or answered with a malformed
-    body yields ``UNSCORED_COMBINED`` plus the typed ``failure``: every
-    score field is None, ``verdict`` is ``"unscored"``. Never raises.
+    A lens that cannot score (switched off, no model loaded, unreachable, a
+    malformed answer, its model server down) raises ``LensUnavailable``: the
+    lens is required. An input the lens declines (the embedding server's
+    physical batch, an empty input, a non-finite score) yields
+    ``UNSCORED_COMBINED`` plus the typed ``failure``: every score field is
+    None, ``verdict`` is ``"unscored"``.
 
     Timeout note: 10s was tight under load — the lens shares the box with
     V3's streaming generator and llama-server, and a single hot probe
@@ -293,14 +335,15 @@ def score_candidate_combined(code: str) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
         if not isinstance(data, dict):
-            return _unscored({"kind": LENS_ERROR, "detail": "malformed body"})
+            raise LensUnavailable("the lens answered a malformed body")
         if not data.get("enabled", False):
-            return dict(NEUTRAL_COMBINED)
+            raise LensUnavailable("the lens is switched off or has no model loaded")
         failure = _lens_failure(data)
+        _raise_if_lens_down(failure)
         if failure is not None:
             return _unscored(failure)
         if "cx_energy" not in data:
-            return _unscored({"kind": LENS_ERROR, "detail": "no C(x) energy in the answer"})
+            raise LensUnavailable("the lens answered with no C(x) energy")
         failure = _finite_fields(data, ("cx_energy", "cx_normalized", "gx_score"),
                                  default=0.5)
         if failure is not None:
@@ -316,7 +359,12 @@ def score_candidate_combined(code: str) -> Dict[str, Any]:
         if token_assertion is not None:
             result["token_assertion"] = token_assertion
         return result
+    except LensUnavailable:
+        raise
     except Exception as e:
+        down = _lens_down_from_exception(e)
+        if down is not None:
+            raise down from e
         return _unscored(_failure_from_exception(e))
 
 

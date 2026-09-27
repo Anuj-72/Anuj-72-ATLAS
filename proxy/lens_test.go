@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -168,12 +169,67 @@ func TestBuildDimensionsSevenRows(t *testing.T) {
 	}
 }
 
-func TestDirectAgentAlwaysSupported(t *testing.T) {
-	// Even with a fully disabled lens, the direct agent is model-agnostic.
-	dims := buildDimensions(LensStatus{Verdict: "unreachable"},
-		ASAStatus{Verdict: "missing"})
-	if d := dimByName(dims, "direct_agent"); d.Status != "supported" {
-		t.Fatalf("direct_agent should always be supported, got %q", d.Status)
+// The agent runs only while the lens can score (lens_required.go), and the
+// status says so. It used to report direct_agent "supported always", which
+// was true until the lens became required.
+func TestDirectAgentIsBlockedWhileTheLensCannotScore(t *testing.T) {
+	for verdict, want := range map[string]string{
+		"supported": "supported", "uncalibrated": "supported",
+		"unreachable": "blocked", "disabled": "blocked", "no-artifacts": "blocked",
+		"dim-mismatch": "blocked", "incomplete-artifacts": "blocked", "drifted": "blocked",
+		"self-test-failed": "blocked", "model-server-unreachable": "blocked",
+	} {
+		dims := buildDimensions(LensStatus{Verdict: verdict}, ASAStatus{Verdict: "missing"})
+		d := dimByName(dims, "direct_agent")
+		if d.Status != want {
+			t.Errorf("%s: direct_agent %q, want %q", verdict, d.Status, want)
+		}
+		if want == "blocked" && !strings.Contains(d.Detail, verdict) {
+			t.Errorf("%s: the detail does not name why: %q", verdict, d.Detail)
+		}
+	}
+}
+
+// A lens that loaded its artifacts can still be unable to score: switched
+// off, drifted, failing its self-test, or without llama-server. It reported
+// "supported" / "ready" in every one of those states.
+func TestProbeLensStatusNamesALensThatCannotScore(t *testing.T) {
+	for _, c := range []struct {
+		name, verdict string
+		mutate        func(lens map[string]any, top map[string]any)
+	}{
+		{"switched off", "disabled", func(l, _ map[string]any) { l["enabled"] = false }},
+		{"drifted", "drifted", func(l, _ map[string]any) { l["fingerprint_ok"] = false }},
+		{"self-test failed", "self-test-failed", func(l, _ map[string]any) { l["self_test_pass"] = false }},
+		{"llama down", "model-server-unreachable", func(_, top map[string]any) {
+			top["llama_server"] = map[string]any{"reachable": false}
+		}},
+	} {
+		lens := compatibleLensHealth()
+		subsystems := map[string]any{"lens": lens}
+		c.mutate(lens, subsystems)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "degraded", "subsystems": subsystems})
+		}))
+		got := probeLensStatus(context.Background(), srv.URL)
+		srv.Close()
+		if got.Verdict != c.verdict || got.CanScore {
+			t.Errorf("%s: verdict %q can_score=%v, want %q and false", c.name, got.Verdict, got.CanScore, c.verdict)
+		}
+		dims := buildDimensions(got, ASAStatus{Verdict: "missing"})
+		if d := dimByName(dims, "direct_agent"); d.Status != "blocked" {
+			t.Errorf("%s: direct_agent %q", c.name, d.Status)
+		}
+		if c.verdict == "model-server-unreachable" {
+			if d := dimByName(dims, "model_runtime"); d.Status != "unreachable" {
+				t.Errorf("model_runtime %q while the lens reports llama-server down", d.Status)
+			}
+		}
+	}
+	srv := lensHealthServer(t, compatibleLensHealth())
+	defer srv.Close()
+	if got := probeLensStatus(context.Background(), srv.URL); got.Verdict != "supported" || !got.CanScore {
+		t.Errorf("a healthy lens: %q can_score=%v", got.Verdict, got.CanScore)
 	}
 }
 

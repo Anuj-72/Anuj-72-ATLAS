@@ -44,7 +44,7 @@ The main entry point. Wraps llama-server with an agent loop, grammar-constrained
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Liveness — always 200, `status` reports `"ok"` or `"degraded"` |
-| `/ready` | GET | Readiness probe — 200 only when inference, lens scoring (`lens/ready`), the sandbox, and v3-service are all healthy; 503 otherwise. Use this for load-balancer / orchestrator health checks; use `/health` for informational status. |
+| `/ready` | GET | Readiness probe — 200 only when inference, lens scoring (the lens can score: the check `/v1/agent` applies), the sandbox, and v3-service are all healthy; 503 otherwise. Use this for load-balancer / orchestrator health checks; use `/health` for informational status. |
 | `/version` | GET | API version, SSE protocol version, and the full error-code set — see [Versioning and error codes](#versioning-and-error-codes) |
 
 **Catch-all:** any unmatched path is proxied directly to llama-server.
@@ -79,6 +79,8 @@ Tool-based agent endpoint. Sends a user message, runs the agent loop (LLM → to
 | `sandbox_subdir` | string | `""` | Optional. Confines the turn to a subdirectory of the workspace (a bare directory name — anything with path separators or traversal is ignored). `/demo` uses one per pane so concurrent sessions don't clobber each other's files. |
 
 **Response:** `text/event-stream` of `data: {...}\n\n` lines. The proxy flushes a `: connected\n\n` SSE comment on connect so clients see HTTP/200 immediately, then emits typed events for the duration of the turn, terminated by `data: [DONE]\n\n`.
+
+**The lens is required** ([ADR 0011](adr/0011-the-lens-is-required.md)). Before any work, the proxy checks that the Geometric Lens can score (the same check as `/ready`; the answer is cached for 5 s). If it cannot, the request gets a plain HTTP 503 error envelope, not a stream: `error` is `dependency_down`, and `detail` says why and to run `atlas doctor`. If the lens stops scoring during the run, the run ends with `done` `status: "failed"`, `reason: "lens_unavailable"`; the tool call that needed the score is answered with `success: false`, and the summary says whether earlier changes are on disk.
 
 #### Event types on `/v1/agent`
 
@@ -125,7 +127,7 @@ Every event has the shape `{"type":"<name>","data":{...}}`. Types in emission or
 | `plan_loaded` | A winning plan has been generated. Fires once after initial generation and again after each revision. Carries the full step list. | `steps` (array of `{id, action, target, why}`), `verify_step` (string id), `rationale` (string), `winning_score` (float), `revision` (int — 0 for initial plan, 1+ for revisions) |
 | `plan_adherence` | Emitted after each tool call, indicating whether the call satisfied an outstanding plan step. Off-plan calls (`matched=false`, no `neutral`) accumulate into the off-streak counter that drives auto-revise. | On match: `matched=true`, `step_index`, `step_id`, `step_action`, `satisfied` (steps satisfied so far), `total`. On miss: `matched=false`, `tool`, `off_streak` (consecutive off-plan calls), `satisfied`, `total`. Recon tools (`read_file`, `list_directory`, `find_file`, `search_files`) emit the miss shape plus `neutral=true` — they don't satisfy steps but leave `off_streak` unchanged. |
 | `plan_revise` | The off-streak crossed `planAutoReviseThreshold` (5) — a fresh plan is being generated. The next `plan_loaded` (with `revision>0`) supersedes the prior plan; `Satisfied` flags reset. | `reason` (string), `revision` (int, 1-indexed) |
-| `done` | The session ended, once per request, whatever the outcome. Only `status: "completed"` means the work was finished; read an absent or unknown `status` as `incomplete`. See [ARCHITECTURE.md § Terminal contract](ARCHITECTURE.md#terminal-contract-and-the-session-budget) | `summary` (string — the server's account; for a `text`-shaped turn it may be empty), `status` (`completed`, `incomplete`, `stopped`, `failed` or `timed_out`), `reason` (string — why, for example `deliverables_demonstrated` (the deliverables that can run were run), `deliverables_parse_only` (some were only checked to parse), `verification_demanded_unmet`, `claim_check_unresolved`), `unresolved` (comma-separated exit gates whose bounces were spent with their finding still true; present only when there are some — a `completed` run with `unresolved` completed with the caveats its summary names) |
+| `done` | The session ended, once per request, whatever the outcome. Only `status: "completed"` means the work was finished; read an absent or unknown `status` as `incomplete`. See [ARCHITECTURE.md § Terminal contract](ARCHITECTURE.md#terminal-contract-and-the-session-budget) | `summary` (string — the server's account; for a `text`-shaped turn it may be empty), `status` (`completed`, `incomplete`, `stopped`, `failed` or `timed_out`), `reason` (string — why, for example `deliverables_demonstrated` (the deliverables that can run were run), `deliverables_parse_only` (some were only checked to parse), `verification_demanded_unmet`, `claim_check_unresolved`, `lens_unavailable` (the lens stopped scoring; the run stopped)), `unresolved` (comma-separated exit gates whose bounces were spent with their finding still true; present only when there are some — a `completed` run with `unresolved` completed with the caveats its summary names) |
 | `error` | LLM/parse/turn-cap error | `error` (string) |
 
 After the final event the server writes the SSE sentinel `data: [DONE]\n\n` and closes the response.
@@ -261,6 +263,8 @@ Returns the proxy's view of whether the loaded model has compatible Geometric Le
 {
   "lens": {
     "verdict": "supported",
+    "can_score": true,
+    "model_server_reachable": true,
     "cost_field_loaded": true,
     "cost_field_dim": 4096,
     "embed_dim": 4096,
@@ -288,7 +292,7 @@ The payload also carries a `dimensions` array — the seven status dimensions th
 {
   "dimensions": [
     {"name": "model_runtime", "status": "supported", "detail": "model served and reachable"},
-    {"name": "direct_agent", "status": "supported", "detail": "model-agnostic; independent of lens/ASA state"},
+    {"name": "direct_agent", "status": "supported", "detail": "tools, permissions and sandbox verify; the lens can score"},
     {"name": "lens_identity", "status": "supported", "detail": "cost field matches the served model's dimension"},
     {"name": "lens_scoring", "status": "supported", "detail": "C(x) + G(x) scoring available"},
     {"name": "lens_calibration", "status": "calibrated", "detail": "per-model normalization + thresholds loaded"},
@@ -300,8 +304,8 @@ The payload also carries a `dimensions` array — the seven status dimensions th
 
 **Verdict values:**
 
-- **Lens:** `supported` | `no-artifacts` | `incomplete-artifacts` | `uncalibrated` | `dim-mismatch` | `unreachable`. `incomplete-artifacts` means C(x) loaded but G(x) artifacts are missing; `uncalibrated` means weights loaded without the model's calibration files (`cx_normalization.json` / `gx_thresholds.json`) — both point at `atlas lens build`.
-- **ASA:** `supported` | `missing` | `unverified` | `incompatible`. `incompatible` means the control vector on disk is marked for a different model than the one selected.
+- **Lens:** `supported` | `uncalibrated` | `no-artifacts` | `incomplete-artifacts` | `dim-mismatch` | `disabled` | `drifted` | `self-test-failed` | `model-server-unreachable` | `unreachable`. `incomplete-artifacts` means C(x) loaded but G(x) artifacts are missing; `uncalibrated` means weights loaded without the model's calibration files (`cx_normalization.json` / `gx_thresholds.json`) — both point at `atlas lens build`. `can_score` is `true` only for `supported` and `uncalibrated`; for every other verdict the `direct_agent` dimension is `blocked` and requests are refused ([ADR 0011](adr/0011-the-lens-is-required.md)). `model_server_reachable` is llama-server's reachability as the lens reports it.
+- **ASA:** `active` | `missing` | `unverified` | `incompatible`. `active` means the control vector is marked for the served model; whether its effect was measured is the registry's `asa_status`. `incompatible` means the control vector on disk is marked for a different model than the one selected.
 
 **Use:**
 
@@ -393,7 +397,7 @@ curl http://localhost:8090/health
 }
 ```
 
-Always returns 200. `status` is `"ok"` when inference, the lens (`/health` and `/ready`), and the sandbox all respond healthy, `"degraded"` otherwise. `lens` reflects the lens service's informational `/health`; `lens_ready` reflects its pass/fail `/ready` gate. `capabilities` advertises optional proxy features clients can probe for.
+Always returns 200. `status` is `"ok"` when inference, the lens, and the sandbox all respond healthy and the lens can score, `"degraded"` otherwise. `lens` reflects the lens service's informational `/health`; `lens_ready` says whether the lens can score, by the check `/v1/agent` applies to every request (lens `/ready`, then its `/health`: switched on, C(x) and G(x) loaded, self-test passed, not drifted, llama-server reachable). When `lens_ready` is `false`, `lens_reason` says why, and every request is refused. `capabilities` advertises optional proxy features clients can probe for.
 
 ### GET /ready
 
@@ -411,7 +415,7 @@ curl http://localhost:8090/ready
 }
 ```
 
-Returns 200 only when **all** gates pass: llama-server `/health`, geometric-lens `/ready` (503s when scoring is degraded — lens weights missing, embedding-dim mismatch), sandbox `/health`, and v3-service `/health` (checked whenever a V3 URL is configured). 503 with the same body otherwise.
+Returns 200 only when **all** gates pass: llama-server `/health`, the lens can score (the check `/v1/agent` applies; `lens_reason` says why when it cannot), sandbox `/health`, and v3-service `/health` (checked whenever a V3 URL is configured). 503 with the same body otherwise.
 
 ---
 
@@ -798,7 +802,7 @@ It also carries the embedding capacity contract: `embed_capacity_tokens` (the lo
 curl http://localhost:8099/ready
 ```
 
-Readiness probe (`geometric-lens/main.py`). Flips to 503 when scoring is degraded (lens weights missing, embedding-dim mismatch). The atlas-proxy `/health` and `/ready` handlers both call this — `/health` is informational, `/ready` is pass/fail. The payload repeats `embed_capacity_tokens`; the capacity never changes the verdict.
+Readiness probe (`geometric-lens/main.py`). Flips to 503 when scoring is degraded (lens weights missing, embedding-dim mismatch). It answers 200 for a lens that is switched off or has no G(x) model, so the atlas-proxy asks this and then the lens `/health` before it accepts a request ([ADR 0011](adr/0011-the-lens-is-required.md)); its `/health` and `/ready` report the result as `lens_ready`. The payload repeats `embed_capacity_tokens`; the capacity never changes the verdict.
 
 ### Additional endpoints
 

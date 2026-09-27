@@ -854,17 +854,17 @@ Your GPU's gfx target: `rocminfo | grep -i gfx | head -1` (or look it up in the 
 
 ---
 
-## Geometric Lens Weights (Optional)
+## Geometric Lens Weights (Required)
 
-ATLAS works without Geometric Lens weights — the service degrades gracefully, returning neutral scores. The V3 pipeline falls back to sandbox-only verification.
+ATLAS needs the Geometric Lens for every request ([ADR 0011](adr/0011-the-lens-is-required.md)). The lens needs C(x) and G(x) weights for the served model. Without them, the proxy refuses each request with HTTP 503 `dependency_down` and says why, and `atlas doctor` fails. A lens that has weights but no calibration yet is accepted: it scores, and its threshold interventions wait for calibration.
 
-To enable C(x)/G(x) scoring, you need trained model weights. Pre-trained weights and training data are available on HuggingFace:
+Models listed with lens artifacts in [SUPPORT_MATRIX.md](../SUPPORT_MATRIX.md) get them from `atlas model install-artifacts`. Pre-trained weights and training data are also available on HuggingFace:
 
 **[ATLAS Dataset on HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS)** — includes embeddings, training data, and weight files.
 
 Place weight files in `geometric-lens/geometric_lens/models/` (or mount via `ATLAS_LENS_MODELS` in Docker Compose). The service loads them automatically on startup.
 
-To train on your own benchmark data, the whole loop is CLI-driven:
+For a model with no weights, build them from your own benchmark data. `atlas bench` runs the V3 stages directly, not through the proxy, so it works before the lens has weights. The whole loop is CLI-driven:
 
 ```bash
 atlas bench --run-id mymodel_lens --tasks 200    # generate + self-label candidates

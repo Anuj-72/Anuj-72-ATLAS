@@ -37,6 +37,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 import adapters
 import contract
+import scoring
 from pipeline import V3PipelineService, _build_problem_from_request
 from planning import generate_plan
 from symbols import (structural_edit, structural_score, build_project_symbols,
@@ -380,6 +381,17 @@ class V3Handler(BaseHTTPRequestHandler):
         except (adapters.ClientDisconnected, adapters.Cancelled) as e:
             print(f"[generate] pipeline aborted: {e}", flush=True)
             return
+        except scoring.LensUnavailable as e:
+            # The lens is required: the run stops, and the caller is told why
+            # in the result it is waiting for. No code is sent, not even the
+            # baseline, so nothing can read this as a finished generation.
+            print(f"[generate] stopped: the lens cannot score ({e.reason})", flush=True)
+            self._write_result({
+                "code": "", "passed": False, "phase_solved": "lens_unavailable",
+                "candidates_tested": 0, "winning_score": 0.0,
+                "lens_unavailable": e.reason,
+            })
+            return
         finally:
             _release_scope(scope, stop_watch, watcher, "generate")
 
@@ -419,6 +431,10 @@ class V3Handler(BaseHTTPRequestHandler):
             "evidence_unavailable_reason": evidence_unavailable,
         }
 
+        self._write_result(response)
+
+    def _write_result(self, response: dict) -> None:
+        """The terminal `event: result` frame and the stream's end."""
         final = json.dumps(response)
         try:
             self.wfile.write(f"event: result\ndata: {final}\n\n".encode())

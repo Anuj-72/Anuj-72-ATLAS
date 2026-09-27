@@ -468,3 +468,23 @@ def test_per_step_endpoint_reports_a_nonfinite_energy_unscored(app_client, monke
     assert out["per_step"] == [] and out["aggregate"] == {}
     assert out["failure"]["kind"] == ec.KIND_NONFINITE
     assert out["failure"]["field"] == "cx_energy"
+
+
+def test_drift_withdraws_the_per_step_thresholds(app_client, monkeypatch):
+    """Per-step scores carry the thresholds the proxy's corrective and V3's
+    veto act on. On drift they are withdrawn here as on the other scoring
+    endpoints; per-step used to skip the drift flags entirely."""
+    client, main = app_client
+    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
+    scored = {"enabled": True, "scored": True, "gx_available": True, "n_tokens": 3,
+              "cx_calibrated": True, "per_step": [], "aggregate": {"gx_score_min": 0.7},
+              "thresholds": {"off_rails": 0.3, "low": 0.4, "severe": 0.2}}
+    monkeypatch.setattr(service, "evaluate_per_step", lambda text, layer=None: dict(scored))
+    monkeypatch.setitem(main._BOOT_STATE, "fingerprint_ok", True)
+    fresh = client.post("/internal/lens/score-per-step", json={"text": "x = 1"}).json()
+    assert fresh["drifted"] is False and fresh["thresholds"] is not None
+    monkeypatch.setitem(main._BOOT_STATE, "fingerprint_ok", False)
+    drifted = client.post("/internal/lens/score-per-step", json={"text": "x = 1"}).json()
+    assert drifted["drifted"] is True
+    assert drifted["thresholds"] is None
+    assert drifted["cx_calibrated"] is False

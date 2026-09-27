@@ -2078,6 +2078,8 @@ class V3PipelineService:
                     emit("plansearch_error", str(e)[:200],
                          kind="infrastructure",
                          infrastructure_failures=len(getattr(e, "failures", ())))
+                except scoring.LensUnavailable:
+                    raise
                 except Exception as e:
                     emit("plansearch_error", str(e)[:200], kind="stage")
 
@@ -2119,6 +2121,8 @@ class V3PipelineService:
                                 lens=_candidate_lens_payload(candidates[-1]))
                             _note_lens(emit, candidates[-1], "divsampling")
                         result["total_tokens"] += tokens
+                    except scoring.LensUnavailable:
+                        raise
                     except Exception as e:
                         emit("divsampling_error", str(e)[:200])
                 emit("divsampling_done", f"{len(candidates)} total candidates",
@@ -2658,6 +2662,8 @@ class V3PipelineService:
                             result["events"] = events
                             return result
                     emit("pr_cot_failed", "PR-CoT repair did not produce passing code")
+                except scoring.LensUnavailable:
+                    raise
                 except Exception as e:
                     emit("pr_cot_error", str(e)[:200])
 
@@ -2746,6 +2752,8 @@ class V3PipelineService:
                             return result
                         emit("refinement_verify_failed", (stderr or "")[:200])
                     emit("refinement_failed", f"Exhausted {ref_result.total_iterations} iterations")
+                except scoring.LensUnavailable:
+                    raise
                 except Exception as e:
                     emit("refinement_error", str(e)[:200])
 

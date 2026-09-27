@@ -36,9 +36,13 @@ func TestScoreContentForAgentTypedFailureIsNotAScore(t *testing.T) {
 	srv := typedCapacityFailureServer(t)
 	defer srv.Close()
 
-	score, scored := scoreContentForAgent(context.Background(), srv.URL, "content")
+	score, scored, down := scoreContentForAgent(context.Background(), srv.URL, "content")
 	if scored {
 		t.Fatalf("a typed capacity failure was treated as a score: %+v", score)
+	}
+	// An input the lens declines is not the lens being down: the run goes on.
+	if down != "" {
+		t.Fatalf("a capacity failure stopped the run: %s", down)
 	}
 	if score.Failure == nil || score.Failure.Kind != "embed_capacity" ||
 		score.Failure.InputTokens != 2055 || score.Failure.CapacityTokens != 2048 {
@@ -142,7 +146,7 @@ func TestScoreContentForAgentRejectsANonFiniteScore(t *testing.T) {
 				`"aggregate":{"gx_score_min":` + token + `,"gx_score_mean":0.5},` +
 				`"thresholds":{"off_rails":0.3,"low":0.4,"severe":0.2}}`))
 		}))
-		score, scored := scoreContentForAgent(context.Background(), srv.URL, "content")
+		score, scored, _ := scoreContentForAgent(context.Background(), srv.URL, "content")
 		srv.Close()
 		if scored {
 			t.Fatalf("%s was accepted as a score: %+v", token, score)

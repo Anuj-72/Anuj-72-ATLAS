@@ -160,7 +160,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	llmOK, lensOK, sandboxOK, lensReady := false, false, false, false
+	llmOK, lensOK, sandboxOK := false, false, false
 
 	if resp, err := healthClient.Get(inferenceURL + "/health"); err == nil {
 		resp.Body.Close()
@@ -170,19 +170,15 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp.Body.Close()
 		lensOK = resp.StatusCode == 200
 	}
-	// Geometric-lens /ready is the gate that flips to 503 when scoring is
-	// degraded (lens weights missing, embedding-dim mismatch, etc).
-	// /health stays informational; /ready is the pass/fail.
-	if resp, err := healthClient.Get(lensURL + "/ready"); err == nil {
-		resp.Body.Close()
-		lensReady = resp.StatusCode == 200
-	}
+	// lens_ready is the gate /v1/agent applies: whether the lens can score
+	// (lens_required.go). /health stays informational.
+	lensCanScore, lensWhy := lensReady(lensURL)
 	if resp, err := healthClient.Get(sandboxURL + "/health"); err == nil {
 		resp.Body.Close()
 		sandboxOK = resp.StatusCode == 200
 	}
 
-	overall := llmOK && lensOK && sandboxOK && lensReady
+	overall := llmOK && lensOK && sandboxOK && lensCanScore
 	overallStatus := "ok"
 	if !overall {
 		overallStatus = "degraded"
@@ -192,26 +188,28 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":       overallStatus,
 		"inference":    llmOK,
 		"lens":         lensOK,
-		"lens_ready":   lensReady,
+		"lens_ready":   lensCanScore,
 		"sandbox":      sandboxOK,
 		"port":         proxyPort,
 		"capabilities": []string{demoRawCapability},
+	}
+	if !lensCanScore {
+		status["lens_reason"] = lensWhy
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
 
 func handleReady(w http.ResponseWriter, r *http.Request) {
-	llmOK, sandboxOK, lensReady := false, false, false
+	llmOK, sandboxOK := false, false
 
 	if resp, err := healthClient.Get(inferenceURL + "/health"); err == nil {
 		resp.Body.Close()
 		llmOK = resp.StatusCode == 200
 	}
-	if resp, err := healthClient.Get(lensURL + "/ready"); err == nil {
-		resp.Body.Close()
-		lensReady = resp.StatusCode == 200
-	}
+	// The same gate /v1/agent applies, so a client that asks /ready first
+	// is not told "ready" for a request the proxy would refuse.
+	lensCanScore, lensWhy := lensReady(lensURL)
 	if resp, err := healthClient.Get(sandboxURL + "/health"); err == nil {
 		resp.Body.Close()
 		sandboxOK = resp.StatusCode == 200
@@ -227,18 +225,22 @@ func handleReady(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ready := llmOK && lensReady && sandboxOK && v3OK
+	ready := llmOK && lensCanScore && sandboxOK && v3OK
+	body := map[string]any{
+		"ready":      ready,
+		"inference":  llmOK,
+		"lens_ready": lensCanScore,
+		"sandbox":    sandboxOK,
+		"v3":         v3OK,
+	}
+	if !lensCanScore {
+		body["lens_reason"] = lensWhy
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(map[string]any{
-		"ready":      ready,
-		"inference":  llmOK,
-		"lens_ready": lensReady,
-		"sandbox":    sandboxOK,
-		"v3":         v3OK,
-	})
+	json.NewEncoder(w).Encode(body)
 }
 
 func newProxyMux() *http.ServeMux {

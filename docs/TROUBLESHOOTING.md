@@ -42,7 +42,7 @@ For the per-service health-check curls, see [SETUP.md § Verify Installation](SE
 }
 ```
 
-If any field is `false`, that service is the problem. `status` flips to `"degraded"` whenever any of `inference`, `lens`, `lens_ready`, or `sandbox` is false. The split between `lens` and `lens_ready` lets you tell "Lens process is up but its `/ready` gate is failing — usually missing weights or embedding-dim mismatch" apart from "Lens HTTP is unreachable."
+If any field is `false`, that service is the problem. `status` flips to `"degraded"` whenever any of `inference`, `lens`, `lens_ready`, or `sandbox` is false. `lens` says whether the lens answers at all. `lens_ready` says whether it can score, by the same check the proxy applies to every request: when it is `false`, `lens_reason` says why, and every request is refused until it is `true` (see [Requests Refused: the Lens Cannot Score](#requests-refused-the-lens-cannot-score)).
 
 ---
 
@@ -93,8 +93,8 @@ Exact error strings and symptoms, mapped to their entries.
 | `file not read yet — use read_file first before editing` | [File Not Read Before Editing](#file-not-read-before-editing) |
 | `file modified since last read — read it again before editing` | [File Modified Externally](#file-modified-externally) |
 | `You have full project context in the system prompt. Do not read more files.` | [Exploration Budget Warning](#exploration-budget-warning) |
-| `"lens": false` / "No gx_thresholds.json — Lens scores are uncalibrated" | [Lens Not Loaded / Unavailable](#lens-not-loaded--unavailable) |
-| Every candidate scores `cx_energy: 0.0`, `gx_score: 0.5` | [All Scores Near 0.5](#all-scores-near-05) |
+| "ATLAS needs the geometric lens for every request" / run ends `lens_unavailable` / `"lens_ready": false` | [Requests Refused: the Lens Cannot Score](#requests-refused-the-lens-cannot-score) |
+| "No gx_thresholds.json — Lens scores are uncalibrated" | [Lens Uncalibrated](#lens-uncalibrated) |
 | Scores plausible but off-scale; `fingerprint_ok: false` / `drifted: true` | [Embedding-convention drift](#scores-look-plausible-but-are-wildly-off-scale-embedding-convention-drift) |
 | "embedding extraction failed" in lens logs | [Embedding Extraction Fails](#embedding-extraction-fails) |
 | Sandbox returns `"error_type": "Timeout"` | [Code Execution Timeout](#code-execution-timeout) |
@@ -813,36 +813,36 @@ A message is conversational only when it is under 12 characters (`hi`, `thanks`,
 
 ## Geometric Lens Issues
 
-### Lens Not Loaded / Unavailable
+### Requests Refused: the Lens Cannot Score
 
-**Symptom:** Proxy health shows `"lens": false`. Or the lens logs `No gx_thresholds.json — Lens scores are uncalibrated; threshold interventions disabled` at startup.
+**Symptom:** A request fails at once with HTTP 503 `dependency_down`: "ATLAS needs the geometric lens for every request, and it ... Run `atlas doctor`." Or a run stops with `lens_unavailable`: "Stopped: ATLAS needs the geometric lens for every request, and it stopped answering (...)". Proxy `/ready` shows `"lens_ready": false` with a `lens_reason`; `atlas doctor` fails `status_dimensions` with `direct_agent: blocked`.
 
-**Impact:** ATLAS still works but without C(x)/G(x) scoring. V3 candidate selection falls back to sandbox-only verification.
+**Impact:** No request runs until the lens can score. This is deliberate: the lens is required ([ADR 0011](adr/0011-the-lens-is-required.md)). A run that stopped says whether it changed files before it stopped.
 
-**Fix:** Check Lens health and logs:
+**Fix:** The message names the cause. Check the lens health and logs:
 ```bash
-curl -s http://localhost:8099/health
+curl -s http://localhost:8099/health | python3 -m json.tool
 docker compose logs geometric-lens
 ```
 
-Common causes:
-- Lens can't connect to llama-server (check `LLAMA_URL` env var)
-- Model weight files missing (service degrades gracefully — this is expected if you haven't trained custom models)
+| Reason in the message | Fix |
+|---|---|
+| unreachable | The lens container is down or `ATLAS_LENS_URL` is wrong. `docker compose ps geometric-lens`. |
+| switched off | `GEOMETRIC_LENS_ENABLED` is not `true`. Set it to `true` and recreate the lens. |
+| no C(x) / no G(x) model loaded | The served model has no lens weights. Run `atlas model install-artifacts <name>` for a registry model, or `atlas lens build` ([SETUP.md](SETUP.md#geometric-lens-weights-required)). |
+| cannot reach llama-server | The lens cannot reach the model server. Check `LLAMA_URL` / `LLAMA_EMBED_URL` and llama-server health. |
+| self-test failed | See the `self_test_error` in `/health`. |
+| drifted from the served model | See [Embedding-convention drift](#scores-look-plausible-but-are-wildly-off-scale-embedding-convention-drift). |
 
-### All Scores Near 0.5
+The proxy caches the lens answer for 5 seconds, so a fixed lens is accepted within 5 seconds.
 
-**Symptom:** Every candidate gets `cx_energy: 0.0` and `gx_score: 0.5` regardless of code quality.
+### Lens Uncalibrated
 
-**Cause:** Model weights are not loaded. The service returns neutral defaults when models are absent.
+**Symptom:** The lens logs `No gx_thresholds.json — Lens scores are uncalibrated; threshold interventions disabled` at startup, and the status shows `lens_calibration: uncalibrated`.
 
-**Verify:**
-```bash
-curl -s http://localhost:8099/internal/lens/gx-score \
-  -H "Content-Type: application/json" \
-  -d '{"text": "print(1)"}' | python3 -m json.tool
-```
+**Impact:** Requests run. The lens scores raw C(x) energies and G(x) probabilities; the calibrated uses (normalized routing, veto and correction thresholds) stay off until the model's calibration files exist.
 
-If `enabled: false` or `cx_energy: 0.0`, the models aren't loaded. This is expected for a fresh install — model weights are not included in the repository and must be trained or downloaded from [HuggingFace](https://huggingface.co/datasets/itigges22/ATLAS).
+**Fix:** `atlas lens build` calibrates the thresholds and writes `cx_normalization.json` and `gx_thresholds.json` into the bundle. See [CLI.md § atlas lens](CLI.md#atlas-lens).
 
 ### Scores Look Plausible but Are Wildly Off-Scale (embedding-convention drift)
 
@@ -854,7 +854,7 @@ If `enabled: false` or `cx_energy: 0.0`, the models aren't loaded. This is expec
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
-`fingerprint_ok: false` with a `fingerprint_error` naming expected-vs-observed energy is the drift signal — `/ready` returns 503 and scored responses carry `"drifted": true` with all `calibrated` flags forced false, so nothing downstream can mistake them for trustworthy.
+`fingerprint_ok: false` with a `fingerprint_error` naming expected-vs-observed energy is the drift signal — `/ready` returns 503, the proxy refuses requests and names the drift, and scored responses carry `"drifted": true` with all `calibrated` flags forced false and no thresholds, so nothing downstream can mistake them for trustworthy or act on them.
 
 **Fix:**
 1. Confirm the embed server's convention. A pooled+normalized server returns a flat vector with ‖v‖≈1:

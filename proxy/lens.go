@@ -117,44 +117,57 @@ func (r lensPerStepResult) calibratedThresholds() (low, severe float64, ok bool)
 }
 
 // scoreContentForAgent calls /internal/lens/score-per-step on the given
-// text and returns the parsed result. Fail-soft: returns (_, false) on any
-// error so a lens outage degrades to "no signal" rather than breaking the
-// agent loop. An answer that says it did not score (a typed failure, or no
-// tokens scored) is returned with false as well, its failure attached, so
-// nothing downstream can read it as a verdict. Carries the agent's ctx so
-// client cancellation kills the lens call too.
-func scoreContentForAgent(ctx context.Context, lensURL, content string) (lensPerStepResult, bool) {
+// text and returns the parsed result, whether it is a score, and -- when the
+// lens itself cannot score -- why. The lens is required: a non-empty third
+// value ends the run (lens_required.go). An answer that declined this input
+// (a typed failure such as embed_capacity, or no tokens scored) is returned
+// unscored with an empty reason, its failure attached, so nothing downstream
+// can read it as a verdict. Carries the agent's ctx so client cancellation
+// kills the lens call too.
+func scoreContentForAgent(ctx context.Context, lensURL, content string) (lensPerStepResult, bool, string) {
 	var zero lensPerStepResult
 	if lensURL == "" || content == "" {
-		return zero, false
+		return zero, false, ""
 	}
 	body, err := json.Marshal(map[string]interface{}{"text": content})
 	if err != nil {
-		return zero, false
+		return zero, false, ""
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := newLensRequest(reqCtx, "POST", lensURL+"/internal/lens/score-per-step", body)
 	if err != nil {
-		return zero, false
+		return zero, false, ""
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The request was cancelled: that is the cancellation's to
+			// report, not the lens's.
+			return zero, false, ""
+		}
 		log.Printf("[agent-lens] score request failed: %v", err)
-		return zero, false
+		return zero, false, "it did not answer: " + truncateStr(err.Error(), 160)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return zero, false
+		return zero, false, "its answer could not be read"
+	}
+	if resp.StatusCode != http.StatusOK {
+		return zero, false, fmt.Sprintf("it answered HTTP %d", resp.StatusCode)
 	}
 	var r lensPerStepResult
 	if err := json.Unmarshal(raw, &r); err != nil {
 		log.Printf("[agent-lens] score parse failed: %v", err)
-		return zero, false
+		return zero, false, "its answer could not be read"
 	}
 	if !r.Enabled {
-		return zero, false
+		return zero, false, "it is switched off or has no model loaded"
+	}
+	if r.Failure != nil && lensDownKinds[r.Failure.Kind] {
+		log.Printf("[agent-lens] the lens cannot score (%s)", r.Failure.Kind)
+		return r, false, r.Failure.Kind + ": " + truncateStr(r.Failure.Detail, 160)
 	}
 	if r.Failure != nil || (r.Scored != nil && !*r.Scored) || r.NTokens == 0 {
 		if r.Failure != nil {
@@ -165,9 +178,9 @@ func scoreContentForAgent(ctx context.Context, lensURL, content string) (lensPer
 		} else {
 			log.Printf("[agent-lens] unscored: no tokens scored (%s)", truncateStr(r.Error, 120))
 		}
-		return r, false
+		return r, false, ""
 	}
-	return r, true
+	return r, true, ""
 }
 
 // extractScorableContent pulls lens-scoreable text from a tool call.
@@ -380,11 +393,27 @@ type StatusDimension struct {
 func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 	reachable := lens.Verdict != "unreachable"
 
+	// The model server as the lens sees it. Reaching the lens is not
+	// reaching llama-server: this row said "model served and reachable"
+	// while the lens reported llama-server down.
 	modelRuntime := "supported"
 	modelDetail := "model served and reachable"
-	if !reachable {
-		modelRuntime = "unreachable"
-		modelDetail = "lens/model service not reachable"
+	switch {
+	case !reachable:
+		modelRuntime, modelDetail = "unknown", "the lens is unreachable, so nothing reports on the model server"
+	case lens.ModelServerReachable != nil && !*lens.ModelServerReachable:
+		modelRuntime, modelDetail = "unreachable", "llama-server is not reachable from the lens"
+	}
+
+	// The agent runs only while the lens can score (lens_required.go).
+	canScore := lensVerdictCanScore(lens.Verdict)
+	directAgent, directDetail := "supported", "tools, permissions and sandbox verify; the lens can score"
+	if !canScore {
+		directAgent = "blocked"
+		directDetail = "requests are refused while the lens cannot score: " + lens.Verdict
+		if lens.Hint != "" {
+			directDetail += " — " + lens.Hint
+		}
 	}
 
 	// Identity/dimension contract.
@@ -405,7 +434,9 @@ func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 	// Raw scoring availability.
 	scoring := "disabled"
 	scoringDetail := "cost field / G(x) not loaded"
-	if reachable && lens.CostFieldLoaded && lens.GxLoaded {
+	if !canScore && reachable && lens.CostFieldLoaded && lens.GxLoaded {
+		scoringDetail = "the lens cannot score: " + lens.Verdict
+	} else if reachable && lens.CostFieldLoaded && lens.GxLoaded {
 		scoring, scoringDetail = "supported", "C(x) + G(x) scoring available"
 	} else if reachable && lens.CostFieldLoaded && !lens.GxLoaded {
 		scoring, scoringDetail = "partial", "C(x) loaded; G(x) missing"
@@ -435,7 +466,9 @@ func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 	// Calibration.
 	calibration := "disabled"
 	calDetail := "artifacts not loaded"
-	if reachable && lens.CostFieldLoaded {
+	if !canScore && reachable && lens.CostFieldLoaded {
+		calDetail = "the lens cannot score: " + lens.Verdict
+	} else if reachable && lens.CostFieldLoaded {
 		if lens.CxCalibrated && lens.GxCalibrated {
 			calibration, calDetail = "calibrated",
 				"per-model normalization + thresholds loaded"
@@ -458,8 +491,7 @@ func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 
 	return []StatusDimension{
 		{"model_runtime", modelRuntime, modelDetail},
-		{"direct_agent", "supported",
-			"model-agnostic; independent of lens/ASA state"},
+		{"direct_agent", directAgent, directDetail},
 		{"lens_identity", identity, identityDetail},
 		{"lens_scoring", scoring, scoringDetail},
 		{"lens_calibration", calibration, calDetail},
@@ -470,14 +502,22 @@ func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 
 type LensStatus struct {
 	// "supported" | "no-artifacts" | "incomplete-artifacts" |
-	// "uncalibrated" | "dim-mismatch" | "unreachable"
-	Verdict         string `json:"verdict"`
-	CostFieldLoaded bool   `json:"cost_field_loaded"`
-	CostFieldDim    int    `json:"cost_field_dim"`
-	EmbedDim        int    `json:"embed_dim"`
-	GxLoaded        bool   `json:"gx_loaded"`
-	CxCalibrated    bool   `json:"cx_calibrated"`
-	GxCalibrated    bool   `json:"gx_calibrated"`
+	// "uncalibrated" | "dim-mismatch" | "unreachable" | "disabled" |
+	// "drifted" | "self-test-failed" | "model-server-unreachable"
+	Verdict string `json:"verdict"`
+	// CanScore says whether this lens can score, the question the request
+	// path asks before it starts any work (lens_required.go). An
+	// uncalibrated lens can; every other verdict but "supported" cannot.
+	CanScore bool `json:"can_score"`
+	// ModelServerReachable is llama-server's reachability as the lens sees
+	// it; nil when the lens did not say (or could not be reached).
+	ModelServerReachable *bool `json:"model_server_reachable,omitempty"`
+	CostFieldLoaded      bool  `json:"cost_field_loaded"`
+	CostFieldDim         int   `json:"cost_field_dim"`
+	EmbedDim             int   `json:"embed_dim"`
+	GxLoaded             bool  `json:"gx_loaded"`
+	CxCalibrated         bool  `json:"cx_calibrated"`
+	GxCalibrated         bool  `json:"gx_calibrated"`
 	// The longest input one score can be computed from: llama-server's
 	// physical batch (`-ub`, ATLAS_UBATCH) as the lens reports it, declared
 	// by the deployment or observed from a refusal. 0 when unknown.
@@ -500,6 +540,11 @@ type ASAStatus struct {
 type lensHealthShape struct {
 	Status     string `json:"status"`
 	Subsystems struct {
+		// Pointer: an older lens that omits the field is not read as down.
+		LlamaServer struct {
+			Reachable *bool  `json:"reachable"`
+			Error     string `json:"error"`
+		} `json:"llama_server"`
 		Lens struct {
 			Enabled         bool   `json:"enabled"`
 			CostFieldLoaded bool   `json:"cost_field_loaded"`
@@ -510,6 +555,10 @@ type lensHealthShape struct {
 			GxCalibrated    bool   `json:"gx_calibrated"`
 			SelfTestPass    bool   `json:"self_test_pass"`
 			SelfTestError   string `json:"self_test_error"`
+			// Null while no fingerprint file exists, so only an explicit
+			// false means drift.
+			FingerprintOK    *bool  `json:"fingerprint_ok"`
+			FingerprintError string `json:"fingerprint_error"`
 			// Pointer: the lens reports null while the capacity is unknown.
 			EmbedCapacityTokens *int   `json:"embed_capacity_tokens"`
 			EmbedCapacitySource string `json:"embed_capacity_source"`
@@ -546,6 +595,7 @@ func probeLensStatus(ctx context.Context, lensBaseURL string) LensStatus {
 		return out
 	}
 
+	out.ModelServerReachable = h.Subsystems.LlamaServer.Reachable
 	out.CostFieldLoaded = h.Subsystems.Lens.CostFieldLoaded
 	out.CostFieldDim = h.Subsystems.Lens.CostFieldDim
 	out.EmbedDim = h.Subsystems.Lens.EmbedDim
@@ -557,7 +607,11 @@ func probeLensStatus(ctx context.Context, lensBaseURL string) LensStatus {
 		out.EmbedCapacitySource = h.Subsystems.Lens.EmbedCapacitySource
 	}
 
+	lens := h.Subsystems.Lens
 	switch {
+	case !lens.Enabled:
+		out.Verdict = "disabled"
+		out.Hint = "GEOMETRIC_LENS_ENABLED is not true; ATLAS needs the lens and refuses requests until it runs"
 	case !out.CostFieldLoaded:
 		out.Verdict = "no-artifacts"
 		if h.Subsystems.Lens.SelfTestError != "" {
@@ -573,6 +627,16 @@ func probeLensStatus(ctx context.Context, lensBaseURL string) LensStatus {
 	case !out.GxLoaded:
 		out.Verdict = "incomplete-artifacts"
 		out.Hint = "C(x) loaded but G(x) artifacts are missing — run `atlas lens build`"
+	case lens.FingerprintOK != nil && !*lens.FingerprintOK:
+		out.Verdict = "drifted"
+		out.Hint = "the lens has drifted from the served model: " + truncateStr(lens.FingerprintError, 160)
+	case !lens.SelfTestPass:
+		out.Verdict = "self-test-failed"
+		out.Hint = "the lens self-test failed: " + truncateStr(lens.SelfTestError, 160) +
+			" — see `docker logs atlas-geometric-lens-1` and `atlas doctor`"
+	case out.ModelServerReachable != nil && !*out.ModelServerReachable:
+		out.Verdict = "model-server-unreachable"
+		out.Hint = "the lens cannot reach llama-server, so it cannot score"
 	case !out.CxCalibrated || !out.GxCalibrated:
 		out.Verdict = "uncalibrated"
 		out.Hint = "Lens weights loaded without this model's calibration files — " +
@@ -581,7 +645,16 @@ func probeLensStatus(ctx context.Context, lensBaseURL string) LensStatus {
 		out.Verdict = "supported"
 		out.Hint = "ready"
 	}
+	out.CanScore = lensVerdictCanScore(out.Verdict)
 	return out
+}
+
+// lensVerdictCanScore is whether a lens with this verdict can score: the
+// question the request path asks before it starts (lens_required.go). An
+// uncalibrated lens can; it scores raw energies, and only the calibrated
+// uses of them wait for calibration.
+func lensVerdictCanScore(verdict string) bool {
+	return verdict == "supported" || verdict == "uncalibrated"
 }
 
 // probeASAStatus checks for the configured ASA control-vector file on disk.

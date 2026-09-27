@@ -31,6 +31,7 @@ import uuid
 
 import pytest
 
+from tests.e2e.test_v3_lens_acceptance import fake_lens  # noqa: F401  (fixture)
 from tests.e2e.conftest import (
     drive_agent_turn, free_port, ordered_subsequence,
     sandbox_deps_available, start_proxy, proxy_binary_available,
@@ -145,11 +146,12 @@ def workspace(workspace_root):
 
 
 @pytest.fixture()
-def proxy(fake_llama, sandbox_executor):
+def proxy(fake_llama, fake_lens, sandbox_executor):  # noqa: F811
     port, proc = start_proxy({
         "ATLAS_INFERENCE_URL": f"http://127.0.0.1:{fake_llama}",
         "ATLAS_SANDBOX_URL": f"http://127.0.0.1:{sandbox_executor}",
-        "ATLAS_LENS_URL": "http://127.0.0.1:9",  # dead — lens fail-soft
+        # The lens is required: a request is refused while it cannot score.
+        "ATLAS_LENS_URL": f"http://127.0.0.1:{fake_lens}",
         "ATLAS_V3_URL": "http://127.0.0.1:9",    # dead: generation fails, the model's edit lands
     })
     yield port

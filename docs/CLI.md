@@ -777,7 +777,7 @@ When you launch `atlas` (the TUI), the Pipeline pane title gets a compact Lens/A
 ┌ Pipeline   Lens ✓   ASA ⚠ ─────────────────────────────┐
 ```
 
-`✓` = supported, `⚠` = no-artifacts / dim-mismatch / missing vector, `✗` = unreachable / incompatible, `?` = unknown verdict. If the proxy is reachable but the lens hint asks you to run `atlas lens check` or `atlas asa check`, the badge gives you a one-glance prompt — the full diagnostic stays in those CLI commands' output.
+`✓` = supported / active, `⚠` = uncalibrated lens / missing or unverified vector, `✗` = the lens cannot score (no-artifacts, incomplete-artifacts, dim-mismatch, disabled, drifted, self-test-failed, model-server-unreachable, unreachable: requests are refused until it can, and the hint names the command to run) / incompatible vector, `?` = unknown verdict. If the proxy is reachable but the lens hint asks you to run `atlas lens check` or `atlas asa check`, the badge gives you a one-glance prompt — the full diagnostic stays in those CLI commands' output.
 
 ### Prereqs
 

@@ -422,3 +422,24 @@ def test_grammar_mode_check_compares_the_env_with_the_registry(tmp_path):
     env.write_text("ATLAS_MODEL_FILE=my-own-model.gguf\n")
     assert doctor.check_grammar_mode(str(tmp_path)).status == "skip"
 
+
+
+def test_status_dimensions_fail_while_the_agent_is_blocked(monkeypatch):
+    """The proxy refuses every request while the lens cannot score and
+    points the user at `atlas doctor`; doctor has to say so, not pass."""
+    def status(direct_agent, detail):
+        return json.dumps({"dimensions": [
+            {"name": "model_runtime", "status": "supported", "detail": "ok"},
+            {"name": "direct_agent", "status": direct_agent, "detail": detail},
+        ]})
+
+    monkeypatch.setattr(doctor, "_http_get", lambda url, timeout=5: (
+        True, status("blocked", "requests are refused while the lens cannot score: drifted")))
+    [blocked] = doctor.check_status_dimensions()
+    assert blocked.status == "fail"
+    assert "drifted" in blocked.message
+
+    monkeypatch.setattr(doctor, "_http_get", lambda url, timeout=5: (
+        True, status("supported", "the lens can score")))
+    [fine] = doctor.check_status_dimensions()
+    assert fine.status == "pass"

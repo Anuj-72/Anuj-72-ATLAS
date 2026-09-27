@@ -371,6 +371,16 @@ func sendChatOpts(ctx context.Context, proxyURL, message, workingDir, mode,
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		// The proxy answers a refused request with an error envelope; its
+		// detail is the sentence meant for the user (for example: the lens
+		// cannot score, run atlas doctor).
+		var env struct {
+			Error  string `json:"error"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(b, &env) == nil && env.Detail != "" {
+			return fmt.Errorf("%s", env.Detail)
+		}
 		return fmt.Errorf("status %d: %s", resp.StatusCode,
 			strings.TrimSpace(string(b)))
 	}

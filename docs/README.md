@@ -79,10 +79,10 @@ map of the repository itself, see [MAP.md](MAP.md).
   V3.0 ablation report; its 74.6% result is withdrawn (notice at the top).
 - [reports/CALL_GRAPH_REASONING_V3.md](reports/CALL_GRAPH_REASONING_V3.md)
   — structural call-graph reasoning design notes.
-- [adr/](adr/README.md) — architecture decision records 0001-0010 (trust
-  model, Redis, per-model bundles, fail-soft V3, lens optionality, release
-  strategy, the SQLite store (retired), harness mechanisms, embedding
-  convention, lens capacity).
+- [adr/](adr/README.md) — architecture decision records 0001-0011 (trust
+  model, Redis, per-model bundles, fail-soft V3, lens optionality
+  (superseded), release strategy, the SQLite store (retired), harness
+  mechanisms, embedding convention, lens capacity, the lens is required).
 - [STORY.md](STORY.md) — why this project exists.
 
 ### Contribute

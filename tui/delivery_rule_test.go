@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -34,5 +38,24 @@ func TestNoCandidatePolicyControlRemains(t *testing.T) {
 	h := renderHeader("http://p", "/w", "default", false, 0, 200)
 	if strings.Contains(h, "candidates:") {
 		t.Errorf("the header still names a candidate mode: %q", h)
+	}
+}
+
+// A request the proxy refuses (the lens cannot score, for example) is shown
+// as the proxy's own sentence, not as a status code and raw JSON.
+func TestARefusedRequestShowsTheProxysSentence(t *testing.T) {
+	const detail = "ATLAS needs the geometric lens for every request, and it is unreachable at http://lens. Run `atlas doctor`."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		body, _ := json.Marshal(map[string]string{
+			"error": "dependency_unavailable", "detail": detail, "api_version": "1.0.0"})
+		w.Write(body)
+	}))
+	defer srv.Close()
+	err := sendChatOpts(context.Background(), srv.URL, "add a toggle", t.TempDir(),
+		"default", "s", nil, demoOpts{}, make(chan chatEvent, 4))
+	if err == nil || err.Error() != detail {
+		t.Fatalf("error %v, want the proxy's sentence", err)
 	}
 }

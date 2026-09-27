@@ -58,5 +58,9 @@ def test_real_scores_survive():
     assert out["first_off_rails_idx"] == 4
 
 
-def test_disabled_lens_reports_no_signal():
-    assert _score({"enabled": False}) == {}
+def test_a_disabled_lens_is_unavailable():
+    """The lens is required: switched off, it stops the run instead of
+    reporting no signal."""
+    import pytest
+    with pytest.raises(scoring.LensUnavailable):
+        _score({"enabled": False})

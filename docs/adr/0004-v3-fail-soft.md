@@ -1,6 +1,7 @@
 # ADR 0004: V3 failures fall back to the model's own content
 
-Status: accepted (V3.1.x behavior, E2E-pinned 2026-07)
+Status: accepted (V3.1.x behavior, E2E-pinned 2026-07); narrowed by 0011
+(2026-09): a lens that cannot score stops the run, with no fallback
 
 ## Context
 The V3 pipeline (candidates, scoring, selection) sits between the

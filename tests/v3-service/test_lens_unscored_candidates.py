@@ -20,6 +20,8 @@ import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "v3-service"))
@@ -152,35 +154,58 @@ def test_per_step_untyped_error_answer_is_unscored(monkeypatch):
     assert out["failure"]["kind"] == "lens_error"
 
 
-def test_lens_http_500_is_a_lens_failure_not_a_score(monkeypatch):
+# The lens is required (docs/adr/0011-the-lens-is-required.md). A lens that
+# cannot score stops the run with the reason; it never answers neutral
+# scores and is never an unscored candidate. An input the lens declines is.
+
+def test_a_lens_http_error_means_the_lens_is_unavailable(monkeypatch):
     def raise_500(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, io.BytesIO(b"{}"))
     monkeypatch.setattr(scoring.urllib.request, "urlopen", raise_500)
-    out = scoring.score_candidate_combined(SCORED_A)
-    assert out["cx_energy"] is None and out["gx_score"] is None
-    assert out["verdict"] == "unscored"
-    assert out["failure"]["kind"] == "lens_error"
-    assert out["failure"]["status"] == 500
-    per_step = scoring.score_candidate_per_step(SCORED_A)
-    assert per_step["failure"]["kind"] == "lens_error"
+    with pytest.raises(scoring.LensUnavailable) as err:
+        scoring.score_candidate_combined(SCORED_A)
+    assert "500" in err.value.reason
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_per_step(SCORED_A)
 
 
-def test_lens_unreachable_is_typed(monkeypatch):
+def test_an_unreachable_lens_is_unavailable(monkeypatch):
     def refuse(req, timeout=None):
         raise urllib.error.URLError("connection refused")
     monkeypatch.setattr(scoring.urllib.request, "urlopen", refuse)
-    out = scoring.score_candidate_combined(SCORED_A)
-    assert out["cx_energy"] is None
-    assert out["failure"]["kind"] == "lens_unreachable"
+    with pytest.raises(scoring.LensUnavailable) as err:
+        scoring.score_candidate_combined(SCORED_A)
+    assert "lens_unreachable" in err.value.reason
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_per_step(SCORED_A)
 
 
-def test_a_disabled_lens_is_a_state_not_a_failure(monkeypatch):
+def test_a_disabled_lens_is_unavailable_not_neutral(monkeypatch):
     def disabled(req, timeout=None):
         return _Response(json.dumps({"enabled": False}).encode())
     monkeypatch.setattr(scoring.urllib.request, "urlopen", disabled)
-    out = scoring.score_candidate_combined(SCORED_A)
-    assert out == scoring.NEUTRAL_COMBINED
-    assert scoring.score_candidate_per_step(SCORED_A) == {}
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_combined(SCORED_A)
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_per_step(SCORED_A)
+
+
+@pytest.mark.parametrize("kind", sorted(scoring.LENS_DOWN_KINDS))
+def test_a_model_server_fault_is_the_lens_being_unavailable(monkeypatch, kind):
+    """The lens names why it could not score. A fault of the lens or of its
+    model server stops the run; only a declined input is an unscored
+    candidate (the embed_capacity tests above)."""
+    answer = {"enabled": True, "scored": False,
+              "failure": {"kind": kind, "detail": "down"}}
+
+    def reply(req, timeout=None):
+        return _Response(json.dumps(answer).encode())
+    monkeypatch.setattr(scoring.urllib.request, "urlopen", reply)
+    with pytest.raises(scoring.LensUnavailable) as err:
+        scoring.score_candidate_combined(SCORED_A)
+    assert kind in err.value.reason
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_per_step(SCORED_A)
 
 
 # --- the pipeline -------------------------------------------------------------------------
@@ -335,3 +360,44 @@ def test_the_pool_record_carries_the_failure(monkeypatch, tmp_path):
     assert long_lens["energy_calibrated"] is False
     assert long_lens["failure"]["kind"] == "embed_capacity"
     assert long_lens["failure"]["input_tokens"] == 2055
+
+
+# --- the lens goes down during a run ------------------------------------------------------
+
+def _lens_down_after(monkeypatch, n_answers):
+    """A lens that answers `n_answers` calls, then stops answering."""
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] > n_answers:
+            raise urllib.error.URLError("connection refused")
+        text = json.loads(req.data.decode())["text"]
+        url = req.full_url
+        payload = (_gx_score_payload(text, "typed") if url.endswith("/gx-score")
+                   else _per_step_payload(text, "typed"))
+        return _Response(json.dumps(payload).encode())
+    monkeypatch.setattr(scoring.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_a_lens_that_stops_answering_stops_the_run(monkeypatch):
+    """The generation stage catches its own failures broadly; a lens that
+    cannot score must not be swallowed there and ranked around. The run
+    stops, and the caller learns why."""
+    _lens_down_after(monkeypatch, 0)
+    service = _service(monkeypatch, [SCORED_A, SCORED_B])
+    with pytest.raises(scoring.LensUnavailable) as err:
+        service.run("sum two ints", task_id="lens-down-probe")
+    assert "lens_unreachable" in err.value.reason
+
+
+def test_a_lens_that_fails_mid_generation_is_not_swallowed(monkeypatch):
+    """The probe is scored (one gx-score call), then the lens goes down while
+    the generated candidates are scored inside the PlanSearch stage, whose
+    handler catches Exception."""
+    _lens_down_after(monkeypatch, 1)
+    service = _service(monkeypatch, [SCORED_A, SCORED_B], llm_cls=ProbeLLM)
+    monkeypatch.setattr(PassingSandbox, "__call__",
+                        lambda self, code, test_input="", **_: (False, "", "boom"))
+    with pytest.raises(scoring.LensUnavailable):
+        service.run("sum two ints", task_id="lens-down-mid")

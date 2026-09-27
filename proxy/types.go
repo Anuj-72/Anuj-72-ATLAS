@@ -933,6 +933,9 @@ type AgentContext struct {
 	grants    map[string]*authorizationGrant
 	grantSeq  int
 	grantsOff string
+	// lensDown is why the lens stopped scoring during this run, set by
+	// noteLensDown; the agent loop ends the run when it is not empty.
+	lensDown string
 
 	// settlements holds what each authorized delivery left behind, keyed by
 	// canonical target. Written only by the delivery owner, and only for a
@@ -1441,6 +1444,10 @@ type V3GenerateResponse struct {
 	// Why the producer sent no envelope, when it knows. Travels beside the
 	// absence so a gap is visible rather than silent.
 	EvidenceUnavailableReason string `json:"evidence_unavailable_reason,omitempty"`
+	// LensUnavailable is set, with the reason, when the lens could not score
+	// during this call. The run stops on it (lens_required.go); the result
+	// carries no candidate.
+	LensUnavailable string `json:"lens_unavailable,omitempty"`
 }
 
 // V3VerificationEvidence describes the concrete verifier that accepted or

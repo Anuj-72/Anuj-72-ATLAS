@@ -104,9 +104,12 @@ def test_finite_energies_including_negative_and_zero_survive(monkeypatch, energy
     assert scoring.score_candidate("code") == (energy, 0.3, True)
 
 
-def test_disabled_lens_stays_neutral(monkeypatch):
+def test_a_disabled_lens_is_unavailable_not_neutral(monkeypatch):
+    """The lens is required: a lens that is switched off stops the run
+    rather than answering neutral scores, whatever numbers it attached."""
     _answer(monkeypatch, {"enabled": False, "cx_energy": float("nan")})
-    assert scoring.score_candidate_combined("code") == scoring.NEUTRAL_COMBINED
+    with pytest.raises(scoring.LensUnavailable):
+        scoring.score_candidate_combined("code")
 
 
 def test_per_step_finite_answer_survives(monkeypatch):

@@ -84,6 +84,15 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 			keep.Cancelled = noMutation(tool + " cancelled — no content was written")
 			return keep
 		}
+		// The lens stopped scoring inside V3: nothing lands, and the agent
+		// loop ends the run with the reason (lens_required.go).
+		if why, down := lensUnavailable(err); down {
+			log.Printf("[%s] the lens cannot score (%s) — not applying the edit", tool, why)
+			ctx.noteLensDown(why)
+			lifecycle.finish(ctx, routingProducerUnavailable, "", "")
+			keep.Cancelled = noMutation(tool + " not applied: the geometric lens stopped answering (" + why + ")")
+			return keep
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			lifecycle.finish(ctx, routingProducerTimedOut, "", "")
 		} else {

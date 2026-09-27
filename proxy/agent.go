@@ -2569,7 +2569,11 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			// kept retrying the same stub.
 			pendingLensCorrective := ""
 			if scorable, ok := extractScorableContent(parsed.Name, parsed.Args); ok {
-				if score, scored := scoreContentForAgent(ctx.Ctx, ctx.LensURL, scorable); scored {
+				score, scored, down := scoreContentForAgent(ctx.Ctx, ctx.LensURL, scorable)
+				if down != "" {
+					return st.stopLensDown(ctx, parsed.Name, down)
+				}
+				if scored {
 					ctx.LensScoreHistory = append(ctx.LensScoreHistory, score.Aggregate.GxScoreMin)
 					log.Printf("[agent] lens turn=%d tool=%s gx_min=%.3f gx_mean=%.3f off_rails=%d n_tok=%d latency=%.0fms history=%s",
 						turn, parsed.Name,
@@ -2678,6 +2682,13 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					"error":   truncateStr(result.Error, 120),
 				},
 			})
+			// The lens stopped scoring inside this call (V3 reported it):
+			// the run ends here, saying why (lens_required.go).
+			if why := ctx.lensDownReason(); why != "" {
+				emitTerminal(ctx, st, TerminalFailed, "lens_unavailable",
+					lensUnavailableSummary(why, st.madeProductiveChange)+liveBackgroundJobNote(ctx))
+				return nil
+			}
 
 			// Track productive state changes — write/edit/delete that landed.
 			// Used below to soften the error-loop exit when work was completed
@@ -5495,6 +5506,16 @@ func handleAgent(w http.ResponseWriter, r *http.Request) {
 	ctx.TaskContract = validatedContract
 	if t := declaredTier(validatedContract, ctx.Tier); t != ctx.Tier {
 		ctx.Tier, ctx.MaxTurns = t, TierMaxTurns(t)
+	}
+	// The lens is required (lens_required.go): a request is not started
+	// while it cannot score. After every 400, and before any work or any
+	// streamed byte, so the answer is an ordinary HTTP error the client
+	// shows as such.
+	if ok, why := lensReady(lensURL); !ok {
+		writeError(w, http.StatusServiceUnavailable, ErrDependencyDown,
+			"ATLAS needs the geometric lens for every request, and "+why+
+				". Run `atlas doctor`.")
+		return
 	}
 
 	ctx.Project = detectProjectInfo(workingDir)

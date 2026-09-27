@@ -4,6 +4,42 @@
 
 ## [Unreleased]
 
+### Changed: the lens is required; ATLAS stops and says why when it cannot score
+
+A lens that was switched off, had no model loaded, or could not reach
+llama-server used to degrade to "no signal": writes went unscored, V3
+ranked its candidates on neutral scores, and nothing told the user. The
+lens is now required ([ADR 0011](docs/adr/0011-the-lens-is-required.md),
+superseding ADR 0005).
+
+- Before any work, the proxy checks that the lens can score (lens `/ready`,
+  then its `/health`; cached for 5 s). If it cannot, `/v1/agent` answers
+  HTTP 503 `dependency_down` with the reason and "Run `atlas doctor`." The
+  proxy's `/ready` and `/health` report the same answer as `lens_ready`,
+  with `lens_reason`.
+- If the lens stops scoring during a run, the run ends with
+  `failed` / `lens_unavailable` before the write that needed the score,
+  and the summary says whether earlier changes are on disk.
+- V3 raises `LensUnavailable` instead of scoring neutral; its stages pass
+  it on, and the proxy does not write the model's bytes as a fallback
+  (ADR 0004 still applies to V3's own failures).
+- An input the lens declines (longer than the embedding batch, empty,
+  non-finite) is still reported unscored and does not stop the run. An
+  uncalibrated lens counts as able to score.
+- `/v1/calibration/status` carries `can_score` and the verdicts
+  `disabled`, `drifted`, `self-test-failed` and
+  `model-server-unreachable`; `direct_agent` reads `blocked` while the lens
+  cannot score. `atlas doctor` fails on it. The TUI badge shows a failure
+  (✗, also for missing or mismatched artifacts) and names the command to
+  run, and the TUI shows the proxy's reason for a refused request.
+- A lens with no G(x) model no longer returns its thresholds beside 0.5
+  placeholder scores (`severe_mean` 0.52 read every candidate as severe),
+  and a drifted lens withdraws its thresholds on the per-step endpoint too.
+- Consequence: a model with no lens bundle (Qwen3.5-7B/14B/32B, a
+  bring-your-own GGUF) runs no request until `atlas lens build` or
+  `atlas model install-artifacts` gives it one. `atlas bench` does not go
+  through the proxy and still runs, to build that bundle.
+
 ### Changed: the evaluation runners record what they measured
 
 Every recorded dev-server run was steered and ran the loose grammar, and

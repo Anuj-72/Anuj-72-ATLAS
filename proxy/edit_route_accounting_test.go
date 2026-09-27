@@ -93,6 +93,12 @@ type editLoopOptions struct {
 	// cancelBeforeTool cancels the request context when the named tool is
 	// about to run, so the route observes a cancelled request.
 	cancelBeforeTool string
+	// lensOff points the run at a lens that answers every score as
+	// switched off, so the per-write scoring finds the lens down.
+	lensOff bool
+	// v3LensUnavailable makes /v3/generate report that the lens could not
+	// score, with this reason.
+	v3LensUnavailable string
 }
 
 func requirePython3(t *testing.T) {
@@ -121,6 +127,16 @@ func editLoopFixture(t *testing.T, seed map[string]string, contract, prompt stri
 	var cancel context.CancelFunc
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
+		case req.URL.Path == "/internal/lens/score-per-step" && opt.lensOff:
+			json.NewEncoder(w).Encode(map[string]interface{}{"enabled": false})
+			return
+		case req.URL.Path == "/v3/generate" && opt.v3LensUnavailable != "":
+			res, _ := json.Marshal(map[string]interface{}{
+				"code": "", "passed": false, "phase_solved": "lens_unavailable",
+				"lens_unavailable": opt.v3LensUnavailable})
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: result\ndata: %s\n\ndata: [DONE]\n\n", res)
+			return
 		case req.URL.Path == "/v3/generate":
 			if opt.v3Winner == "" {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -173,6 +189,9 @@ func editLoopFixture(t *testing.T, seed map[string]string, contract, prompt stri
 	t.Cleanup(srv.Close)
 	r.ctx = NewAgentContext(r.dir, Tier2Medium)
 	r.ctx.InferenceURL, r.ctx.SandboxURL, r.ctx.V3URL = srv.URL, srv.URL, srv.URL
+	if opt.lensOff {
+		r.ctx.LensURL = srv.URL
+	}
 	r.ctx.PermissionMode = PermissionYolo
 	r.ctx.TrustMode = trustFullyTrusted
 	r.ctx.VerifyOnHost = true

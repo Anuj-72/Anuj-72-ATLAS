@@ -161,9 +161,11 @@ services:
       # restarts unhealthy containers, and restarting cannot conjure missing
       # weights; it would just restart-loop.
       #
-      # The readiness question IS gated, in the right place: proxy/main.go's
-      # handleReady reads this service's /ready, and lens scoring fail-softs
-      # everywhere else, so a degraded lens costs scoring, not the stack.
+      # The readiness question IS gated, in the right place: the proxy asks
+      # whether the lens can score before every request and refuses it, with
+      # the reason, when it cannot (proxy/lens_required.go; ADR 0011). Its
+      # /ready reports the same answer. The stack stays up, so `atlas doctor`
+      # and `atlas lens build` can still run.
       test: ["CMD", "curl", "-sf", "http://localhost:8099/health"]
       interval: 15s
       timeout: 5s

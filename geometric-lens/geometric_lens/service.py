@@ -762,7 +762,11 @@ def evaluate_per_step(query: str, layer: Optional[int] = None) -> dict:
             # uses these for its run-of-N / severe regression checks instead of
             # its own hardcoded constants, so the whole intervention chain is
             # calibrated to the loaded model's score scale.
-            "thresholds":   dict(gx_thresholds) if gx_thresholds is not None else None,
+            # Only for real G(x) scores. Without G(x) the scores above are
+            # 0.5 placeholders, and a threshold beside them (severe_mean
+            # 0.52) made every candidate read as severe.
+            "thresholds":   (dict(gx_thresholds)
+                             if gx_available and gx_thresholds is not None else None),
         }
 
     except Exception as e:

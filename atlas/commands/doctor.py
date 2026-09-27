@@ -588,9 +588,10 @@ def check_internal_auth(atlas_root: str) -> List[CheckResult]:
 def check_status_dimensions() -> List[CheckResult]:
     """Render the canonical seven-dimension lens/ASA status from the
     proxy's /v1/calibration/status endpoint — the SAME source the TUI
-    badge reads, so doctor and the TUI cannot disagree. Emits one
-    informational result carrying all seven rows; never fails the run
-    (it's a status view, not a health gate).
+    badge reads, so doctor and the TUI cannot disagree. Emits one result
+    carrying all seven rows. It fails when the agent is blocked: the lens
+    is required (docs/adr/0011), and the proxy refuses every request while
+    it cannot score, sending the user here.
     """
     ok, body = _http_get(f"{PROXY_URL}/v1/calibration/status", timeout=5)
     if not ok:
@@ -607,11 +608,16 @@ def check_status_dimensions() -> List[CheckResult]:
         return [CheckResult("status_dimensions", "skip",
                             "no dimensions in calibration status "
                             "(older proxy image?)")]
-    # A disabled/uncalibrated lens is expected on a fresh install, so
-    # this is informational (pass) — the per-dimension status is the
-    # signal, printed in the detail.
+    # An uncalibrated lens still scores, so it is informational (pass),
+    # with the per-dimension status in the detail. A blocked agent is not:
+    # no request runs until the lens can score.
     lines = [f"{d.get('name')}: {d.get('status')} — {d.get('detail')}"
              for d in dims]
+    blocked = [d for d in dims if d.get("status") == "blocked"]
+    if blocked:
+        return [CheckResult("status_dimensions", "fail",
+                            "requests are refused: " + str(blocked[0].get("detail")),
+                            detail="\n".join(lines))]
     return [CheckResult("status_dimensions", "pass",
                         "lens/ASA status by dimension",
                         detail="\n".join(lines))]

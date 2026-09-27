@@ -106,7 +106,11 @@ def test_owned_python_senders_are_inventoried():
     senders = _owned_python_senders()
     files = sorted({f for f, _, _ in senders})
     # Classification, by file. Anything not listed fails.
-    declares_contract = {"tests/e2e/conftest.py", "scripts/e2e-reliability.py"}
+    declares_contract = {"tests/e2e/conftest.py", "scripts/e2e-reliability.py",
+                         # Sends through agent_request_body, and reads the 503
+                         # a request gets while the lens cannot score, which
+                         # the streaming helper cannot return.
+                         "tests/e2e/test_v3_lens_acceptance.py"}
     # Auth probes: deliberately malformed bodies rejected at 401 before the
     # handler ever decodes them. Adding a contract would change what they test.
     auth_probes = {"tests/e2e/test_service_auth.py"}

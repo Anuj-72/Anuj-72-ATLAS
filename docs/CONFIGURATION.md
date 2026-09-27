@@ -213,7 +213,8 @@ stops at the one step only you can do (the rebuild); the manual flow is:
    `ATLAS_MODEL_NAME`. Matching embedding dimensions alone are not sufficient:
    two different models can share a hidden width while having unrelated
    representation geometry. Missing or mismatched identity keeps Lens scoring
-   unavailable and is surfaced by readiness, `atlas lens check`, and the TUI.
+   unavailable and is surfaced by readiness, `atlas lens check`, and the TUI;
+   the proxy refuses requests until it matches, because the lens is required.
 
    Do **not** reuse another model's solution set — both lens halves are
    dimension-coupled to the model: `C(x)` must learn *this* model's cost
@@ -411,7 +412,7 @@ Python FastAPI service for C(x)/G(x) scoring (`/internal/lens/*`). Every route i
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GEOMETRIC_LENS_ENABLED` | `false` | Enable C(x)/G(x) scoring. Docker Compose sets this to `true`. |
+| `GEOMETRIC_LENS_ENABLED` | `false` | Must be `true` in a working stack: the lens is required ([ADR 0011](adr/0011-the-lens-is-required.md)). With any other value the lens answers `enabled: false`, and the proxy refuses every request and names this variable. Docker Compose sets it to `true`; the in-code default `false` applies only to a bare run of the service. |
 | `LLAMA_URL` | `http://llama-server:8080` | llama-server endpoint. Read by `config.py:LlamaConfig` and also by `embedding_extractor.py` as the embedding source. |
 | `LLAMA_EMBED_URL` | (falls back to `LLAMA_URL`) | Dedicated embedding endpoint. Use this if you have a separate embedding server; otherwise embeddings reuse the LLAMA_URL host. |
 | `LLAMA_EMBED_CAPACITY_TOKENS` | (unset) | The embedding server's physical batch (`-ub`): the longest input one Lens score can be computed from. Docker Compose sets it from `ATLAS_UBATCH`, the value llama-server runs with, so `/health` reports the capacity before any request is refused; a refusal's own count replaces it. Information only. An input past the capacity is reported `unscored` (typed, with the server's counts), never truncated or split; see [ADR 0010](adr/0010-lens-capacity-boundary-is-typed.md). Values that are not positive integers are ignored. |

@@ -216,6 +216,12 @@ func callV3GenerateStreaming(reqCtx context.Context, v3URL string, req V3Generat
 			return nil, fmt.Errorf("V3 stream closed without sending a result event")
 		}
 	}
+	// The lens could not score inside this call. That is not a V3 failure
+	// the route may answer with a fallback write: the run stops on it
+	// (lens_required.go).
+	if result.LensUnavailable != "" {
+		return nil, &lensUnavailableError{Reason: result.LensUnavailable}
+	}
 
 	return result, nil
 }

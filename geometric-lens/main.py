@@ -99,14 +99,17 @@ def _lens_drifted() -> bool:
 
 def _apply_drift_flags(result: Dict[str, Any]) -> Dict[str, Any]:
     """Stamp a scoring response with the drift state. On drift, calibration
-    claims are withdrawn so a caller that ignores /ready still can't read
-    the numbers as trustworthy."""
+    claims and the thresholds are withdrawn, so a caller that ignores /ready
+    still cannot read the numbers as trustworthy or act on them: the proxy's
+    corrective and V3's veto both need thresholds."""
     drifted = _lens_drifted()
     result["drifted"] = drifted
     if drifted:
         for key in ("calibrated", "cx_calibrated", "gx_calibrated"):
             if key in result:
                 result[key] = False
+        if "thresholds" in result:
+            result["thresholds"] = None
     return result
 
 
@@ -518,7 +521,9 @@ def lens_score_per_step(request: LensScorePerStepRequest):
             _safe_log(request.layer) if request.layer is not None else "last",
             float(result.get("latency_ms", 0.0)),
         )
-        return result
+        # Per-step scores carry thresholds too, and drift must withdraw them
+        # here as it does on the other scoring endpoints.
+        return _apply_drift_flags(result)
     except Exception as e:
         from geometric_lens.service import failure_record, unscored_per_step
         return unscored_per_step(failure_record(e, "score-per-step"),

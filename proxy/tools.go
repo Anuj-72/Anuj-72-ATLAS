@@ -2069,6 +2069,15 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 				Error:   "write_file cancelled — no content was written",
 			}, nil
 		}
+		// The lens stopped scoring inside V3. The lens is required, so this
+		// is not a fallback case either: nothing is written, and the agent
+		// loop ends the run with the reason (lens_required.go).
+		if why, down := lensUnavailable(err); down {
+			log.Printf("[write_file] the lens cannot score (%s) — not writing %s", why, logPath(path))
+			ctx.noteLensDown(why)
+			lifecycle.finish(ctx, routingProducerUnavailable, "", "")
+			return noMutation("write_file not applied: the geometric lens stopped answering (" + why + ")"), nil
+		}
 		// Fallback to direct write if V3 service unavailable — but never
 		// land content the sandbox confirms is broken: a truncated tool
 		// call writing a SyntaxError to disk with success=true is how the

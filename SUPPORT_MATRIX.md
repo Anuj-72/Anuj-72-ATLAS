@@ -61,8 +61,8 @@ and `atlas lens check` report against the installed bundle.
 | Qwen3.5-9B-Q6_K | Supported | supported (uncalibrated legacy bundle) | supported (A/B-validated May 2026) | Reference model; hash-pinned public download |
 | gemma-4-12b-it-Q4_K_M | Preview | supported; calibration **derived + verified** on maintainer hardware (val AUC 0.73, 287 LCB samples) — live lens reports `cx_calibrated: true`. The published HF bundle is still the uncalibrated one; re-publishing the calibrated bundle is a maintainer decision (moderate AUC, shared artifact) | Unverified — vector built, published, hash-pinned, and **on**: steering is always on, so `atlas model install-artifacts` writes its `.model` marker. Built from prompts that named the tool `ast_edit` (now `structural_edit`) and never A/B measured on gemma; rebuild with `atlas asa build` and measure before calling it Supported (see § Feature paths — ASA steering) | Manual GGUF download (Gemma ToU); artifacts hash-pinned |
 | Qwen3.5-9B-Q4_K_M / Q8_0 | Preview | unverified (same-family artifacts, combo unvalidated) | unverified | Hash-pinned public downloads |
-| Qwen3.5-7B / 14B / 32B | Preview | no-artifacts | no-artifacts | HF-gated upstream (HF_TOKEN required; no anonymous hash) |
-| Bring-your-own GGUF | Preview | Requires `atlas lens build` (per-model bundle) | Requires `atlas asa build` | Direct agent mode works model-agnostically; V3 scoring/steering need the per-model bundle — see § Model contract |
+| Qwen3.5-7B / 14B / 32B | Preview | no-artifacts | no-artifacts | HF-gated upstream (HF_TOKEN required; no anonymous hash). Requests are refused until a lens bundle exists (`atlas lens build`): the lens is required (ADR 0011) |
+| Bring-your-own GGUF | Preview | Requires `atlas lens build` (per-model bundle) | Requires `atlas asa build` | Requests are refused until the model has its lens bundle (ADR 0011); `atlas bench` runs without one, to build it — see § Model contract |
 | Frozen Qwen3-14B (V3.0 benchmark model; its 74.6% LCB result is withdrawn) | Research-only | frozen reference | — | Historical benchmark reference only; not a runtime registry entry |
 
 ### Reference-model status dimensions
@@ -77,10 +77,10 @@ computes them in one place (`proxy/lens.go`).
 
 | Dimension | Meaning | Statuses |
 |---|---|---|
-| `model_runtime` | Is the model served and reachable | supported / unreachable |
-| `direct_agent` | The agent loop (tools, permissions, sandbox verify) | **supported** always — model-agnostic, independent of lens/ASA |
+| `model_runtime` | Is the model served and reachable, as the lens sees it | supported / unreachable / unknown (the lens is unreachable) |
+| `direct_agent` | The agent loop (tools, permissions, sandbox verify) | supported / **blocked** — blocked while the lens cannot score, because every request needs it (ADR 0011). An uncalibrated lens can score |
 | `lens_identity` | Cost field matches the served model (identity + dimension) | supported / no-artifacts / dim-mismatch |
-| `lens_scoring` | Raw C(x)+G(x) scoring available | supported / partial (G(x) missing, or the embed capacity is below the generation ceiling so the longest writes come back unscored) / disabled |
+| `lens_scoring` | Raw C(x)+G(x) scoring available | supported / partial (G(x) missing, which blocks `direct_agent`; or the embed capacity is below the generation ceiling so the longest writes come back unscored) / disabled |
 | `lens_calibration` | Per-model normalization + thresholds loaded | calibrated / uncalibrated / disabled |
 | `lens_intervention` | Automatic corrective behavior | active *(only when calibrated)* / neutral / disabled |
 | `asa` | Activation-steering vector for the served model | active (marked for the served model; whether its effect was measured is the registry's `asa_status`) / unverified (no matching marker) / incompatible / missing |
@@ -114,16 +114,17 @@ carries a complete manifest (val AUC 0.73, all seven files hashed).
 
 ### Model contract
 
-ATLAS is **direct-mode model-agnostic, per-model-bundle for Lens/ASA**:
-any llama.cpp-loadable GGUF drives the direct agent loop (grammar
-constraints, tools, sandbox verification) with no model-family
-assumptions — behavior keys off GGUF metadata and stream shape, never
-model names. The differentiating V3 scoring/steering stack requires the
-model's own Lens bundle (identity-checked, dimension-checked at load;
-mismatched bundles are rejected and the lens reports itself disabled)
-and ASA vector (marker-gated at llama-server startup). "Any model, full
-stack" is therefore not claimed: full-stack support = registry entry or
-locally-built bundle.
+ATLAS is **model-agnostic in its agent loop, per-model-bundle for
+Lens/ASA**: the agent loop (grammar constraints, tools, sandbox
+verification) makes no model-family assumptions — behavior keys off
+GGUF metadata and stream shape, never model names. Every request also
+needs the model's own Lens bundle (identity-checked, dimension-checked
+at load; mismatched bundles are rejected and the lens reports itself
+disabled), because the lens is required (ADR 0011): without it the
+proxy refuses the request and says why. The ASA vector is
+marker-gated at llama-server startup. A model is therefore usable once
+it has a registry entry with published artifacts or a locally built
+bundle (`atlas bench`, then `atlas lens build`).
 
 ## Deployment modes
 

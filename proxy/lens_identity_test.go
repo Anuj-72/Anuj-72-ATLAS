@@ -231,7 +231,7 @@ func TestEveryPerWriteScoreInARequestSendsTheSamePair(t *testing.T) {
 	defer srv.Close()
 	ctx := lensCtx("req-0011223344556677")
 	for _, content := range []string{"def f():\n    return 1\n", "x = 1\n"} {
-		if _, scored := scoreContentForAgent(ctx, srv.URL, content); !scored {
+		if _, scored, _ := scoreContentForAgent(ctx, srv.URL, content); !scored {
 			t.Fatal("scoring did not run")
 		}
 	}
@@ -281,8 +281,9 @@ func TestCancelledOrExpiredContextStopsLensCalls(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(lensCtx("req-0011223344556677"))
 	cancel()
-	if _, scored := scoreContentForAgent(ctx, srv.URL, "x = 1\n"); scored {
-		t.Fatal("scored on a cancelled context")
+	if _, scored, down := scoreContentForAgent(ctx, srv.URL, "x = 1\n"); scored || down != "" {
+		t.Fatalf("scored=%v down=%q on a cancelled context: cancellation is not the lens being down",
+			scored, down)
 	}
 	if len(cap.pairs) != 0 {
 		t.Fatalf("%d call(s) reached the Lens after cancellation", len(cap.pairs))
@@ -290,8 +291,8 @@ func TestCancelledOrExpiredContextStopsLensCalls(t *testing.T) {
 	expired, cancel2 := context.WithTimeout(lensCtx("req-0011223344556677"), time.Nanosecond)
 	defer cancel2()
 	time.Sleep(time.Millisecond)
-	if _, scored := scoreContentForAgent(expired, srv.URL, "x = 1\n"); scored {
-		t.Fatal("scored on an expired context")
+	if _, scored, down := scoreContentForAgent(expired, srv.URL, "x = 1\n"); scored || down != "" {
+		t.Fatalf("scored=%v down=%q on an expired context", scored, down)
 	}
 	if len(cap.pairs) != 0 {
 		t.Fatal("a call reached the Lens after the deadline")
