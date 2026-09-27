@@ -8053,7 +8053,7 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 		if unrun := unexecutedDeliverables(ctx, expected); len(unrun) > 0 {
 			out = parseOnlySummary(out, unrun)
 		}
-		return out + unresolvedGateCaveats(st)
+		return out + unresolvedGateCaveats(st) + v3FallbackNote(ctx)
 	}
 	out := strings.TrimSpace(summary)
 	if claim := completionClaimIn(out); claim != "" {
@@ -8070,7 +8070,7 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 	if !hasHonestMarker(out) {
 		out += " This run did not confirm the task was complete."
 	}
-	return out
+	return out + v3FallbackNote(ctx)
 }
 
 // executionClaims are what a model says when it believes the code ran:

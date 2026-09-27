@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Changed: the final summary names the files V3 did not check
+
+When V3 runs out of time or is unavailable on a write, ATLAS still writes
+the model's own version (after the syntax and structural gates), as
+before. The tool result said so at the time; the run's final summary did
+not. The summary now ends with "V3 did not check these files: …", naming
+each file whose bytes on disk are the ones V3 did not check, with the
+reason. A file changed afterwards is not named. ADR 0004 gets a dated
+revision.
+
 ### Removed: `GEOMETRIC_LENS_ENABLED`
 
 The lens is required (ADR 0011), and nothing in ATLAS has an off switch,

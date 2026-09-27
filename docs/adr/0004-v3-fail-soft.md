@@ -21,3 +21,11 @@ Users on a degraded stack silently lose the quality uplift but keep a
 working agent; the tool result and events make the degradation
 observable. Pinned by tests/e2e/test_v3_lens_acceptance.py failure
 modes.
+
+## Revision 2026-09-27
+The fallback stays, and the run's final summary now says so too: it
+names each file whose bytes on disk were written after V3 ran out of
+time or was unavailable ("V3 did not check these files: ..."). A file
+changed afterwards is not named. `proxy/v3_fallback_note.go`, pinned
+by `proxy/v3_fallback_note_test.go`. A lens that cannot score is not
+this case: the run stops (ADR 0011).

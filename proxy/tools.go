@@ -2083,6 +2083,8 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		// call writing a SyntaxError to disk with success=true is how the
 		// mini-bench got its two broken files (t06/t09).
 		log.Printf("[write_file] V3 failed: %s — falling back to direct write", err)
+		// The final summary names this file while these bytes are on disk.
+		ctx.noteV3Unchecked(path, v3FailureReason(err), baselineContent)
 		if errors.Is(err, context.DeadlineExceeded) {
 			lifecycle.finish(ctx, routingProducerTimedOut, "", "")
 		} else {
@@ -2098,6 +2100,9 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		}
 		return writeWithoutCandidate(ctx, path, baselineContent, msg)
 	}
+	// V3 answered for this write: an earlier unchecked write of the file is
+	// no longer the one to name.
+	ctx.clearV3Unchecked(path)
 
 	// Write the winning candidate (or baseline if V3 didn't improve).
 	//

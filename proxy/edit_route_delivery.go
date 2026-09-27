@@ -99,8 +99,11 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 			lifecycle.finish(ctx, routingProducerUnavailable, "", "")
 		}
 		log.Printf("[%s] V3 unavailable: %v — keeping the caller's content", tool, err)
+		// The final summary names this file while these bytes are on disk.
+		ctx.noteV3Unchecked(path, v3FailureReason(err), edited)
 		return keep
 	}
+	ctx.clearV3Unchecked(path)
 
 	// The existing boundary guards, unchanged and still ahead of staging: a
 	// winner that rewrote past the edit or swapped the language is not a

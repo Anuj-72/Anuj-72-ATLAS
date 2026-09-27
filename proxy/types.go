@@ -936,6 +936,11 @@ type AgentContext struct {
 	// lensDown is why the lens stopped scoring during this run, set by
 	// noteLensDown; the agent loop ends the run when it is not empty.
 	lensDown string
+	// v3Unchecked holds the writes that landed after V3 failed on them (ran
+	// out of time or was unavailable), keyed by ledger key. The final summary
+	// names each one whose bytes are still on disk (v3_fallback_note.go).
+	v3Unchecked   map[string]v3UncheckedWrite
+	v3UncheckedMu sync.Mutex
 
 	// settlements holds what each authorized delivery left behind, keyed by
 	// canonical target. Written only by the delivery owner, and only for a
