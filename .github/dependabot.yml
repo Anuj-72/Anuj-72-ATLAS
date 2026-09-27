@@ -23,7 +23,12 @@ updates:
       # setuptools >=83 requires python >=3.10, but RHEL9-family hosts
       # (a supported bootstrap target) build the CLI from pyproject on
       # system python 3.9. Revisit when the py3.9 floor is dropped.
-      - dependency-name: "setuptools" 
+      - dependency-name: "setuptools"
+      # torch is pinned twice per service: requirements.txt and the
+      # Dockerfile's CPU-only pre-install, which must match
+      # (tests/contracts/test_torch_cpu_pin.py). Dependabot can bump only
+      # the first, so torch is bumped by hand in both places.
+      - dependency-name: "torch"
 
   - package-ecosystem: gomod
     directory: /proxy
