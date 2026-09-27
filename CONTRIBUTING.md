@@ -33,14 +33,19 @@ candidate, and `staging` to `main` as a release. See
 - **Hardware reports.** Run ATLAS on your GPU and report what happened,
   with your `atlas doctor` output. AMD (ROCm), Apple Silicon (Metal) and
   Vulkan reports help most; see [SUPPORT_MATRIX](SUPPORT_MATRIX.md).
-- **Trained artifacts.** ATLAS needs a Geometric Lens (`cost_field.pt`) and
-  an ASA control vector (`*.gguf`) for each base model. If you've trained
-  them with `atlas lens build` / `atlas asa build`, publish them with
-  `atlas lens publish` / `atlas asa publish`. That uploads to a Hugging
-  Face repo you own and opens a registry pull request. You don't need write
-  access here, just a Hugging Face account and write token. The walkthrough
-  is in [PUBLISHING.md](docs/PUBLISHING.md).
+- **Trained artifacts** for a new model (see below).
 - **Questions** go to [Discussions Q&A](https://github.com/inferstep/ATLAS/discussions/categories/q-a).
+
+### Contributing trained artifacts (Lens / ASA)
+
+ATLAS needs a Geometric Lens (`cost_field.pt`) and an ASA control vector
+(`*.gguf`) for each base model, because both are coupled to the model they
+were trained against. If you've trained them with `atlas lens build` /
+`atlas asa build`, publish them with `atlas lens publish` /
+`atlas asa publish`. That uploads to a Hugging Face repo you own and opens
+a registry pull request. You don't need write access here, just a Hugging
+Face account and write token. The walkthrough is in
+[PUBLISHING.md](docs/PUBLISHING.md).
 
 ## 3. Set up
 
