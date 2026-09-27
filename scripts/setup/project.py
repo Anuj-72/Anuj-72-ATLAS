@@ -78,7 +78,7 @@ OTHER_FIELDS = {"Shepherd": "TEXT", "Start Date": "DATE", "Target Date": "DATE"}
 VIEWS = [
     ("Start Here", "TABLE_LAYOUT", "status:Ready contributor-level:Starter no:assignee"),
     ("Help Wanted", "TABLE_LAYOUT", "status:Ready no:assignee"),
-    ("Current Release", "BOARD_LAYOUT", 'milestone:"v3.1.4"'),
+    ("Current Release", "BOARD_LAYOUT", 'milestone:"v3.2.0"'),
     ("Critical Path", "TABLE_LAYOUT", "critical-path:Yes -status:Done"),
     ("Roadmap", "ROADMAP_LAYOUT", "type:Epic"),
     ("RFCs", "TABLE_LAYOUT", "type:RFC is:open"),
