@@ -44,7 +44,7 @@ single resolver that implements this.
 | `ATLAS_EMBED_POOLING` | `mean` | Pooling mode for the self-embedding `/embedding` endpoint (`--pooling`). The Geometric Lens `C(x)`/`G(x)` artifacts are trained on one convention; serving another silently invalidates every score. Leave at `mean` unless your lens artifacts were trained on `none` (per-token). L2 normalization is requested per-call by the lens (`embd_normalize` in the `/embedding` body — llama-server has no server-side normalize flag). The lens enforces both via `model_identity.json`'s `embedding_contract` and refuses to serve on mismatch. |
 | `ATLAS_PROJECT_DIR` | (cwd at `compose up`) | Host directory bind-mounted to `/workspace` inside the atlas-proxy container. Switch projects by re-creating the proxy container with this var set. |
 | `ATLAS_LENS_HOST_DIR` | `./lens_training` | Host path of the lens training-data corpus, bind-mounted into atlas-proxy at `/data/lens_training` (see `ATLAS_LENS_DATA_DIR`, § 2) so `atlas lens retrain` on the host reads the corpus the proxy writes. |
-| `ATLAS_GHCR_OWNER` | `itigges22` | GHCR namespace to pull images from. Set to your own GitHub username if you've published forked images. |
+| `ATLAS_GHCR_OWNER` | `inferstep` | GHCR namespace to pull images from. Set to your own GitHub username if you've published forked images. |
 | `ATLAS_IMAGE_TAG` | `latest` | Image tag to pull (`latest` for main, `dev` for the dev branch, `3.1.3` or `sha-...` for pinned releases). Registry semver tags carry no leading `v`; `atlas upgrade`/`atlas rollback` strip one if given. |
 | `ATLAS_LLAMA_PORT` | `8080` | llama-server host port |
 | `ATLAS_LENS_PORT` | `8099` | Geometric Lens host port |
@@ -73,7 +73,7 @@ Docker Compose also sets inter-service URLs using Docker networking (e.g., `http
 
 **Restart policy.** Every service in `docker-compose.yml` runs with `restart: unless-stopped`, so the stack comes back up after a host reboot or a container crash without a manual `docker compose up`.
 
-**Removed variables (`.env`).** These keys from older installs are ignored on read; `atlas config validate` flags them and `atlas config migrate` drops them: `ATLAS_REGISTRY` (the model registry is in-package), `ATLAS_REDIS_MAXMEMORY` and `ATLAS_REDIS_MEM` (lens state moved from Redis to SQLite — `SQLITE_DB_PATH`, § 4; [ADR 0007](adr/0007-sqlite-state-store.md)), `ATLAS_ENABLE_TRAINING` (training is always available), and `ATLAS_RPG_PLANNING` (RPG planning was removed — [issue #148](https://github.com/itigges22/ATLAS/issues/148) is the record). K3s-side removals are listed in § 8.10.
+**Removed variables (`.env`).** These keys from older installs are ignored on read; `atlas config validate` flags them and `atlas config migrate` drops them: `ATLAS_REGISTRY` (the model registry is in-package), `ATLAS_REDIS_MAXMEMORY` and `ATLAS_REDIS_MEM` (lens state moved from Redis to SQLite — `SQLITE_DB_PATH`, § 4; [ADR 0007](adr/0007-sqlite-state-store.md)), `ATLAS_ENABLE_TRAINING` (training is always available), and `ATLAS_RPG_PLANNING` (RPG planning was removed — [issue #148](https://github.com/inferstep/ATLAS/issues/148) is the record). K3s-side removals are listed in § 8.10.
 
 `PARALLEL_SLOTS` and `KV_CACHE_TYPE_K/V` are accepted as fallbacks, but the
 canonical `ATLAS_*` names take precedence and are what `atlas init` and
@@ -561,7 +561,7 @@ table; bootstrap-only knobs (`ATLAS_BOOTSTRAP_*` and friends) in
 | `ATLAS_BACKEND` | `cuda` (default) / `rocm` / `vulkan` / `metal` | Which llama-server build dispatch path is active. Written by `atlas init` based on GPU vendor (or `--backend vulkan` override). The entrypoint reads this to pick vendor-specific runtime flags. `vulkan` is the universal fallback — ~20–40% slower than tuned native backends but covers AMD/Intel/Snapdragon/Apple-via-MoltenVK/CPU with one image. `metal` is the macOS hybrid (native llama-server + Docker for the rest, [SETUP_MACOS.md](SETUP_MACOS.md)). See [SETUP.md § Vulkan](SETUP.md). |
 | `ATLAS_VK_DEVICE_SELECT` | (unset → first Vulkan ICD enumerated) | Vulkan-only: forwarded to `MESA_VK_DEVICE_SELECT` to pin a specific physical device when multiple ICDs are visible (e.g., dGPU + iGPU, two Intel Arc cards). Format: `"vendorID:deviceID"` (hex) or a device-name substring. Use `GGML_VK_VISIBLE_DEVICES` (numeric index) instead when the Mesa selector isn't granular enough. |
 | `ATLAS_GPU_VENDOR` | (auto-detected) | Process-env override read by `atlas init` / `atlas tier` on multi-vendor hosts: `nvidia`, `amd`, `apple`, `intel`. Auto-detect picks the largest-VRAM GPU. Not read from `.env`. |
-| `ATLAS_UPSTREAM_REPO` | `itigges22/ATLAS` | GitHub repo that `atlas lens publish` / `atlas publish` open the registry PR against. Override to target a fork. |
+| `ATLAS_UPSTREAM_REPO` | `inferstep/ATLAS` | GitHub repo that `atlas lens publish` / `atlas publish` open the registry PR against. Override to target a fork. |
 | `ATLAS_PARALLEL_TASKS` | `4` (worker count) | Benchmark runner: number of tasks `atlas.bench.v3_runner` processes concurrently (default `4`; the runner's per-call timeout scaler reads the same var with default `1`). `atlas bench` pins it to `1` — the safe setting for any model; export a higher value only when driving `atlas.bench.v3_runner` directly on hardware that can take it. |
 | `ATLAS_LLM_PARALLEL` | `0` | Benchmark runner: set `1` to allow concurrent llama-server calls instead of serialized generation. |
 | `ATLAS_API_KEYS_PATH` | `./secrets/api-keys.json` | Read by the TUI to locate the bearer-token file written by `atlas init`; the token is attached to `/v1/agent` requests for forward compatibility (the proxy does not currently enforce it). |
@@ -669,7 +669,7 @@ Consumed by `atlas/bench/v3_runner.py:_load_v3_config` for ablation studies. The
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_GHCR_OWNER` | `itigges22` | GHCR namespace for service images. Read by the K3s manifests **and** `scripts/build-containers.sh`, which tags local builds exactly as the manifests reference them (`ghcr.io/${ATLAS_GHCR_OWNER}/atlas-*`) so side-loaded images are picked up without editing manifests. |
+| `ATLAS_GHCR_OWNER` | `inferstep` | GHCR namespace for service images. Read by the K3s manifests **and** `scripts/build-containers.sh`, which tags local builds exactly as the manifests reference them (`ghcr.io/${ATLAS_GHCR_OWNER}/atlas-*`) so side-loaded images are picked up without editing manifests. |
 | `ATLAS_IMAGE_TAG` | `latest` | Image tag for both the local-build path and the GHCR pull path |
 
 The install scripts also honor three runtime-only env vars (not in `atlas.conf` itself):

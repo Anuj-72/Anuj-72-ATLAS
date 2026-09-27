@@ -64,4 +64,4 @@ The canonical published evidence is the V3 (14B) ablation study —
 raw traces indexed in
 [docs/reports/ablation/README.md](../../docs/reports/ablation/README.md).
 Per-registry-model numbers are tracked in
-[#28](https://github.com/itigges22/ATLAS/issues/28).
+[#28](https://github.com/inferstep/ATLAS/issues/28).

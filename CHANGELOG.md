@@ -94,7 +94,7 @@ range.
   fail-soft, no flag.
 - **RPG planning removed everywhere** (it was never shipped in the v3
   image); the A/B on the reference 12B showed no improvement at ~10x
-  planning latency. [#148](https://github.com/itigges22/ATLAS/issues/148)
+  planning latency. [#148](https://github.com/inferstep/ATLAS/issues/148)
   is the record.
 - **V2/TB2 benchmark subgraph and the five superseded trainer scripts
   removed.** The onboarding loop is fully CLI-driven: `atlas bench` →

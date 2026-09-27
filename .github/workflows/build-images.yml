@@ -1,6 +1,6 @@
 # Builds and publishes ATLAS service images to GHCR.
 #
-# Image names: ghcr.io/itigges22/atlas-{proxy,v3,lens,llama,llama-vulkan,sandbox}
+# Image names: ghcr.io/inferstep/atlas-{proxy,v3,lens,llama,llama-vulkan,sandbox}
 #
 # Two-phase publish:
 #   Phase 1 (build matrix): every service pushes an immutable :sha-<short>
@@ -319,9 +319,9 @@ jobs:
       # dev/latest/semver tags the promote job repoints later, since
       # imagetools create reuses the same manifest digest. Verify with:
       #   cosign verify \
-      #     --certificate-identity-regexp 'github.com/itigges22/ATLAS' \
+      #     --certificate-identity-regexp 'github.com/inferstep/ATLAS' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      #     ghcr.io/itigges22/atlas-<svc>@<digest>
+      #     ghcr.io/inferstep/atlas-<svc>@<digest>
       - name: Install cosign
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
