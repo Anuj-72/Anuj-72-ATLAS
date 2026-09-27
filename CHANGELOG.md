@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Measured: gemma steering does not change its tool choice
+
+An A/B on 2026-09-27 compared the shipped gemma vector, no vector, and a
+vector rebuilt for the current tool names (120 held-out probes, 2 samples
+per arm, scale 0.5, through `POST /v1/agent`). Neither vector changed the
+first file-writing tool measurably: without a vector, gemma already picks
+`structural_edit` for 95% of whole-function rewrites and never used
+`edit_file` for one. The shipped vector stays, and its registry status
+stays `unverified`. SUPPORT_MATRIX records the result; whole-task outcomes
+were not measured.
+
 ### Fixed: a passing model-server error at lens boot no longer fails the lens for good
 
 The lens is required, so a lens whose boot self-test failed refuses every

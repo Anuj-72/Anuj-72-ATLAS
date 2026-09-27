@@ -59,7 +59,7 @@ and `atlas lens check` report against the installed bundle.
 | Registry ID | Level | Lens | ASA | Notes |
 |---|---|---|---|---|
 | Qwen3.5-9B-Q6_K | Supported | supported (uncalibrated legacy bundle) | supported (A/B-validated May 2026) | Reference model; hash-pinned public download |
-| gemma-4-12b-it-Q4_K_M | Preview | supported; calibration **derived + verified** on maintainer hardware (val AUC 0.73, 287 LCB samples) — live lens reports `cx_calibrated: true`. The published HF bundle is still the uncalibrated one; re-publishing the calibrated bundle is a maintainer decision (moderate AUC, shared artifact) | Unverified — vector built, published, hash-pinned, and **on**: steering is always on, so `atlas model install-artifacts` writes its `.model` marker. Built from prompts that named the tool `ast_edit` (now `structural_edit`) and never A/B measured on gemma; rebuild with `atlas asa build` and measure before calling it Supported (see § Feature paths — ASA steering) | Manual GGUF download (Gemma ToU); artifacts hash-pinned |
+| gemma-4-12b-it-Q4_K_M | Preview | supported; calibration **derived + verified** on maintainer hardware (val AUC 0.73, 287 LCB samples) — live lens reports `cx_calibrated: true`. The published HF bundle is still the uncalibrated one; re-publishing the calibrated bundle is a maintainer decision (moderate AUC, shared artifact) | Unverified — vector built, published, hash-pinned, and **on**: steering is always on, so `atlas model install-artifacts` writes its `.model` marker. Built from prompts that named the tool `ast_edit` (now `structural_edit`). A/B on 2026-09-27 (120 held-out probes, 2 samples per arm, scale 0.5): no measurable effect on the first file-writing tool, because unsteered gemma already picks `structural_edit` for 95% of whole-function rewrites and never used `edit_file` for one. A vector rebuilt for the current tool names did no better, so the shipped vector stays. Not Supported: no benefit is measured (see § Feature paths — ASA steering) | Manual GGUF download (Gemma ToU); artifacts hash-pinned |
 | Qwen3.5-9B-Q4_K_M / Q8_0 | Preview | unverified (same-family artifacts, combo unvalidated) | unverified | Hash-pinned public downloads |
 | Qwen3.5-7B / 14B / 32B | Preview | no-artifacts | no-artifacts | HF-gated upstream (HF_TOKEN required; no anonymous hash). Requests are refused until a lens bundle exists (`atlas lens build`): the lens is required (ADR 0011) |
 | Bring-your-own GGUF | Preview | Requires `atlas lens build` (per-model bundle) | Requires `atlas asa build` | Requests are refused until the model has its lens bundle (ADR 0011); `atlas bench` runs without one, to build it — see § Model contract |
@@ -99,7 +99,7 @@ active (A/B-validated in May 2026, before the `ast_edit` → `structural_edit`
 rename; not re-measured since). The gemma reference install additionally
 has `lens_calibration` calibrated (derived + verified locally) with
 `lens_intervention` active and `asa` active (registry status unverified:
-its effect is not measured).
+a 2026-09-27 A/B found no measurable effect on tool choice).
 
 ### Lens bundle provenance
 
@@ -163,7 +163,7 @@ timeouts/output caps; **syntax** = compile/parse check only.
 | Direct agent (tools, permissions, sandbox verify) | Supported | Deterministic E2E in CI + unit/contract suites |
 | V3 pipeline (probe → candidates → selection) | Supported (control plane) / Preview (per-model quality) | Deterministic V3/Lens E2E in CI; real-model quality validated on the reference model only |
 | Lens C(x)/G(x) scoring | Supported (contract) / per-model calibration required for interventions | Identity + dim checks enforced; calibration status surfaced everywhere |
-| ASA steering | Always on wherever a vector is installed for the served model. Supported on Qwen3.5-9B-Q6_K; unverified on gemma | A/B-validated (May 2026) on Qwen, before the tool rename, and not re-measured; gemma's effect is unmeasured. Every recorded dev-server measurement ran gemma steered |
+| ASA steering | Always on wherever a vector is installed for the served model. Supported on Qwen3.5-9B-Q6_K; unverified on gemma | A/B-validated (May 2026) on Qwen, before the tool rename, and not re-measured. On gemma, a 2026-09-27 A/B found no measurable effect on the first file-writing tool (no headroom: unsteered gemma already chooses the tool the vector targets); whole-task outcomes were not measured. Every recorded dev-server measurement ran gemma steered |
 | Call-graph reasoning (#39) | Preview | Always on, Python files only (the veto, repair context and read/outline edges); hermetic tests; effect on task outcomes not yet measured |
 | Host verification (`ATLAS_VERIFY_IN=host`) | Experimental | Explicit opt-in; removes the container backstop |
 | Benchmark/ablation stack (`ATLAS_V3_*`, lens feedback) | Research-only | Never read by the product runtime (contract-tested) |
