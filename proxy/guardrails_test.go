@@ -2590,3 +2590,50 @@ func TestTheProbeARedirectPrescribesCountsAsVerification(t *testing.T) {
 		}
 	}
 }
+
+// A completed run that looked into the project and changed nothing says so.
+// A request misread as a question ended completed with the model's "Updated
+// calc.py" as its whole summary, and nothing told the user no file changed.
+func TestACompletedRunThatChangedNothingSaysSo(t *testing.T) {
+	ctx := NewAgentContext(t.TempDir(), Tier0Conversational)
+	st := &runState{inspectedWorkspace: true}
+	got := withNoChangeNote(ctx, st, TerminalCompleted, "Updated calc.py.")
+	if !strings.HasPrefix(got, "Updated calc.py.") || !strings.HasSuffix(got, noChangeNote) {
+		t.Errorf("summary %q does not keep the prose and add the note", got)
+	}
+	if got := withNoChangeNote(ctx, st, TerminalCompleted, ""); got != noChangeNote {
+		t.Errorf("an empty summary became %q", got)
+	}
+	for name, mutate := range map[string]func(*AgentContext, *runState) TerminalStatus{
+		"never looked at the project": func(_ *AgentContext, s *runState) TerminalStatus {
+			s.inspectedWorkspace = false
+			return TerminalCompleted
+		},
+		"a tool wrote a file": func(_ *AgentContext, s *runState) TerminalStatus {
+			s.madeProductiveChange = true
+			return TerminalCompleted
+		},
+		"the shell wrote a file": func(c *AgentContext, _ *runState) TerminalStatus {
+			c.Ledger = map[string]*DeliverableState{"out.txt": {Generation: 1}}
+			return TerminalCompleted
+		},
+		"the shell removed a file": func(c *AgentContext, _ *runState) TerminalStatus {
+			c.Ledger = map[string]*DeliverableState{"old.txt": {Tombstoned: true}}
+			return TerminalCompleted
+		},
+		"shell effects went unobserved": func(c *AgentContext, _ *runState) TerminalStatus {
+			c.ShellEffectsUnobserved = true
+			return TerminalCompleted
+		},
+		"the run did not complete": func(_ *AgentContext, _ *runState) TerminalStatus {
+			return TerminalIncomplete
+		},
+	} {
+		c := NewAgentContext(t.TempDir(), Tier0Conversational)
+		s := &runState{inspectedWorkspace: true}
+		status := mutate(c, s)
+		if got := withNoChangeNote(c, s, status, "Done."); got != "Done." {
+			t.Errorf("%s: summary became %q", name, got)
+		}
+	}
+}

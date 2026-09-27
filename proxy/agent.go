@@ -1739,6 +1739,8 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 			if st.actionDemandedAndUnmet(ctx, userMessage) {
 				log.Printf("[agent] done at turn %d with nothing written — saying so", turn)
 				summary = nothingWrittenSummary(summary)
+			} else {
+				summary = withNoChangeNote(ctx, st, status, summary)
 			}
 			emitTerminal(ctx, st, status, reason, summary+liveBackgroundJobNote(ctx))
 			return nil
@@ -1780,6 +1782,9 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					continue
 				}
 				textSummary = unresolvedDebtSummary(st)
+			}
+			if textSummary == "" {
+				textSummary = withNoChangeNote(ctx, st, textStatus, "")
 			}
 			emitTerminal(ctx, st, textStatus, textReason, textSummary)
 			return nil
@@ -5488,6 +5493,9 @@ func handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx.TaskContract = validatedContract
+	if t := declaredTier(validatedContract, ctx.Tier); t != ctx.Tier {
+		ctx.Tier, ctx.MaxTurns = t, TierMaxTurns(t)
+	}
 
 	ctx.Project = detectProjectInfo(workingDir)
 
@@ -6405,35 +6413,50 @@ func classifyAgentTier(message string) Tier {
 	return Tier2Medium
 }
 
+// declaredTier is the tier for a request whose client declared its mode.
+//
+// A client that declared work gets a work tier. The message classifier is the
+// fallback for callers that declare nothing: read as a question, a verb-less
+// work request ("Whenever a user submits the form, store the entry in
+// entries.json") was capped at the conversational turn limit and never
+// planned. A declared question keeps the classifier's tier: some questions
+// need the project read at length, and the tier only scales effort.
+func declaredTier(tc *TaskContract, classified Tier) Tier {
+	if tc != nil && tc.TaskMode == TaskModeWork && classified == Tier0Conversational {
+		return Tier2Medium
+	}
+	return classified
+}
+
 // questionStarters is the set of words an English interrogative can open
 // with. Unlike task vocabulary, which is unbounded, this is a closed
-// grammatical class, which is what makes matching against it sound where
-// matching against a list of task verbs would not be.
+// grammatical class. The wh-words are matched as whole words: as prefixes,
+// "Whole-number inputs...", "Whenever a user submits...", "Whatever port is
+// free..." and "However you structure it..." all read as questions, and a
+// work request classified as a question is capped and never planned.
 var questionStarters = []string{
-	"why", "what", "when", "where", "who", "which", "how",
+	"why", "what", "when", "where", "who", "whom", "which", "how",
 	"is ", "are ", "does ", "do ", "did ", "can ", "could ",
 	"would ", "should ", "will ", "won't", "isn't", "aren't",
 }
 
-// isQuestionMessage reports whether a message is shaped as a question:
-// a trailing "?", which catches any phrasing, or one of the interrogative
-// openers above for questions written without one.
+// isQuestionMessage reports whether a message is shaped as a question: a
+// question mark that closes a clause, or an interrogative opener for
+// questions written without one.
 func isQuestionMessage(message string) bool {
 	trimmed := strings.TrimSpace(message)
-	// A question mark ANYWHERE, not only at the end. People ask and then
-	// qualify — "what does find_duplicates do, and what is its complexity?
-	// Just explain." ends in a period, so a suffix-only check read it as
-	// not-a-question and it was handed the full write pipeline. Safe to
-	// widen: classifyAgentTier checks action and fix intent first, so
-	// "fix the bug in foo.py? or bar.py?" still classifies as work.
-	if strings.Contains(trimmed, "?") {
+	// A question mark ANYWHERE a clause can end, not only at the end. People
+	// ask and then qualify — "what does find_duplicates do, and what is its
+	// complexity? Just explain." ends in a period, so a suffix-only check
+	// read it as not-a-question and it was handed the full write pipeline.
+	// classifyAgentTier checks action and fix intent first, so "fix the bug
+	// in foo.py? or bar.py?" still classifies as work.
+	if hasClauseQuestionMark(trimmed) {
 		return true
 	}
 	lower := strings.ToLower(trimmed)
-	for _, w := range questionStarters {
-		if strings.HasPrefix(lower, w) {
-			return true
-		}
+	if opensWithQuestion(lower) {
+		return true
 	}
 	// A wh-word or fronted auxiliary opening a MID-message clause: "In
 	// orders.py, what does X do" is a question with no "?". For a wh-word
@@ -6446,17 +6469,155 @@ func isQuestionMessage(message string) bool {
 	// the run and skips planning (measured on the lost-and-found scenario:
 	// the whole build was capped at 12 turns and never finished). A fronted
 	// auxiliary opener (", is the sandbox read-only") is already inverted.
+	//
+	// A fronted auxiliary mid-message is a question only when a subject
+	// follows it (". Can you", ", is the sandbox"). Without that, the
+	// imperative ". Do not hardcode the answer." and declaratives such as
+	// ". Will be ..." read as questions.
 	for _, opener := range []string{", ", ". "} {
 		for _, w := range questionStarters {
 			idx := strings.Index(lower, opener+w)
 			if idx < 0 {
 				continue
 			}
-			if !whClauseWords[w] {
-				return true // an auxiliary/contraction opener is already a question
-			}
 			after := lower[idx+len(opener)+len(w):]
+			if !whClauseWords[w] {
+				if startsWithSubject(after) {
+					return true
+				}
+				continue
+			}
+			if !wordEnds(after) {
+				continue // "whenever", "however": not the wh-word
+			}
 			if startsWithInterrogativeVerb(after) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// opensWithQuestion reports whether a message opens with an interrogative.
+//
+// A wh-word counts only as a whole word, never as the start of a longer one
+// ("whole", "whenever", "however"). "when" and "where" also open ordinary
+// subordinate clauses in requests ("When the timer hits zero the page should
+// flash red"), so they count only when inverted ("when does", "where is").
+// A fronted auxiliary is a question already ("is the sandbox read-only").
+func opensWithQuestion(lower string) bool {
+	for _, w := range questionStarters {
+		if !strings.HasPrefix(lower, w) {
+			continue
+		}
+		if w == "do " {
+			// "Do the same thing for the /users route" is an imperative. As a
+			// question opener, "do" takes a pronoun ("do you", "do we").
+			if startsWithPronoun(lower[len(w):]) {
+				return true
+			}
+			continue
+		}
+		if !whClauseWords[w] {
+			return true
+		}
+		after := lower[len(w):]
+		if !wordEnds(after) {
+			continue
+		}
+		if w == "when" || w == "where" {
+			if strings.HasPrefix(after, "'s ") || startsWithInterrogativeVerb(after) ||
+				startsWithPastAuxiliary(after) {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// wordEnds reports whether the text right after a matched word leaves that
+// word whole: the message ends, or the next character is not a letter.
+func wordEnds(after string) bool {
+	if after == "" {
+		return true
+	}
+	c := after[0]
+	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z')
+}
+
+// startsWithPastAuxiliary covers the past-tense inversions an OPENING
+// wh-word may take ("when did", "where was"). They stay out of
+// interrogativeVerbs, where a mid-message field list "(what was lost, where
+// were they found)" would read as inverted.
+func startsWithPastAuxiliary(s string) bool {
+	s = strings.TrimLeft(s, " ")
+	for _, v := range []string{"did ", "was ", "were ", "had "} {
+		if strings.HasPrefix(s, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// startsWithSubject reports whether the words after a fronted auxiliary
+// begin with a subject: a pronoun or a determiner. "Do not", "will be" and
+// "is fine" begin with none, and are not questions.
+func startsWithSubject(s string) bool {
+	if startsWithPronoun(s) {
+		return true
+	}
+	s = strings.TrimLeft(s, " ")
+	for _, w := range []string{
+		"this ", "that ", "these ", "those ", "the ", "a ", "an ",
+		"my ", "your ", "our ", "their ", "its ",
+	} {
+		if strings.HasPrefix(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// startsWithPronoun reports whether the text begins with a subject pronoun.
+func startsWithPronoun(s string) bool {
+	s = strings.TrimLeft(s, " ")
+	for _, w := range []string{"you ", "i ", "we ", "it ", "they ", "he ", "she ", "there "} {
+		if strings.HasPrefix(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasClauseQuestionMark reports whether a "?" ends a clause: it is followed
+// by the end of the message, whitespace or a closing quote, and it sits
+// outside brackets and backticks. A "?" in a URL query, a regex, an optional
+// marker "(optional?)" or inline code asks nothing.
+func hasClauseQuestionMark(s string) bool {
+	depth, code := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '`':
+			code = !code
+		case '(', '[', '{':
+			if !code {
+				depth++
+			}
+		case ')', ']', '}':
+			if !code && depth > 0 {
+				depth--
+			}
+		case '?':
+			if code || depth > 0 {
+				continue
+			}
+			if i+1 == len(s) {
+				return true
+			}
+			switch s[i+1] {
+			case ' ', '\t', '\n', '\r', '"', '\'':
 				return true
 			}
 		}
@@ -6468,7 +6629,7 @@ func isQuestionMessage(message string) bool {
 // clauses, so a mid-message occurrence is a question only when inverted.
 var whClauseWords = map[string]bool{
 	"why": true, "what": true, "when": true,
-	"where": true, "who": true, "which": true, "how": true,
+	"where": true, "who": true, "whom": true, "which": true, "how": true,
 }
 
 // interrogativeVerbs are the auxiliaries/copulas that immediately follow the

@@ -3242,6 +3242,45 @@ func nothingWrittenSummary(original string) string {
 	return lead + "\n\n" + original
 }
 
+// noChangeNote is what a completed run that looked into the project and
+// changed nothing says about it. Nothing demanded a change, or the stronger
+// nothingWrittenSummary would apply; but a request misread as a question
+// ended completed with the model's "Updated calc.py" as its whole summary,
+// and nothing told the user no file had changed.
+const noChangeNote = "No file was created or changed in this run."
+
+// withNoChangeNote appends noChangeNote to a completed run's summary when the
+// run inspected the workspace and is known to have changed nothing. A reply
+// that never looked at the project (a greeting, a general question) is left
+// as it is.
+func withNoChangeNote(ctx *AgentContext, st *runState, status TerminalStatus, summary string) string {
+	if !status.Completed() || st == nil || !st.inspectedWorkspace || !runChangedNothing(ctx, st) {
+		return summary
+	}
+	if strings.TrimSpace(summary) == "" {
+		return noChangeNote
+	}
+	return summary + "\n\n" + noChangeNote
+}
+
+// runChangedNothing reports whether this run is known to have changed no
+// file: no tool write, nothing the shell wrote or removed, and no part of the
+// workspace the shell touched left unobserved. A shell-written file sets no
+// tool flag, so the ledger is what says whether anything changed.
+func runChangedNothing(ctx *AgentContext, st *runState) bool {
+	if ctx == nil || st == nil || st.madeProductiveChange || ctx.ShellEffectsUnobserved {
+		return false
+	}
+	ctx.LedgerMu.Lock()
+	defer ctx.LedgerMu.Unlock()
+	for _, d := range ctx.Ledger {
+		if d.Tombstoned || d.Generation > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // verifiedPhase reports whether a V3 phase_solved value means a candidate
 // actually passed verification.
 //

@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Fixed: work requests without a task verb were read as questions
+
+The message classifier called a request conversational (T0) when it
+opened with a wh-word as a prefix ("Whole-number inputs…", "Whenever a
+user submits…", "However you structure it…"), with a subordinate "When …"
+clause, with an imperative "Do …", or when it contained "?" anywhere,
+including in a URL, and when a mid-message ". Do not …" followed. A T0 run
+is capped and never planned, and for a client that sends no contract the
+done-without-action gate never armed, so a run that wrote nothing ended
+"completed" with the model's "Updated calc.py" as its summary.
+
+- A declared `task_mode: work` is never tiered T0.
+- Wh-openers are matched as whole words; "when" and "where" openers must be
+  inverted; an opening "do" needs a pronoun; a mid-message auxiliary needs
+  a subject; a `?` counts only where it ends a clause, outside brackets and
+  backticks.
+- A completed run that read the project and changed no file (by tool or by
+  shell) ends its summary with "No file was created or changed in this
+  run."
+
 ### Fixed: V3 checked files of unknown type as Python
 
 The V3 pipeline picked a syntax checker by file extension and fell back to

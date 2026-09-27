@@ -2954,3 +2954,92 @@ func TestPastTenseFieldClauseIsNotAQuestion(t *testing.T) {
 		}
 	}
 }
+
+// Work requests with no task verb were read as questions: a wh-word matched
+// as a prefix ("Whole", "Whenever", "However"), a subordinate "When ..."
+// clause, an imperative "Do ...", a mid-message "Do not ...", or a "?" in a
+// URL. Classified T0, the run was capped and never planned, and for a client
+// that sends no contract the action gate never armed.
+func TestVerblessWorkIsNotAQuestion(t *testing.T) {
+	for _, msg := range []string{
+		"Whole-number inputs should be rejected by the parser in calc.py",
+		"Whenever a user submits the form, store the entry in entries.json",
+		"Whatever port is free, serve the site on it with a small Flask app",
+		"However you structure it, the CLI in tool.py needs a --verbose flag",
+		"Whichever sorting approach you pick, the rows in report.py need ordering by date",
+		"When the timer hits zero the page in index.html should flash red",
+		"Do the same thing for the /users route",
+		"solve.py should print the total of input.txt. Do not hardcode the answer.",
+		"The endpoint at /api/items?page=2 returns nothing when the list is empty",
+		"the pattern `a?b` in parse.py matches too much",
+	} {
+		if got := classifyAgentTier(msg); got == Tier0Conversational {
+			t.Errorf("classifyAgentTier(%q) = T0, want a work tier", msg)
+		}
+	}
+}
+
+// The questions stay questions.
+func TestQuestionsStillClassifyAsQuestions(t *testing.T) {
+	for _, msg := range []string{
+		"why does the game store direction as a string",
+		"what does the lens actually score here",
+		"what's the difference between run_command and run_background",
+		"is the sandbox mounted read-only?",
+		"When does the cache expire",
+		"where is the config file read",
+		"When did we switch to SQLite",
+		"how is the retry delay computed",
+		"who calls parse_config",
+		"which file handles authentication",
+		"Do you know which module owns the cache",
+		"In orders.py, what does find_duplicates do",
+		"what does find_duplicates do? Just explain.",
+		"The docs mention a cache. Is it shared between sessions",
+	} {
+		if got := classifyAgentTier(msg); got != Tier0Conversational {
+			t.Errorf("classifyAgentTier(%q) = %v, want T0", msg, got)
+		}
+	}
+}
+
+// A client that declared work is never tiered as a question, whatever the
+// message looks like. "Can the page also show today's date" is a request
+// phrased as a question; only the declaration can tell.
+func TestADeclaredWorkRequestIsNeverTieredAsAQuestion(t *testing.T) {
+	const msg = "Can the page in index.html also show today's date"
+	classified := classifyAgentTier(msg)
+	if classified != Tier0Conversational {
+		t.Fatalf("precondition: %q classified %v, want T0", msg, classified)
+	}
+	for _, c := range []struct {
+		name string
+		tc   *TaskContract
+		in   Tier
+		want Tier
+	}{
+		{"declared work", &TaskContract{TaskMode: TaskModeWork}, classified, Tier2Medium},
+		{"declared question", &TaskContract{TaskMode: TaskModeQuestion}, classified, Tier0Conversational},
+		{"no contract", nil, classified, Tier0Conversational},
+		{"work never lowers a tier", &TaskContract{TaskMode: TaskModeWork}, Tier3Hard, Tier3Hard},
+	} {
+		if got := declaredTier(c.tc, c.in); got != c.want {
+			t.Errorf("%s: declaredTier = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// handleAgent applies it once the contract is validated, and resets the
+	// turn cap with it.
+	src, err := os.ReadFile("agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	set := strings.Index(body, "ctx.TaskContract = validatedContract")
+	apply := strings.Index(body, "declaredTier(validatedContract, ctx.Tier)")
+	if set < 0 || apply < set {
+		t.Error("handleAgent does not apply the declared tier after validating the contract")
+	}
+	if !strings.Contains(body[apply:apply+200], "TierMaxTurns(t)") {
+		t.Error("the declared tier does not reset the turn cap")
+	}
+}
