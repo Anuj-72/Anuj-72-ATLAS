@@ -233,9 +233,12 @@ def main() -> int:
         "runner_sha256": _file_hash(Path(__file__)),
         "tasks_sha256": _file_hash(REPO / "scripts" / "novel_tasks.py"),
         "e2e_sha256": _file_hash(REPO / "scripts" / "e2e-reliability.py"),
+        # What the proxy says it runs: grammar mode, lens and steering state.
+        "stack": e2e.stack_identity(url),
         "images": {},
     }
-    for name in ("atlas-atlas-proxy-1", "atlas-v3-service-1"):
+    for name in ("atlas-atlas-proxy-1", "atlas-v3-service-1", "atlas-geometric-lens-1",
+                 "atlas-sandbox-1", "atlas-llama-server-1"):
         ident = subprocess.run(
             ["docker", "inspect", "--format", "{{.Image}} {{.State.StartedAt}}", name],
             capture_output=True, text=True).stdout.strip()
@@ -328,6 +331,8 @@ def main() -> int:
             "raw_sse_sha256": _file_hash(raw_path) if raw_path else "",
         }
         row.update(summarize_events(getattr(session, "events", [])))
+        # What V3 did in this session: generations and delivered candidates.
+        row["v3"] = session.v3 if hasattr(session, "v3") else {}
         row["telemetry"] = summarize_telemetry(telemetry_lines, 0)
         row["telemetry"]["source_file"] = (
             str(telemetry_sink) if telemetry_sink else "")
@@ -341,6 +346,15 @@ def main() -> int:
 
     p = sum(1 for r in results if r["passed"])
     print(f"\nATLAS TOTAL {p}/{len(results)} ({100.0 * p / len(results):.0f}%)")
+    writes = sum((r.get("v3") or {}).get("write_calls", 0) for r in results)
+    generated = sum((r.get("v3") or {}).get("generated", 0) for r in results)
+    delivered = sum((r.get("v3") or {}).get("delivered", 0) for r in results)
+    print(f"V3 generation ran on {generated}/{writes} write calls, "
+          f"delivered {delivered} candidate(s)")
+    if writes and not generated:
+        print("  ! no write reached V3 generation: this arm measured the agent "
+              "loop without V3")
+    print(f"stack: {provenance['stack']}")
     byfam = {}
     for r in results:
         got, tot = byfam.get(r["family"], (0, 0))

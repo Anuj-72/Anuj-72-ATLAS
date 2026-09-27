@@ -1054,6 +1054,24 @@ WRITE_TOOLS = {"write_file", "edit_file", "structural_edit", "delete_file",
                "move_file", "insert_after", "replace_lines"}
 
 
+def task_contract(task: "Task") -> dict:
+    """The task mode this harness declares for a task: question for the
+    conversational probes, work for everything else."""
+    if task.conversational:
+        return {"task_mode": "question"}
+    return {"task_mode": "work"}
+
+
+def _tool_payload(result: dict) -> dict:
+    payload = (result.get("data") or {}).get("data")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 @dataclass
 class Session:
     task: str
@@ -1069,6 +1087,36 @@ class Session:
 
     def of_type(self, t: str) -> list[dict]:
         return [e for e in self.events if e.get("type") == t]
+
+    @property
+    def v3(self) -> dict:
+        """What the V3 pipeline did in this session, read from the stream.
+
+        planner: /v3/plan events. writes: write-tool calls. generated: write
+        calls during which the generation pipeline emitted anything (beyond
+        the planner). delivered: write results whose bytes V3's candidate
+        supplied (v3_used). A run labelled as measuring ATLAS with zero
+        generations measured the agent loop without V3, and says so.
+        """
+        planner = sum(1 for e in self.events if e.get("type") in ("v3_plan", "plan_loaded"))
+        writes = generated = delivered = 0
+        in_write = saw_v3 = False
+        for e in self.events:
+            t = str(e.get("type") or "")
+            d = e.get("data") or {}
+            if t == "tool_call":
+                in_write = d.get("name") in WRITE_TOOLS
+                saw_v3 = False
+                if in_write:
+                    writes += 1
+            elif in_write and t.startswith("v3_") and t != "v3_plan":
+                saw_v3 = True
+            elif t == "tool_result" and in_write:
+                generated += saw_v3
+                delivered += bool(_tool_payload(e).get("v3_used"))
+                in_write = saw_v3 = False
+        return {"planner_events": planner, "write_calls": writes,
+                "generated": generated, "delivered": delivered}
 
     @property
     def capped(self) -> bool:
@@ -1488,12 +1536,13 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
         "sandbox_subdir": subdir,
         "session_id": f"reliability-{task.name}-{rep}",
         # Every owned sender declares a task mode; absence is reserved for
-        # external callers. The harness knows the task is work. It does NOT
-        # declare expected outputs or verification: the evaluator and the
-        # holdout are offline scoring, not obligations the agent was told to
-        # meet, and promoting them here would invent a requirement the task
-        # never stated.
-        "task_contract": {"task_mode": "work"},
+        # external callers. The harness knows which tasks are questions, as
+        # the TUI does for /ask: declaring work for them sent a question to
+        # the work tier and its planner. It does NOT declare expected outputs
+        # or verification: the evaluator and the holdout are offline
+        # scoring, not obligations the agent was told to meet, and promoting
+        # them here would invent a requirement the task never stated.
+        "task_contract": task_contract(task),
     }
     body = json.dumps(payload).encode()
     req = urllib.request.Request(f"{url}/v1/agent", data=body,
@@ -1551,6 +1600,10 @@ def run_session(task: Task, rep: int, url: str, workspace: Path,
             "message": follow, "mode": "yolo", "sandbox_subdir": subdir,
             "session_id": f"reliability-{task.name}-{rep}",
             "history": history[:-1],
+            # The same declaration as the first turn. Sent without one, a
+            # follow-up was a contractless request: no V3 candidate, and the
+            # tier fell back to reading the message.
+            "task_contract": task_contract(task),
         }).encode()
         freq = urllib.request.Request(f"{url}/v1/agent", data=fbody,
                                       headers={"Content-Type": "application/json"})
@@ -1691,6 +1744,10 @@ def main() -> int:
         print(f"error: no known tasks in {args.tasks!r}", file=sys.stderr)
         return 2
 
+    # What the proxy says it runs, read once before any session and kept
+    # with every result.
+    STACK = stack_identity(args.url)
+
     global _SANDBOX_CONTAINER, _SANDBOX_WORKDIR
     _SANDBOX_CONTAINER = args.sandbox_container or ""
     # Where the run workspace appears inside the sandbox. Both halves are
@@ -1748,17 +1805,47 @@ def main() -> int:
     report(sessions, known)
     EVAL_ID = evaluator_identity()
     print(f"evaluator: {EVAL_ID}")
+    print(f"stack: {STACK}")
     if args.json_out:
         Path(args.json_out).write_text(json.dumps([{
             "task": s.task, "rep": s.rep, "task_passed": s.task_passed,
             "task_detail": s.task_detail, "defects": s.defects,
+            "task_mode": task_contract(TASKS[s.task])["task_mode"] if s.task in TASKS else None,
             "turns": len(s.of_type("turn_start")),
             "tools": len(s.of_type("tool_call")), "wall_s": round(s.wall_s, 1),
+            "v3": s.v3,
             "quality": s.quality,
             "evaluator": EVAL_ID,
+            "stack": STACK,
         } for s in sessions], indent=2))
         print(f"\nwrote {args.json_out}")
     return 0 if all(not s.defects for s in sessions) else 1
+
+
+def stack_identity(url: str) -> dict:
+    """What the proxy reports it is running: the grammar mode (/version) and
+    the lens and steering state (/v1/calibration/status). Every recorded
+    dev-server run was steered and ran loose, and nothing in the evidence
+    said so; a measurement that cannot say which configuration it ran
+    against cannot be compared with another."""
+    raw = {}
+    for key, path in (("version", "/version"), ("calibration", "/v1/calibration/status")):
+        try:
+            with urllib.request.urlopen(f"{url}{path}", timeout=10) as r:
+                raw[key] = json.loads(r.read().decode("utf-8", "replace"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            raw[key] = {"error": str(e)[:200]}
+    version, calib = raw["version"], raw["calibration"]
+    asa = calib.get("asa") or {}
+    lens = calib.get("lens") or {}
+    return {
+        "api_version": version.get("api_version"),
+        "grammar_mode": version.get("grammar_mode"),
+        "asa": asa.get("verdict"),
+        "asa_detail": asa.get("hint"),
+        "lens": lens.get("verdict"),
+        "errors": {k: v["error"] for k, v in raw.items() if "error" in v},
+    }
 
 
 def report(sessions: list[Session], known: set[str]) -> None:
@@ -1770,6 +1857,15 @@ def report(sessions: list[Session], known: set[str]) -> None:
           f"({100.0 * clean / total:.0f}%)   <- ATLAS's own plumbing")
     print(f"Task Success Rate        {passed}/{total} "
           f"({100.0 * passed / total:.0f}%)   <- task outcome (cause not classified)")
+    v3 = [s.v3 for s in sessions]
+    writes = sum(x["write_calls"] for x in v3)
+    generated = sum(x["generated"] for x in v3)
+    delivered = sum(x["delivered"] for x in v3)
+    print(f"V3 generation            ran on {generated}/{writes} write calls, "
+          f"delivered {delivered} candidate(s)")
+    if writes and not generated:
+        print("  ! no write reached V3 generation: this run measured the "
+              "agent loop without V3")
     print("=" * 72)
 
     by_class: dict[str, int] = {}

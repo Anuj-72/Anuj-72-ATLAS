@@ -4152,3 +4152,27 @@ func TestSyntaxRegistryOwnsExecutability(t *testing.T) {
 		t.Error("codeDeliverablesFor does not scope on the registry's executability")
 	}
 }
+
+// /version reports the grammar mode this process applies, so a measurement
+// can record the configuration it ran against.
+func TestVersionReportsTheGrammarMode(t *testing.T) {
+	for _, c := range []struct{ env, want string }{
+		{"", "strict"}, {"strict", "strict"}, {"loose", "loose"}, {"something-else", "strict"},
+	} {
+		t.Setenv("ATLAS_GRAMMAR_MODE", c.env)
+		rec := httptest.NewRecorder()
+		handleVersion(rec, httptest.NewRequest("GET", "/version", nil))
+		var body map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["grammar_mode"] != c.want {
+			t.Errorf("ATLAS_GRAMMAR_MODE=%q: /version says %v, want %s", c.env, body["grammar_mode"], c.want)
+		}
+		// And the response format agrees with what /version says.
+		_, strict := buildResponseFormat().(map[string]interface{})
+		if strict != (c.want == "strict") {
+			t.Errorf("ATLAS_GRAMMAR_MODE=%q: the response format disagrees with /version", c.env)
+		}
+	}
+}

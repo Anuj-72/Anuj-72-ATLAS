@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### Changed: the evaluation runners record what they measured
+
+Every recorded dev-server run was steered and ran the loose grammar, and
+the ATLAS arm of the benchmarks generated no V3 candidate at all under the
+old default policy; nothing in the evidence said so.
+
+- `scripts/e2e-reliability.py` and `scripts/novel-atlas.py` record, per
+  session, how many write calls reached V3 generation and how many landed
+  V3's candidate, print the totals, and warn when a run reached V3 on no
+  write. Each run also records what the proxy reports it runs: the grammar
+  mode (`GET /version` now includes `grammar_mode`) and the lens and
+  steering state (`/v1/calibration/status`). `novel-atlas.py` records the
+  image of all five services.
+- `e2e-reliability.py` declares `task_mode: question` for its conversational
+  probes, as the TUI's `/ask` does, and its follow-up turns carry the same
+  declaration; they were sent with no contract.
+
 ### Fixed: a new gemma install used the grammar mode gemma cannot use
 
 The docs say gemma needs `ATLAS_GRAMMAR_MODE=loose` (under the strict

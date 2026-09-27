@@ -541,3 +541,69 @@ def test_the_mutation_gates_depend_on_no_switch():
         for symbol in _REMOVED_SWITCHES:
             assert not re.search(rf"\b{symbol}\b", src), (
                 f"{name} names the removed switch {symbol}")
+
+
+# --- what a run records about itself --------------------------------------
+
+def test_the_harness_declares_question_for_its_conversational_probes(rel):
+    """Declaring work for a question sent it to the work tier and its
+    planner, and the H9 detector then blamed ATLAS for running V3 on it."""
+    for task in rel.TASKS.values():
+        want = "question" if task.conversational else "work"
+        assert rel.task_contract(task) == {"task_mode": want}, task.name
+    assert any(t.conversational for t in rel.TASKS.values()), \
+        "no conversational probe left to test the question contract"
+
+
+def test_v3_counts_generation_and_delivery_per_write(rel, tmp_path):
+    """A run labelled as measuring ATLAS with zero V3 generations measured
+    the agent loop alone; the session has to say how much V3 did."""
+    delivered = {"type": "tool_result", "data": {
+        "tool": "write_file", "success": True, "error": "",
+        "data": json.dumps({"bytes_written": 10, "v3_used": True})}}
+    events = [
+        {"type": "v3_plan", "data": {}},
+        _call("write_file", path="a.py"), {"type": "v3_probe", "data": {}},
+        {"type": "v3_select", "data": {}}, delivered,
+        _call("write_file", path="b.py"), _ok("write_file"),
+        # V3 events outside a write are not a generation for it.
+        _call("read_file", path="a.py"), {"type": "v3_progress", "data": {}}, _ok(),
+    ]
+    got = _session(rel, events, tmp_path).v3
+    assert got == {"planner_events": 1, "write_calls": 2, "generated": 1, "delivered": 1}, got
+
+
+def test_stack_identity_records_what_the_proxy_reports(rel):
+    """Every recorded dev-server run was steered and ran loose, and nothing
+    in the evidence said so."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            body = {"/version": {"api_version": "1.0.0", "grammar_mode": "loose"},
+                    "/v1/calibration/status": {
+                        "lens": {"verdict": "supported"},
+                        "asa": {"verdict": "active", "hint": "control vector active for m"}},
+                    }.get(self.path)
+            raw = json.dumps(body or {}).encode()
+            self.send_response(200 if body else 404)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        got = rel.stack_identity(f"http://127.0.0.1:{srv.server_port}")
+    finally:
+        srv.shutdown()
+    assert got["grammar_mode"] == "loose"
+    assert got["asa"] == "active" and got["lens"] == "supported"
+    assert got["errors"] == {}
+    # Unreachable: recorded as such, never a crash.
+    down = rel.stack_identity("http://127.0.0.1:9")
+    assert down["grammar_mode"] is None and set(down["errors"]) == {"version", "calibration"}

@@ -5792,12 +5792,19 @@ func buildToolCallSchemaForTools(excluded []string) map[string]interface{} {
 //
 // Returns an interface{} because the strict case nests a map (the
 // schema), which doesn't fit map[string]string.
-func buildResponseFormat() interface{} {
-	mode := os.Getenv("ATLAS_GRAMMAR_MODE")
-	if mode == "" {
-		mode = "strict"
+//
+// effectiveGrammarMode is the mode this process applies: "loose" when
+// ATLAS_GRAMMAR_MODE says so, "strict" otherwise. /version reports it, so a
+// measurement can record the configuration it ran against.
+func effectiveGrammarMode() string {
+	if os.Getenv("ATLAS_GRAMMAR_MODE") == "loose" {
+		return "loose"
 	}
-	if mode == "loose" {
+	return "strict"
+}
+
+func buildResponseFormat() interface{} {
+	if effectiveGrammarMode() == "loose" {
 		return map[string]string{"type": "json_object"}
 	}
 	return map[string]interface{}{

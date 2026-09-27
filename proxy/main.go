@@ -1172,6 +1172,10 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		"api_version":      APIVersion,
 		"protocol_version": ProtocolVersion,
 		"error_codes":      AllErrorCodes,
+		// The tool-call grammar mode this process applies. A run records
+		// it: two installs of one model can differ here and behave
+		// differently.
+		"grammar_mode": effectiveGrammarMode(),
 	})
 }
 
