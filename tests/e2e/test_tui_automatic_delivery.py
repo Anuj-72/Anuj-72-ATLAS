@@ -31,15 +31,15 @@ TUI_CONTRACT = {"task_mode": "work"}
 OLDER_POLICY_SPELLINGS = ["strict", "advisory", "automatic_v3"]
 
 
-def _assert_the_candidate_landed(events, workspace):
+def _assert_the_candidate_landed(events, root):
     result = _write_result(events)
     assert result["data"].get("success") is True, result["data"]
     payload = _payload(result)
     assert payload.get("v3_used") is True, payload
-    written = (workspace / "todo_app.py").read_text()
+    written = (root / "todo_app.py").read_text()
     assert written == CAND_A, "the selected candidate did not land on the model's own target"
     # One target, the one the tool call named. Nothing else appeared.
-    assert sorted(p.name for p in workspace.iterdir()) == ["todo_app.py"]
+    assert sorted(p.name for p in root.iterdir()) == ["todo_app.py"]
     _assert_no_human_gate_inside_v3(events)
 
 
