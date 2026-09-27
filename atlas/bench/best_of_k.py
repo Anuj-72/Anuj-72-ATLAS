@@ -71,8 +71,9 @@ def _unscored_answer(data) -> bool:
         or bool(data.get("error")) or data.get("verdict") == "error"
 
 
-# The answer of a Lens that is switched off: a configuration state, not a
-# failed score. The allocation gate reads it as "no signal" (k=3 floor).
+# The answer of a Lens with no model loaded: the state a model is in before
+# its lens bundle is built, which is what this bench builds it from. The
+# allocation gate reads it as "no signal" (k=3 floor).
 NEUTRAL_COMBINED = {
     "cx_energy": 0.0, "cx_normalized": 0.5, "cx_calibrated": False,
     "gx_score": 0.5, "gx_available": False, "verdict": "unavailable",
@@ -95,8 +96,8 @@ def score_candidate_combined(text: str, lens_url: str) -> Dict:
     higher = better), so the pair costs no more than C(x) alone. The CxGx
     allocation gate reads both off the probe.
 
-    A disabled lens yields the neutral dict, which the gate reads as "no
-    signal" and answers with its k=3 floor. A Lens that did not score the
+    A lens with no model loaded yields the neutral dict, which the gate
+    reads as "no signal" and answers with its k=3 floor. A Lens that did not score the
     text, or could not be reached, yields ``UNSCORED_COMBINED`` with the
     typed ``failure`` attached: every score field None, verdict
     ``"unscored"``. The gate reads that verdict as no signal as well.

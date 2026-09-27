@@ -3,7 +3,9 @@
 Provides:
 - evaluate(embedding) -> energy scalar (C(x))
 - evaluate_combined(query) -> C(x) + G(x) verdict dict
-- is_enabled() -> bool
+
+The lens has no off switch: ATLAS requires it (docs/adr/0011). A scoring
+answer says `enabled: false` only when no model is loaded.
 """
 
 import logging
@@ -249,11 +251,6 @@ def _load_gx_thresholds(models_dir: str) -> None:
         logger.warning("gx_thresholds.json load failed (%s) — threshold interventions disabled", e)
 
 
-def is_enabled() -> bool:
-    """Check if Geometric Lens is enabled (GEOMETRIC_LENS_ENABLED env var)."""
-    return os.environ.get("GEOMETRIC_LENS_ENABLED", "false").lower() in ("true", "1", "yes")
-
-
 class _BoosterClassifier:
     """Minimal predict_proba shim around an xgboost.Booster.
 
@@ -468,9 +465,9 @@ def evaluate_energy(query: str) -> Tuple[float, float]:
     """Evaluate raw and normalized energy for a query.
 
     Returns (raw_energy, normalized_energy).
-    Returns (0.0, 0.0) if lens is disabled or models aren't loaded.
+    Returns (0.0, 0.0) if models aren't loaded.
     """
-    if not is_enabled() or not _ensure_models_loaded():
+    if not _ensure_models_loaded():
         return (0.0, 0.0)
 
     try:
@@ -500,7 +497,6 @@ def get_model_info() -> dict:
     if not _models_loaded:
         return {
             "loaded": False,
-            "enabled": is_enabled(),
             "artifact_model": (_artifact_model_identity or {}).get("model"),
             "error": _model_identity_error or None,
         }
@@ -509,7 +505,6 @@ def get_model_info() -> dict:
 
     info = {
         "loaded": True,
-        "enabled": is_enabled(),
         "cost_field_params": cost_params,
         "device": "cpu",
         "cx_calibrated": _cx_normalization is not None,
@@ -535,7 +530,7 @@ def evaluate_combined(query: str) -> dict:
     Returns dict with C(x) energy, G(x) quality score, and verdict.
     Most efficient way to get both scores — avoids duplicate embedding calls.
     """
-    if not is_enabled() or not _ensure_models_loaded():
+    if not _ensure_models_loaded():
         return {
             "cx_energy": 0.0, "cx_normalized": 0.5,
             "cx_calibrated": False,
@@ -635,7 +630,7 @@ def evaluate_per_step(query: str, layer: Optional[int] = None) -> dict:
         max/mean across tokens), `n_tokens`, `hidden_dim`, `layer`, and
         `latency_ms`. On error, `enabled=False` or `error` keys are set.
     """
-    if not is_enabled() or not _ensure_models_loaded():
+    if not _ensure_models_loaded():
         return {
             "enabled": False, "gx_available": False,
             "per_step": [], "aggregate": {}, "n_tokens": 0,

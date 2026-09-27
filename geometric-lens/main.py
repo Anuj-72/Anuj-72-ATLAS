@@ -62,12 +62,11 @@ logger = logging.getLogger(__name__)
 
 # Boot-time self-test cache. Populated in lifespan() and re-populated when
 # /ready re-runs a retryable self-test; read by /health and /ready.
-# Keys: lens_enabled, lens_cost_field_loaded, lens_cost_field_dim, lens_gx_loaded,
+# Keys: lens_cost_field_loaded, lens_cost_field_dim, lens_gx_loaded,
 #       lens_gx_type, lens_cx_calibrated, lens_gx_calibrated, lens_artifact_model,
 #       embed_dim,
 #       self_test_pass, self_test_error.
 _BOOT_STATE_DEFAULTS: Dict[str, Any] = {
-    "lens_enabled": False,
     "lens_cost_field_loaded": False,
     "lens_cost_field_dim": None,
     "lens_gx_loaded": False,
@@ -125,11 +124,6 @@ def _run_lens_self_test() -> None:
     from geometric_lens import service as lens_service
 
     _BOOT_STATE.update(_BOOT_STATE_DEFAULTS)
-
-    _BOOT_STATE["lens_enabled"] = lens_service.is_enabled()
-    if not lens_service.is_enabled():
-        _BOOT_STATE["self_test_error"] = "GEOMETRIC_LENS_ENABLED is false"
-        return
 
     try:
         loaded = lens_service._ensure_models_loaded()
@@ -235,9 +229,9 @@ async def lifespan(app: FastAPI):
     # only), and none otherwise.
     with _startup_identity():
         _run_lens_self_test()
-    if _BOOT_STATE["lens_enabled"] and not _BOOT_STATE["self_test_pass"]:
+    if not _BOOT_STATE["self_test_pass"]:
         logger.error(
-            "Geometric Lens enabled but self-test FAILED: %s. /ready will return 503.",
+            "Geometric Lens self-test FAILED: %s. /ready will return 503.",
             _BOOT_STATE["self_test_error"],
         )
 
@@ -316,9 +310,7 @@ def health():
     Use /ready for liveness/scoring-functional gating.
     """
     llama_st = _llama_state()
-    lens_ok = (
-        not _BOOT_STATE["lens_enabled"] or _BOOT_STATE["self_test_pass"]
-    )
+    lens_ok = _BOOT_STATE["self_test_pass"]
     overall = llama_st["reachable"] and lens_ok
     return {
         "service": "geometric-lens",
@@ -326,7 +318,6 @@ def health():
         "subsystems": {
             "llama_server": llama_st,
             "lens": {
-                "enabled": _BOOT_STATE["lens_enabled"],
                 "cost_field_loaded": _BOOT_STATE["lens_cost_field_loaded"],
                 "cost_field_dim": _BOOT_STATE["lens_cost_field_dim"],
                 "embed_dim": _BOOT_STATE["embed_dim"],
@@ -360,26 +351,24 @@ def ready():
     lens scoring degrades (the silent-failure mode PC-019 was filed for).
     """
     llama_st = _llama_state()
-    lens_required = _BOOT_STATE["lens_enabled"]
     # Settle a boot-order race rather than latching it. Only retried when the
     # failure was connectivity-shaped AND llama is reachable now, so a real
     # fault (dim mismatch, missing artifacts, fingerprint drift) still fails
     # fast and does not re-embed on every poll.
-    if (lens_required and not _BOOT_STATE["self_test_pass"]
+    if (not _BOOT_STATE["self_test_pass"]
             and _BOOT_STATE.get("self_test_retryable")
             and llama_st["reachable"]):
         logger.info("llama-server is reachable now — re-running the lens self-test")
         with _startup_identity():
             _run_lens_self_test()
 
-    lens_ok = (not lens_required) or _BOOT_STATE["self_test_pass"]
+    lens_ok = _BOOT_STATE["self_test_pass"]
 
     ok = llama_st["reachable"] and lens_ok
     payload = {
         "ready": ok,
         "llama_server": llama_st["reachable"],
         "lens_self_test": _BOOT_STATE["self_test_pass"],
-        "lens_required": lens_required,
         "fingerprint_ok": _BOOT_STATE["fingerprint_ok"],
         "embed_capacity_tokens": _embed_capacity.snapshot()["embed_capacity_tokens"],
         "reason": _BOOT_STATE["self_test_error"] if not lens_ok else None,
@@ -411,9 +400,6 @@ def lens_score_text(request: LensScoreTextRequest):
     try:
         from geometric_lens import service as lens_service
         from geometric_lens.embedding_extractor import extract_embedding
-
-        if not lens_service.is_enabled():
-            return {"energy": 0.0, "normalized": 0.5, "enabled": False}
 
         if not lens_service._ensure_models_loaded():
             return {"energy": None, "normalized": None, "calibrated": False,
@@ -457,15 +443,7 @@ def lens_gx_score(request: LensScoreTextRequest):
     and a human-readable verdict. Uses one embedding extraction for both models.
     """
     try:
-        from geometric_lens.service import evaluate_combined, is_enabled
-
-        if not is_enabled():
-            return {
-                "cx_energy": 0.0, "cx_normalized": 0.5,
-                "cx_calibrated": False,
-                "gx_score": 0.5, "verdict": "unavailable",
-                "enabled": False, "gx_available": False,
-            }
+        from geometric_lens.service import evaluate_combined
 
         result = evaluate_combined(request.text)
         if isinstance(result, dict):
@@ -493,13 +471,7 @@ def lens_score_per_step(request: LensScorePerStepRequest):
     /embedding (works on unpatched llama-server).
     """
     try:
-        from geometric_lens.service import evaluate_per_step, is_enabled
-
-        if not is_enabled():
-            return {
-                "enabled": False, "gx_available": False,
-                "per_step": [], "aggregate": {}, "n_tokens": 0,
-            }
+        from geometric_lens.service import evaluate_per_step
 
         result = evaluate_per_step(request.text, layer=request.layer)
         agg = result.get("aggregate") or {}

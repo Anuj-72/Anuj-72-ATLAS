@@ -746,7 +746,7 @@ func renderOneBadge(name, verdict string) string {
 		return badgeWarn.Render(name + " ⚠")
 	// A lens verdict here means requests are refused: the lens is required.
 	case "no-artifacts", "incomplete-artifacts", "dim-mismatch", "unreachable",
-		"incompatible", "disabled", "drifted", "self-test-failed", "model-server-unreachable":
+		"incompatible", "drifted", "self-test-failed", "model-server-unreachable":
 		return badgeFail.Render(name + " ✗")
 	default:
 		return badgeDim.Render(name + " ?")
@@ -766,7 +766,7 @@ func badgeActionHint(s *calibrationStatus) string {
 	// A lens that is down may have fine artifacts, so the pointer is
 	// doctor, not a rebuild.
 	switch s.Lens.Verdict {
-	case "unreachable", "disabled", "drifted", "self-test-failed", "model-server-unreachable":
+	case "unreachable", "drifted", "self-test-failed", "model-server-unreachable":
 		return "→ atlas doctor" + refused
 	}
 	// Missing or mismatched artifacts block requests too; uncalibrated ones

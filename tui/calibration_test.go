@@ -198,7 +198,7 @@ func TestBadgeActionHint_Unreachable_NoBuildSuggestion(t *testing.T) {
 	// When the lens is down the artifact may be fine — the service is.
 	// Telling the user to "build" would be misleading; the lens is
 	// required, so the pointer is atlas doctor.
-	for _, v := range []string{"unreachable", "disabled", "drifted", "self-test-failed",
+	for _, v := range []string{"unreachable", "drifted", "self-test-failed",
 		"model-server-unreachable"} {
 		s := &calibrationStatus{}
 		s.Lens.Verdict = v

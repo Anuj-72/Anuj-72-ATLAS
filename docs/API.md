@@ -304,7 +304,7 @@ The payload also carries a `dimensions` array — the seven status dimensions th
 
 **Verdict values:**
 
-- **Lens:** `supported` | `uncalibrated` | `no-artifacts` | `incomplete-artifacts` | `dim-mismatch` | `disabled` | `drifted` | `self-test-failed` | `model-server-unreachable` | `unreachable`. `incomplete-artifacts` means C(x) loaded but G(x) artifacts are missing; `uncalibrated` means weights loaded without the model's calibration files (`cx_normalization.json` / `gx_thresholds.json`) — both point at `atlas lens build`. `can_score` is `true` only for `supported` and `uncalibrated`; for every other verdict the `direct_agent` dimension is `blocked` and requests are refused ([ADR 0011](adr/0011-the-lens-is-required.md)). `model_server_reachable` is llama-server's reachability as the lens reports it.
+- **Lens:** `supported` | `uncalibrated` | `no-artifacts` | `incomplete-artifacts` | `dim-mismatch` | `drifted` | `self-test-failed` | `model-server-unreachable` | `unreachable`. `incomplete-artifacts` means C(x) loaded but G(x) artifacts are missing; `uncalibrated` means weights loaded without the model's calibration files (`cx_normalization.json` / `gx_thresholds.json`) — both point at `atlas lens build`. `can_score` is `true` only for `supported` and `uncalibrated`; for every other verdict the `direct_agent` dimension is `blocked` and requests are refused ([ADR 0011](adr/0011-the-lens-is-required.md)). `model_server_reachable` is llama-server's reachability as the lens reports it.
 - **ASA:** `active` | `missing` | `unverified` | `incompatible`. `active` means the control vector is marked for the served model; whether its effect was measured is the registry's `asa_status`. `incompatible` means the control vector on disk is marked for a different model than the one selected.
 
 **Use:**
@@ -397,7 +397,7 @@ curl http://localhost:8090/health
 }
 ```
 
-Always returns 200. `status` is `"ok"` when inference, the lens, and the sandbox all respond healthy and the lens can score, `"degraded"` otherwise. `lens` reflects the lens service's informational `/health`; `lens_ready` says whether the lens can score, by the check `/v1/agent` applies to every request (lens `/ready`, then its `/health`: switched on, C(x) and G(x) loaded, self-test passed, not drifted, llama-server reachable). When `lens_ready` is `false`, `lens_reason` says why, and every request is refused. `capabilities` advertises optional proxy features clients can probe for.
+Always returns 200. `status` is `"ok"` when inference, the lens, and the sandbox all respond healthy and the lens can score, `"degraded"` otherwise. `lens` reflects the lens service's informational `/health`; `lens_ready` says whether the lens can score, by the check `/v1/agent` applies to every request (lens `/ready`, then its `/health`: C(x) and G(x) loaded, self-test passed, not drifted, llama-server reachable). When `lens_ready` is `false`, `lens_reason` says why, and every request is refused. `capabilities` advertises optional proxy features clients can probe for.
 
 ### GET /ready
 
@@ -802,7 +802,7 @@ It also carries the embedding capacity contract: `embed_capacity_tokens` (the lo
 curl http://localhost:8099/ready
 ```
 
-Readiness probe (`geometric-lens/main.py`). Flips to 503 when scoring is degraded (lens weights missing, embedding-dim mismatch). It answers 200 for a lens that is switched off or has no G(x) model, so the atlas-proxy asks this and then the lens `/health` before it accepts a request ([ADR 0011](adr/0011-the-lens-is-required.md)); its `/health` and `/ready` report the result as `lens_ready`. The payload repeats `embed_capacity_tokens`; the capacity never changes the verdict.
+Readiness probe (`geometric-lens/main.py`). Flips to 503 when scoring is degraded (lens weights missing, embedding-dim mismatch). It answers 200 for a lens with no G(x) model, so the atlas-proxy asks this and then the lens `/health` before it accepts a request ([ADR 0011](adr/0011-the-lens-is-required.md)); its `/health` and `/ready` report the result as `lens_ready`. The payload repeats `embed_capacity_tokens`; the capacity never changes the verdict.
 
 ### Additional endpoints
 

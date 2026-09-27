@@ -119,7 +119,6 @@ class _TinyCostField:
 def _lens(monkeypatch, llama):
     monkeypatch.setenv("LLAMA_URL", llama)
     monkeypatch.setenv("LLAMA_EMBED_URL", llama)
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.delenv("LLAMA_EMBED_CAPACITY_TOKENS", raising=False)
     monkeypatch.setattr(service, "_ensure_models_loaded", lambda: True)
     cx_cfg = {"midpoint": 0.5, "steepness": 4.0}
@@ -319,7 +318,6 @@ def test_capacity_parser_reads_llama_servers_message():
 @pytest.fixture(scope="module")
 def app_client(llama, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("lens-capacity")
-    os.environ["GEOMETRIC_LENS_ENABLED"] = "false"
     os.environ["ATLAS_SERVICE_TOKEN_FILE"] = str(tmp / "no-token")
     os.environ["LLAMA_URL"] = llama
     os.environ["LLAMA_EMBED_URL"] = llama
@@ -356,7 +354,11 @@ def test_health_reports_the_capacity_contract(app_client, monkeypatch):
 
 
 def test_ready_reports_capacity_without_changing_its_gate(app_client, monkeypatch):
-    client, _ = app_client
+    client, main = app_client
+    # A lens whose self-test passed: the gate is then open, and a capacity
+    # observation must not close it.
+    monkeypatch.setitem(main._BOOT_STATE, "self_test_pass", True)
+    monkeypatch.setitem(main._BOOT_STATE, "self_test_error", None)
     monkeypatch.setenv("LLAMA_EMBED_CAPACITY_TOKENS", "2048")
     before = client.get("/ready")
     assert before.status_code == 200
@@ -371,7 +373,6 @@ def test_ready_reports_capacity_without_changing_its_gate(app_client, monkeypatc
 
 def test_endpoint_failures_carry_no_numbers(app_client, monkeypatch):
     client, main = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
 
     def boom(*a, **kw):
         raise RuntimeError("scorer exploded")
@@ -397,7 +398,6 @@ def test_endpoint_failures_carry_no_numbers(app_client, monkeypatch):
 
 def test_endpoint_passes_the_typed_capacity_failure_through(app_client, monkeypatch):
     client, main = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     out = client.post("/internal/lens/score-per-step",
                       json={"text": text_of(2055)}).json()
     _assert_capacity_failure(out, 2055)
@@ -430,7 +430,6 @@ def _standard_json(response):
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_score_text_endpoint_reports_a_nonfinite_energy_unscored(app_client, monkeypatch, value):
     client, _ = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.setattr(service, "_cost_field", _NonFiniteField(value))
     out = _standard_json(client.post("/internal/lens/score-text",
                                      json={"text": text_of(8)}))
@@ -441,7 +440,6 @@ def test_score_text_endpoint_reports_a_nonfinite_energy_unscored(app_client, mon
 
 def test_gx_score_endpoint_reports_a_nonfinite_energy_unscored(app_client, monkeypatch):
     client, _ = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.setattr(
         service, "_snapshot_weights",
         lambda: (_NonFiniteField(float("nan")), None, None, None, None,
@@ -457,7 +455,6 @@ def test_gx_score_endpoint_reports_a_nonfinite_energy_unscored(app_client, monke
 
 def test_per_step_endpoint_reports_a_nonfinite_energy_unscored(app_client, monkeypatch):
     client, _ = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.setattr(
         service, "_snapshot_weights",
         lambda: (_NonFiniteField(float("inf")), None, None, None, None,
@@ -475,7 +472,6 @@ def test_drift_withdraws_the_per_step_thresholds(app_client, monkeypatch):
     veto act on. On drift they are withdrawn here as on the other scoring
     endpoints; per-step used to skip the drift flags entirely."""
     client, main = app_client
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     scored = {"enabled": True, "scored": True, "gx_available": True, "n_tokens": 3,
               "cx_calibrated": True, "per_step": [], "aggregate": {"gx_score_min": 0.7},
               "thresholds": {"off_rails": 0.3, "low": 0.4, "severe": 0.2}}

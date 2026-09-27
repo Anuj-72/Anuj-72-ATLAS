@@ -23,7 +23,6 @@ func lensHealthServer(t *testing.T, lens map[string]any) *httptest.Server {
 
 func compatibleLensHealth() map[string]any {
 	return map[string]any{
-		"enabled":           true,
 		"cost_field_loaded": true,
 		"cost_field_dim":    3840,
 		"embed_dim":         3840,
@@ -175,7 +174,7 @@ func TestBuildDimensionsSevenRows(t *testing.T) {
 func TestDirectAgentIsBlockedWhileTheLensCannotScore(t *testing.T) {
 	for verdict, want := range map[string]string{
 		"supported": "supported", "uncalibrated": "supported",
-		"unreachable": "blocked", "disabled": "blocked", "no-artifacts": "blocked",
+		"unreachable": "blocked", "no-artifacts": "blocked",
 		"dim-mismatch": "blocked", "incomplete-artifacts": "blocked", "drifted": "blocked",
 		"self-test-failed": "blocked", "model-server-unreachable": "blocked",
 	} {
@@ -190,15 +189,14 @@ func TestDirectAgentIsBlockedWhileTheLensCannotScore(t *testing.T) {
 	}
 }
 
-// A lens that loaded its artifacts can still be unable to score: switched
-// off, drifted, failing its self-test, or without llama-server. It reported
-// "supported" / "ready" in every one of those states.
+// A lens that loaded its artifacts can still be unable to score: drifted,
+// failing its self-test, or without llama-server. It reported "supported" /
+// "ready" in every one of those states.
 func TestProbeLensStatusNamesALensThatCannotScore(t *testing.T) {
 	for _, c := range []struct {
 		name, verdict string
 		mutate        func(lens map[string]any, top map[string]any)
 	}{
-		{"switched off", "disabled", func(l, _ map[string]any) { l["enabled"] = false }},
 		{"drifted", "drifted", func(l, _ map[string]any) { l["fingerprint_ok"] = false }},
 		{"self-test failed", "self-test-failed", func(l, _ map[string]any) { l["self_test_pass"] = false }},
 		{"llama down", "model-server-unreachable", func(_, top map[string]any) {

@@ -116,8 +116,7 @@ func lensReady(url string) (bool, string) {
 // probeLensReadiness asks the lens itself. /ready first: it retries a
 // self-test that failed while llama-server was still starting, and answers
 // 503 with a reason when the lens cannot score. Then /health, because
-// /ready answers 200 for a lens that is switched off or has no G(x) model,
-// and neither can score.
+// /ready answers 200 for a lens with no G(x) model, which cannot score.
 func probeLensReadiness(url string) (bool, string) {
 	resp, err := healthClient.Get(url + "/ready")
 	if err != nil {
@@ -156,8 +155,6 @@ func probeLensReadiness(url string) (bool, string) {
 func lensHealthVerdict(h lensHealthShape) (bool, string) {
 	lens := h.Subsystems.Lens
 	switch {
-	case !lens.Enabled:
-		return false, "it is switched off (GEOMETRIC_LENS_ENABLED is not true)"
 	case !lens.CostFieldLoaded:
 		why := "it has no C(x) model loaded"
 		if lens.SelfTestError != "" {

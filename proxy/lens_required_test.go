@@ -22,7 +22,7 @@ func healthyLensHealth() map[string]interface{} {
 		"subsystems": map[string]interface{}{
 			"llama_server": map[string]interface{}{"reachable": true},
 			"lens": map[string]interface{}{
-				"enabled": true, "cost_field_loaded": true, "gx_loaded": true,
+				"cost_field_loaded": true, "gx_loaded": true,
 				"cx_calibrated": true, "gx_calibrated": true,
 				"self_test_pass": true, "fingerprint_ok": nil,
 			},
@@ -73,8 +73,6 @@ func TestLensReadinessNamesWhyTheLensCannotScore(t *testing.T) {
 		{"not ready, llama down", 503,
 			map[string]interface{}{"detail": map[string]interface{}{"llama_server": false}},
 			healthyLensHealth(), "cannot reach llama-server"},
-		{"switched off", 200, map[string]bool{"ready": true},
-			lensField("enabled", false), "switched off"},
 		{"no G(x)", 200, map[string]bool{"ready": true},
 			lensField("gx_loaded", false), "no G(x) model"},
 		{"drifted", 200, map[string]bool{"ready": true},
@@ -162,7 +160,7 @@ func TestReadyAgreesWithTheRequestGate(t *testing.T) {
 	inferenceURL, sandboxURL, v3URL = up.URL, up.URL, up.URL
 	prev := lensReadiness
 	lensReadiness = func(string) (bool, string) {
-		return false, "it is switched off (GEOMETRIC_LENS_ENABLED is not true)"
+		return false, "it has no G(x) model loaded; run `atlas lens build` or `atlas model install-artifacts`"
 	}
 	t.Cleanup(func() {
 		inferenceURL, sandboxURL, v3URL = prevURLs[0], prevURLs[1], prevURLs[2]
@@ -189,7 +187,7 @@ func TestReadyAgreesWithTheRequestGate(t *testing.T) {
 		if rec.Code != c.status || body["lens_ready"] != false {
 			t.Errorf("%s: status %d lens_ready %v, want %d and false", c.path, rec.Code, body["lens_ready"], c.status)
 		}
-		if why, _ := body["lens_reason"].(string); !strings.Contains(why, "switched off") {
+		if why, _ := body["lens_reason"].(string); !strings.Contains(why, "no G(x) model") {
 			t.Errorf("%s: lens_reason %q does not say why", c.path, why)
 		}
 	}
@@ -202,7 +200,7 @@ func TestAScoreAnswerSaysWhetherTheLensItselfIsDown(t *testing.T) {
 		body   string
 		down   bool
 	}{
-		{"switched off", 200, `{"enabled":false}`, true},
+		{"no model loaded", 200, `{"enabled":false}`, true},
 		{"model server down", 200, `{"enabled":true,"scored":false,"failure":{"kind":"model_server_unreachable","detail":"URLError"}}`, true},
 		{"http error", 503, `{"detail":"x"}`, true},
 		{"input too long", 200, `{"enabled":true,"scored":false,"failure":{"kind":"embed_capacity","input_tokens":2055,"capacity_tokens":2048}}`, false},

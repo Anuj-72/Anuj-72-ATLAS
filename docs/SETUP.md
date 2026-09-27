@@ -582,14 +582,16 @@ llama-server \
   --model "models/$ATLAS_MODEL_FILE" \
   --host 0.0.0.0 --port 8080 \
   --ctx-size 32768 --n-gpu-layers 99 --no-mmap \
-  --embeddings --pooling mean --flash-attn on --fit off
+  --embeddings --pooling none --flash-attn on --fit off
+# --pooling none: the lens's per-step path needs per-token vectors, and it
+# pools and normalizes them itself for the whole-text path (the compose
+# default, ATLAS_EMBED_POOLING=none).
 
-# Terminal 2: Geometric Lens
+# Terminal 2: Geometric Lens (required: the proxy refuses requests while it
+# cannot score)
 cd geometric-lens
 LLAMA_URL=http://localhost:8080 \
 LLAMA_EMBED_URL=http://localhost:8080 \
-GEOMETRIC_LENS_ENABLED=true \
-# (PROJECT_DATA_DIR is not read by the lens; omitted) \
 python -m uvicorn main:app --host 0.0.0.0 --port 8099
 
 # Terminal 3: V3 Pipeline

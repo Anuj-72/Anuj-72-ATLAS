@@ -203,7 +203,7 @@ class _FakeLensHandler(http.server.BaseHTTPRequestHandler):
             self._reply({"service": "geometric-lens", "status": "healthy",
                          "subsystems": {
                              "llama_server": {"reachable": True},
-                             "lens": {"enabled": True, "cost_field_loaded": True,
+                             "lens": {"cost_field_loaded": True,
                                       "gx_loaded": True, "cx_calibrated": True,
                                       "gx_calibrated": True, "self_test_pass": True,
                                       "fingerprint_ok": None}}})

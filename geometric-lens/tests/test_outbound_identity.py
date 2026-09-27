@@ -189,7 +189,6 @@ def test_background_thread_without_binding_forwards_nothing(stub):
 @pytest.fixture(scope="module")
 def app_client(stub, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("lens")
-    os.environ["GEOMETRIC_LENS_ENABLED"] = "false"   # middleware and transport are what is under test
     os.environ["ATLAS_SERVICE_TOKEN_FILE"] = str(tmp / "no-token")
     from fastapi.testclient import TestClient
     # The Lens app uses flat imports (config, main); another

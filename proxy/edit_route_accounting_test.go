@@ -93,8 +93,8 @@ type editLoopOptions struct {
 	// cancelBeforeTool cancels the request context when the named tool is
 	// about to run, so the route observes a cancelled request.
 	cancelBeforeTool string
-	// lensOff points the run at a lens that answers every score as
-	// switched off, so the per-write scoring finds the lens down.
+	// lensOff points the run at a lens that answers every score with no
+	// model loaded, so the per-write scoring finds the lens down.
 	lensOff bool
 	// v3LensUnavailable makes /v3/generate report that the lens could not
 	// score, with this reason.

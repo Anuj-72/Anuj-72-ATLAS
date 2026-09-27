@@ -34,7 +34,6 @@ class _Field:
 def _stub(monkeypatch, gx_loaded):
     monkeypatch.setenv("LLAMA_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("LLAMA_EMBED_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.setattr(service, "_ensure_models_loaded", lambda: True)
     monkeypatch.setattr(ee, "extract_per_token", lambda text: ([[0.5] * DIM] * 3, DIM))
 

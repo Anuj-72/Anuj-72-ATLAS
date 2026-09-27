@@ -49,8 +49,8 @@ class TokenCapacityExceeded(RuntimeError):
 
 
 class LensUnavailable(RuntimeError):
-    """The lens cannot score: unreachable, switched off, no model loaded, a
-    broken answer, or its model server down. The lens is required
+    """The lens cannot score: unreachable, no model loaded, a broken
+    answer, or its model server down. The lens is required
     (docs/adr/0011-the-lens-is-required.md), so the run stops on this rather
     than ranking candidates on neutral scores. An input the lens declines
     (embed_capacity, empty, non-finite) is not this: that candidate is
@@ -225,7 +225,7 @@ def score_candidate_per_step(code: str) -> dict:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
         if not data.get("enabled"):
-            raise LensUnavailable("the lens is switched off or has no model loaded")
+            raise LensUnavailable("the lens has no model loaded")
         failure = _lens_failure(data)
         _raise_if_lens_down(failure)
         if failure is None and not int(data.get("n_tokens", 0)):
@@ -308,8 +308,8 @@ def score_candidate_combined(code: str) -> Dict[str, Any]:
     ``gx_available`` and ``verdict``; the CxGx allocation gate reads all
     six, everything else reads the C(x) three through score_candidate.
 
-    A lens that cannot score (switched off, no model loaded, unreachable, a
-    malformed answer, its model server down) raises ``LensUnavailable``: the
+    A lens that cannot score (no model loaded, unreachable, a malformed
+    answer, its model server down) raises ``LensUnavailable``: the
     lens is required. An input the lens declines (the embedding server's
     physical batch, an empty input, a non-finite score) yields
     ``UNSCORED_COMBINED`` plus the typed ``failure``: every score field is
@@ -337,7 +337,7 @@ def score_candidate_combined(code: str) -> Dict[str, Any]:
         if not isinstance(data, dict):
             raise LensUnavailable("the lens answered a malformed body")
         if not data.get("enabled", False):
-            raise LensUnavailable("the lens is switched off or has no model loaded")
+            raise LensUnavailable("the lens has no model loaded")
         failure = _lens_failure(data)
         _raise_if_lens_down(failure)
         if failure is not None:

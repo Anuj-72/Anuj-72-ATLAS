@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Removed: `GEOMETRIC_LENS_ENABLED`
+
+The lens is required (ADR 0011), and nothing in ATLAS has an off switch,
+so the lens has none either. The service ignores the variable; compose
+and the Kubernetes template no longer set it. The `disabled` lens verdict
+is gone: a lens with no model loaded reports `no-artifacts`, and its
+scoring answers say `enabled: false`, which the proxy and V3 read as a
+lens that cannot score.
+
+Also fixed in the manual (non-Docker) start in SETUP.md: llama-server now
+runs with `--pooling none`, as compose does (the lens's per-step path needs
+per-token vectors), and a comment line no longer cuts the lens command off
+from its environment variables.
+
 ### Changed: the lens is required; ATLAS stops and says why when it cannot score
 
 A lens that was switched off, had no model loaded, or could not reach

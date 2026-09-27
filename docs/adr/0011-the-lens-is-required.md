@@ -87,3 +87,10 @@ with no G(x) model returns no thresholds.
   `tests/e2e/test_v3_lens_acceptance.py`
   (`test_an_unreachable_lens_refuses_the_request`,
   `test_a_lens_that_v3_cannot_reach_stops_the_run`).
+
+## Revision 2026-09-27
+`GEOMETRIC_LENS_ENABLED` is removed: the lens has no off switch, as
+nothing else in ATLAS does. The `disabled` verdict is gone. A lens
+with no model loaded reports `no-artifacts`, and its scoring answers
+say `enabled: false`, which the proxy and V3 read as a lens that
+cannot score.

@@ -828,7 +828,6 @@ docker compose logs geometric-lens
 | Reason in the message | Fix |
 |---|---|
 | unreachable | The lens container is down or `ATLAS_LENS_URL` is wrong. `docker compose ps geometric-lens`. |
-| switched off | `GEOMETRIC_LENS_ENABLED` is not `true`. Set it to `true` and recreate the lens. |
 | no C(x) / no G(x) model loaded | The served model has no lens weights. Run `atlas model install-artifacts <name>` for a registry model, or `atlas lens build` ([SETUP.md](SETUP.md#geometric-lens-weights-required)). |
 | cannot reach llama-server | The lens cannot reach the model server. Check `LLAMA_URL` / `LLAMA_EMBED_URL` and llama-server health. |
 | self-test failed | See the `self_test_error` in `/health`. |

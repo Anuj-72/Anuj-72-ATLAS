@@ -136,7 +136,6 @@ services:
       - LLAMA_EMBED_CAPACITY_TOKENS=${ATLAS_UBATCH:-1024}
       - ATLAS_MODEL_NAME=${ATLAS_MODEL_NAME:?Set ATLAS_MODEL_NAME in .env or run atlas init}
       - ATLAS_LOG_FORMAT=${ATLAS_LOG_FORMAT:-}
-      - GEOMETRIC_LENS_ENABLED=true
       - ATLAS_SERVICE_TOKEN_FILE=/run/atlas-secrets/service-token
     volumes:
       - ${ATLAS_LENS_MODELS:-./geometric-lens/geometric_lens/models}:/app/geometric_lens/models:ro

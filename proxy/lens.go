@@ -163,7 +163,7 @@ func scoreContentForAgent(ctx context.Context, lensURL, content string) (lensPer
 		return zero, false, "its answer could not be read"
 	}
 	if !r.Enabled {
-		return zero, false, "it is switched off or has no model loaded"
+		return zero, false, "it has no model loaded"
 	}
 	if r.Failure != nil && lensDownKinds[r.Failure.Kind] {
 		log.Printf("[agent-lens] the lens cannot score (%s)", r.Failure.Kind)
@@ -502,7 +502,7 @@ func buildDimensions(lens LensStatus, asa ASAStatus) []StatusDimension {
 
 type LensStatus struct {
 	// "supported" | "no-artifacts" | "incomplete-artifacts" |
-	// "uncalibrated" | "dim-mismatch" | "unreachable" | "disabled" |
+	// "uncalibrated" | "dim-mismatch" | "unreachable" |
 	// "drifted" | "self-test-failed" | "model-server-unreachable"
 	Verdict string `json:"verdict"`
 	// CanScore says whether this lens can score, the question the request
@@ -546,7 +546,6 @@ type lensHealthShape struct {
 			Error     string `json:"error"`
 		} `json:"llama_server"`
 		Lens struct {
-			Enabled         bool   `json:"enabled"`
 			CostFieldLoaded bool   `json:"cost_field_loaded"`
 			CostFieldDim    int    `json:"cost_field_dim"`
 			EmbedDim        int    `json:"embed_dim"`
@@ -609,9 +608,6 @@ func probeLensStatus(ctx context.Context, lensBaseURL string) LensStatus {
 
 	lens := h.Subsystems.Lens
 	switch {
-	case !lens.Enabled:
-		out.Verdict = "disabled"
-		out.Hint = "GEOMETRIC_LENS_ENABLED is not true; ATLAS needs the lens and refuses requests until it runs"
 	case !out.CostFieldLoaded:
 		out.Verdict = "no-artifacts"
 		if h.Subsystems.Lens.SelfTestError != "" {

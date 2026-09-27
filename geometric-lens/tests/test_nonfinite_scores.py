@@ -74,7 +74,6 @@ def _lens(monkeypatch):
     # No model server: both extractors are stubbed below.
     monkeypatch.setenv("LLAMA_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("LLAMA_EMBED_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "true")
     monkeypatch.setattr(service, "_ensure_models_loaded", lambda: True)
     monkeypatch.setattr(ee, "extract_embedding", lambda text: [0.5] * DIM)
     monkeypatch.setattr(ee, "extract_per_token",
@@ -190,12 +189,27 @@ def test_finite_energies_including_negative_and_zero_stay_scores(monkeypatch, va
     assert per_step["aggregate"]["cx_energy_min"] == pytest.approx(value, rel=1e-6)
 
 
-def test_disabled_lens_is_unchanged(monkeypatch):
+def test_the_lens_has_no_off_switch(monkeypatch):
+    """GEOMETRIC_LENS_ENABLED is removed (ADR 0011): a leftover `false` in an
+    old .env changes nothing, and the lens still scores."""
     monkeypatch.setenv("GEOMETRIC_LENS_ENABLED", "false")
+    out = service.evaluate_combined("def f(): pass")
+    assert out["enabled"] is True and out["scored"] is True
+    per_step = service.evaluate_per_step("def f(): pass")
+    assert per_step["scored"] is True and per_step["n_tokens"] == 3
+
+
+def test_a_lens_without_models_is_unchanged(monkeypatch):
+    """No model loaded: the answer says so (enabled false), with no failure
+    and no computed number. The lens has no off switch (ADR 0011); this is
+    the only state that answers enabled false."""
     _weights(monkeypatch, _ConstField(float("nan")))
+    monkeypatch.setattr(service, "_ensure_models_loaded", lambda: False)
     out = service.evaluate_combined("def f(): pass")
     assert out["enabled"] is False and out["cx_energy"] == 0.0
     assert "failure" not in out
+    per_step = service.evaluate_per_step("def f(): pass")
+    assert per_step["enabled"] is False and per_step["n_tokens"] == 0
 
 
 def test_nonfinite_failure_is_its_own_kind():

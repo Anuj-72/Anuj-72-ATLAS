@@ -39,7 +39,6 @@ spec:
         - {name: LLAMA_URL,              value: "http://llama-server:${ATLAS_LLAMA_PORT}"}
         - {name: LLAMA_EMBED_URL,        value: "http://llama-server:${ATLAS_LLAMA_PORT}"}
         - {name: ATLAS_MODEL_NAME,       value: "${ATLAS_MAIN_MODEL}"}
-        - {name: GEOMETRIC_LENS_ENABLED, value: "true"}
         - {name: PROJECT_DATA_DIR,       value: "/data/projects"}
         volumeMounts:
         - name: projects
