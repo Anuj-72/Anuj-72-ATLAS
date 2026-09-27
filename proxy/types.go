@@ -672,7 +672,13 @@ func (c *AgentContext) allowToolForTurn(toolName string) {
 }
 
 // isToolAllowed reports whether a tool has been pre-approved for the session.
+// A deletion never is: each file is its own approval. A session approval for
+// delete_file, sent by any client, used to approve every later deletion
+// without the user seeing which file.
 func (c *AgentContext) isToolAllowed(toolName string) bool {
+	if toolName == "delete_file" {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.AllowedTools[toolName]

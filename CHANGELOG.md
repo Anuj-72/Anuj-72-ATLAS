@@ -24,6 +24,18 @@
 - Approval prompts cut a command at 100 characters, so the end of a chain
   was never shown. The proxy sends the whole command, and
   `stop_background` names its job.
+- In the TUI, one "allow for session" answer on a deletion approved every
+  later deletion without showing which file, and the proxy honoured
+  `delete_file` in `session_allowed_tools` from any client. Each deletion
+  is now asked about on its own: the TUI never auto-answers or sends a
+  session approval for `delete_file`, the proxy ignores one, and a new
+  session starts with no approvals. The TUI prompt shows the whole
+  command, wrapped; one too long for the screen keeps its first and last
+  lines in view and says how many are not shown.
+- The TUI's chat stream, events stream, raw demo lane and feedback calls
+  never sent the service token, so on an install with one they failed
+  with 401. Every request to the proxy now sends it, ahead of an api-keys
+  token.
 
 ### Measured reliability
 

@@ -158,3 +158,20 @@ func TestApprovalShowsTheWholeCommand(t *testing.T) {
 		t.Errorf("stop_background prompt does not name the job: %q", got)
 	}
 }
+
+// A deletion is approved one file at a time, whatever a client sends.
+func TestASessionApprovalNeverCoversADeletion(t *testing.T) {
+	ctx := &AgentContext{PermissionMode: PermissionDefault,
+		AllowedTools: map[string]bool{"delete_file": true, "write_file": true}}
+	if !needsPermission(ctx, "delete_file", json.RawMessage(`{"path":"a.py"}`)) {
+		t.Error("a session approval covered a deletion")
+	}
+	if needsPermission(ctx, "write_file", json.RawMessage(`{"path":"a.py"}`)) {
+		t.Error("a session approval for write_file stopped working")
+	}
+	turn := &AgentContext{PermissionMode: PermissionDefault}
+	turn.allowToolForTurn("delete_file")
+	if !needsPermission(turn, "delete_file", json.RawMessage(`{"path":"b.py"}`)) {
+		t.Error("a session-scoped answer covered later deletions in the turn")
+	}
+}
