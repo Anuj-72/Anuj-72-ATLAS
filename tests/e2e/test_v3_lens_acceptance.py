@@ -270,7 +270,6 @@ def v3_service(fake_llama, fake_lens, sandbox_executor):
            "ATLAS_SANDBOX_URL": f"http://127.0.0.1:{sandbox_executor}",
            # the sandbox executor enforces internal auth session-wide
            "ATLAS_SERVICE_TOKEN_FILE": conftest._TOKEN_FILE}
-    env.pop("ATLAS_CALL_GRAPH", None)
     proc = subprocess.Popen(
         ["python", "main.py"],
         cwd=str(REPO / "v3-service"), env=env,
@@ -584,7 +583,6 @@ def test_lens_unreachable_pipeline_completes_uncalibrated(
            "ATLAS_LENS_URL": "http://127.0.0.1:9",  # unreachable
            "ATLAS_SERVICE_TOKEN_FILE": conftest._TOKEN_FILE,
            "ATLAS_SANDBOX_URL": f"http://127.0.0.1:{sandbox_executor}"}
-    env.pop("ATLAS_CALL_GRAPH", None)
     v3_proc = subprocess.Popen(
         ["python", "main.py"],
         cwd=str(REPO / "v3-service"), env=env,

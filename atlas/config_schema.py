@@ -46,7 +46,6 @@ SCHEMA: Dict[str, Field] = {
     "ATLAS_TRUST_MODE": Field("enum",
                               enum=("untrusted", "trusted", "fully-trusted")),
     "ATLAS_VERIFY_IN": Field("enum", enum=("sandbox", "host")),
-    "ATLAS_CALL_GRAPH": Field("bool"),
     "ATLAS_KEEP_LLAMA_WARM": Field("bool"),
     "ATLAS_FRESH_SLOT_PER_SESSION": Field("bool"),
     "ATLAS_DEDUP_READS": Field("bool"),
@@ -170,6 +169,8 @@ SCHEMA: Dict[str, Field] = {
         deprecated="removed; RPG planning was cut — see issue #148"),
     "ATLAS_CANDIDATE_POLICY": Field("str",
         deprecated="removed; one delivery rule, not selectable — see docs/CANDIDATE_POLICY.md"),
+    "ATLAS_CALL_GRAPH": Field("bool",
+        deprecated="removed; the call graph always runs, for Python files"),
 }
 
 

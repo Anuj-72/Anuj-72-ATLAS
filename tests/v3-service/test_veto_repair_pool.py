@@ -306,3 +306,33 @@ def test_structural_veto_still_applies_to_python_targets(monkeypatch):
 
     stages = [e["stage"] for e in result["events"]]
     assert "structural_veto" in stages, stages
+
+
+PAGE_WITH_SCRIPT = (
+    "<!DOCTYPE html>\n<html><body><canvas id='c'></canvas>\n"
+    "<script>function draw() {}\nsetInterval(draw, 100);</script>\n"
+    "</body></html>\n"
+)
+STATIC_PAGE = "<!DOCTYPE html>\n<html><body><p>Hello</p></body></html>\n"
+
+
+def test_call_graph_veto_is_skipped_for_non_python_targets(monkeypatch):
+    """Two sandbox-passing pages, one with working JavaScript. The call-graph
+    resolver parses with the Python grammar, so it once read setInterval as an
+    unresolved call and vetoed the page with the script, keeping the static
+    one. Both must survive now, with no call_graph_veto."""
+    pr_cot = RecordingPRCoT(repairs=[])
+    service = _make_service(monkeypatch, [PAGE_WITH_SCRIPT, STATIC_PAGE], pr_cot)
+    monkeypatch.setattr(adapters, "SandboxAdapter", SyntaxOkSandbox)
+    monkeypatch.setattr(
+        scoring, "score_candidate_per_step", lambda code: dict(NO_VETO_PER_STEP))
+
+    result = service.run("draw on the canvas", task_id="html-cg",
+                         files={"app.py": "def index():\n    return 'ok'\n"},
+                         file_path="templates/index.html")
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "call_graph_veto" not in stages, stages
+    assert "structural_veto" not in stages, stages
+    assert result["passed"] is True
+    assert result["code"] in (PAGE_WITH_SCRIPT, STATIC_PAGE)

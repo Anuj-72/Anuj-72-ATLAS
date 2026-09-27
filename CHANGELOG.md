@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Changed: the call graph always runs, for Python files only
+
+- `ATLAS_CALL_GRAPH` is removed. The call-graph veto, the multi-hop repair
+  context, the symbol-index neighborhoods and the call edges on `read_file`
+  and `outline_file` always run. The dev server, where ATLAS is measured,
+  already ran with the flag on, and installs ran with it off, so the
+  measured and shipped configurations differed.
+- The veto and the resolver are Python-only. The resolver parses with the
+  Python grammar, so an HTML page whose `<script>` called `setInterval` was
+  vetoed for an "unresolved" call while a static page was kept, and Go and
+  JavaScript files got the same false names. The structural veto was
+  already Python-only for this reason.
+
 ### Changed: one rule decides which V3 candidate lands
 
 The candidate policy modes (`strict`, `advisory`, `automatic_v3`) and

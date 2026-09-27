@@ -428,7 +428,7 @@ func readFileTool() *ToolDef {
 			ctx.RecordFileRead(path, recorded)
 			ctx.RecordBodySeen(path)
 
-			// Call-graph footer (issue #39, flag-gated). The model reads a
+			// Call-graph footer (issue #39). The model reads a
 			// file far more often than it outlines one, so attach the
 			// intra-file call edges to a .py read where the localization
 			// decision happens. Fire on any read that starts at the top of
@@ -437,7 +437,7 @@ func readFileTool() *ToolDef {
 			// the graph from the full file on disk regardless of the page
 			// shown, and skips mid-file pages so a model scrolling a big file
 			// doesn't get the footer repeated.
-			if start == 0 && strings.HasSuffix(input.Path, ".py") && callGraphEnabled() {
+			if start == 0 && strings.HasSuffix(input.Path, ".py") {
 				if footer := callGraphFooter(ctx, input.Path, string(data)); footer != "" {
 					content += footer
 				}
@@ -549,18 +549,10 @@ func outlineFileTool() *ToolDef {
 	}
 }
 
-// callGraphEnabled mirrors v3-service's flag so the proxy can skip the extra
-// outline round-trip on the read_file path when the feature is off. Forwarded
-// to the proxy container via docker-compose (issue #39).
-func callGraphEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("ATLAS_CALL_GRAPH"))
-	return v != "" && v != "0" && strings.ToLower(v) != "false"
-}
-
 // callGraphFooter renders a compact intra-file call-graph summary for a
-// whole-file read, reusing the same v3 outline (which carries calls/called_by
-// when ATLAS_CALL_GRAPH is on). Returns "" when there are no edges, so a file
-// with no internal calls doesn't get a noisy empty section.
+// whole-file read, reusing the same v3 outline (which carries calls/called_by).
+// Returns "" when there are no edges, so a file with no internal calls doesn't
+// get a noisy empty section.
 func callGraphFooter(ctx *AgentContext, path, source string) string {
 	syms, ok, _ := outlineViaV3(ctx, path, source)
 	if !ok {

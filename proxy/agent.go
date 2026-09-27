@@ -1256,9 +1256,8 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 		if len(fileMap) > 0 {
 			if idx, ok := resolveProjectSymbols(ctx, fileMap, symbols); ok && len(idx.Matched) > 0 {
 				body := formatProjectContextMessage(idx.Matched)
-				// #39 Phase 3: append the call-graph neighborhood when v3-service
-				// returned it (ATLAS_CALL_GRAPH on). Empty string when absent, so
-				// flag-off behavior is unchanged.
+				// #39 Phase 3: append the call-graph neighborhood v3-service
+				// returned. Empty string when it returned none.
 				body += formatGraphNeighborhood(idx.Graph)
 				if body != "" {
 					// Role MUST be "user" with a "[system note]:" prefix —

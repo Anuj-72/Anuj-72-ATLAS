@@ -195,9 +195,6 @@ services:
       - ATLAS_SANDBOX_URL=http://sandbox:8020
       - ATLAS_MODEL_NAME=${ATLAS_MODEL_NAME:?Set ATLAS_MODEL_NAME in .env or run atlas init}
       - ATLAS_LOG_FORMAT=${ATLAS_LOG_FORMAT:-}
-      # Structural call-graph reasoning (#39, experimental, default off). Read by
-      # call_graph_enabled() inside this process, so it must be forwarded here.
-      - ATLAS_CALL_GRAPH=${ATLAS_CALL_GRAPH:-0}
       # Plan-generation thinking mode (read inside this process — must be
       # forwarded here or setting it in .env has no effect).
       - ATLAS_PLAN_THINKING=${ATLAS_PLAN_THINKING:-}
@@ -493,10 +490,6 @@ services:
       # (useful for weak models that lean on re-reads as extra reasoning
       # passes).
       - ATLAS_DEDUP_READS=${ATLAS_DEDUP_READS:-1}
-      # Structural call-graph reasoning (#39). The proxy reads this to decide
-      # whether to attach the intra-file call graph to read_file/outline_file
-      # output; v3-service reads the same flag (line above) to compute it.
-      - ATLAS_CALL_GRAPH=${ATLAS_CALL_GRAPH:-0}
       # PC-192: opt-in host execution for run_command. Set to "host"
       # to bypass the sandbox container and run verifications on the
       # host (works when proxy runs locally, not in Docker — Docker

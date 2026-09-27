@@ -2338,14 +2338,21 @@ class V3PipelineService:
             # whose direct calls don't resolve to a real, in-scope definition (local,
             # builtin, imported, or supplied by a resolved wildcard) — not merely
             # "some project file defines that name." Catches broken cross-file
-            # references the shipped veto accepts. Flag-gated by ATLAS_CALL_GRAPH;
-            # conservative — stays lenient on opaque wildcards and never empties the
-            # candidate set (a fully-failing set falls through intact to repair).
-            if passing and files and file_path:
+            # references the shipped veto accepts. Conservative — stays lenient on
+            # opaque wildcards and never empties the candidate set (a fully-failing
+            # set falls through intact to repair).
+            #
+            # Python only, like the structural veto above, and for the same
+            # reason: the resolver parses with the Python grammar, and an HTML
+            # page's <script> calling setInterval read as an unresolved call.
+            if passing and files and file_path and smoke_language not in ("python", "py"):
+                print(f"  [call_graph] veto skipped: {smoke_language} is not Python", flush=True)
+            elif passing and files and file_path:
                 try:
-                    from graph import call_graph_enabled, unresolved_calls
-                    _cg_on = call_graph_enabled()
-                except Exception:
+                    from graph import unresolved_calls
+                    _cg_on = True
+                except Exception as cge:
+                    print(f"  [call_graph] veto unavailable: {cge}", flush=True)
                     _cg_on = False
                 if _cg_on:
                     cg_kept, cg_vetoed = [], []
@@ -2545,17 +2552,16 @@ class V3PipelineService:
             # function once, reuse across PR-CoT + refinement. Skips
             # cleanly when stderr isn't a Python traceback or the failing
             # function isn't defined in the project — both arms get plain
-            # error_output in that case. When ATLAS_CALL_GRAPH is on the
-            # block is a multi-hop reachability slice (entry-point path,
-            # transitive impact, callees); flag-off it stays at direct
-            # callers/callees (1 hop). Fail-soft on any graph failure.
+            # error_output in that case. The block is a multi-hop
+            # reachability slice (entry-point path, transitive impact,
+            # callees). Fail-soft on any graph failure.
             chain_context_block = ""
             if failing:
                 failing_func = symbols._failing_function_from_stderr(failing[0].error_output)
                 if failing_func and files:
                     try:
-                        from graph import call_graph_enabled as _cg_on, repair_context as _cg_repair
-                        chain_context_block = _cg_repair(files, failing_func, transitive=_cg_on())
+                        from graph import repair_context as _cg_repair
+                        chain_context_block = _cg_repair(files, failing_func, transitive=True)
                     except Exception as cge:
                         print(f"  [phase3] graph repair-context skipped: {cge}", flush=True)
                     if chain_context_block:

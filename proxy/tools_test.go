@@ -977,6 +977,53 @@ func TestCallGraphFooterMarksItselfAsNotFileContent(t *testing.T) {
 	}
 }
 
+// The call graph is not a switch: a whole-file read of a Python file carries
+// its call edges with no flag set, and a file of another language never does.
+func TestReadFileAttachesTheCallGraphWithoutAFlag(t *testing.T) {
+	t.Setenv("ATLAS_CALL_GRAPH", "")
+	var outlines int
+	v3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outlines++
+		_, _ = w.Write([]byte(`{"supported":true,"symbols":[
+			{"name":"mean","kind":"function","start_line":1,"end_line":2,"calls":["total"]}]}`))
+	}))
+	defer v3.Close()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"stats.py": "def mean(v):\n    return total(v)/len(v)\n",
+		"stats.js": "function mean(v) { return total(v) / v.length; }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := NewAgentContext(dir, Tier1Simple)
+	ctx.Ctx = context.Background()
+	ctx.V3URL = v3.URL
+	read := func(path string) string {
+		t.Helper()
+		res, err := readFileTool().Execute(json.RawMessage(`{"path":"`+path+`"}`), ctx)
+		if err != nil || res == nil || !res.Success {
+			t.Fatalf("read_file %s failed: %v %+v", path, err, res)
+		}
+		var out ReadFileOutput
+		if err := json.Unmarshal(res.Data, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Content
+	}
+	if got := read("stats.py"); !strings.Contains(got, "## Call graph") {
+		t.Errorf("a Python read carries no call graph: %q", got)
+	}
+	before := outlines
+	if got := read("stats.js"); strings.Contains(got, "## Call graph") {
+		t.Errorf("a JavaScript read carries a call graph: %q", got)
+	}
+	if outlines != before {
+		t.Error("a JavaScript read asked for a call graph")
+	}
+}
+
 // read_file numbers lines "N<tab>content" for reference, and nothing said so.
 // A model reasonably concluded the file itself was tab-delimited: an
 // otherwise correct grid-puzzle solution parsed every line as

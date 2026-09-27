@@ -593,14 +593,13 @@ class V3Handler(BaseHTTPRequestHandler):
         n_skipped = len(result.get("skipped", []))
         n_files = len(file_map)
 
-        # Phase 3 (#39 point 4): when the call graph is enabled, attach each
-        # matched symbol's graph neighborhood (callers / callees / impact) so
-        # the proxy can inject structurally related code instead of name-matched
-        # snippets alone. Additive: the "matched"/"skipped" shape is unchanged,
-        # so flag-off callers see exactly today's response.
+        # Phase 3 (#39 point 4): attach each matched symbol's graph
+        # neighborhood (callers / callees / impact) so the proxy can inject
+        # structurally related code instead of name-matched snippets alone.
+        # Additive: the "matched"/"skipped" shape is unchanged.
         try:
-            from graph import call_graph_enabled, symbol_neighborhood, build_graph
-            if call_graph_enabled() and result.get("matched"):
+            from graph import symbol_neighborhood, build_graph
+            if result.get("matched"):
                 # Build the project graph ONCE, then neighborhood each matched
                 # symbol against it (not once per symbol).
                 g = build_graph(file_map)
@@ -754,16 +753,15 @@ class V3Handler(BaseHTTPRequestHandler):
         the model can then read just the one function's line range instead of
         the whole file. .py only here; the proxy regex-falls-back for the rest.
 
-        When ATLAS_CALL_GRAPH is on, each symbol also carries its intra-file
-        call-graph neighborhood (`calls` / `called_by`). The outline is the
+        Each symbol also carries its intra-file call-graph neighborhood
+        (`calls` / `called_by`). The outline is the
         artifact the model inspects right before it decides WHICH symbol to
         edit, so this is where structural context earns its keep: it lets the
         model follow `total_value -> item_subtotal` to a callee-rooted bug
         instead of editing the function where the symptom merely surfaces
         (issue #39). Scoped to this one file — no project-wide scan — so it's
         cheap and never misses the file in a large repo. Additive: the
-        symbols/supported shape is unchanged, so flag-off callers see exactly
-        today's response.
+        symbols/supported shape is unchanged.
         """
         content_len = int(self.headers.get("Content-Length", 0))
         try:
@@ -792,20 +790,19 @@ class V3Handler(BaseHTTPRequestHandler):
         # model goes looking for `function:draw`.
         embedded = embedded_region_outline(path, source)
 
-        # Call-graph neighborhood (issue #39, flag-gated). Build the single-file
-        # graph once and attach callers/callees to each symbol the model can see.
+        # Call-graph neighborhood (issue #39). Build the single-file graph
+        # once and attach callers/callees to each symbol the model can see.
         if symbols:
             try:
-                from graph import call_graph_enabled, symbol_neighborhood, build_graph
-                if call_graph_enabled():
-                    file_map = {path: source}
-                    g = build_graph(file_map)
-                    for s in symbols:
-                        nb = symbol_neighborhood(file_map, s["name"], graph=g)
-                        if nb["callees"]:
-                            s["calls"] = nb["callees"]
-                        if nb["callers"]:
-                            s["called_by"] = nb["callers"]
+                from graph import symbol_neighborhood, build_graph
+                file_map = {path: source}
+                g = build_graph(file_map)
+                for s in symbols:
+                    nb = symbol_neighborhood(file_map, s["name"], graph=g)
+                    if nb["callees"]:
+                        s["calls"] = nb["callees"]
+                    if nb["callers"]:
+                        s["called_by"] = nb["callers"]
             except Exception as cge:  # pragma: no cover - import/extract guard
                 print(f"  [outline] call-graph neighborhood skipped: {cge}", flush=True)
 
