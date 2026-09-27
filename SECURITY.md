@@ -81,6 +81,8 @@ You can expect an acknowledgment within a week. Fixes for confirmed vulnerabilit
 
 If GitHub advisories are unavailable to you, open a minimal public issue saying "security — need a private channel" **without details**, and the maintainer will provide one.
 
+How the maintainers respond once a report is in (containment, fixes, communication) is in [docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md).
+
 ## Severity and response targets
 
 This is a single-maintainer project; targets are best-effort but taken seriously.
