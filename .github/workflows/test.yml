@@ -106,8 +106,13 @@ jobs:
         # tests/infrastructure needs these too: the boundary-regression
         # suite boots sandbox/executor_server.py, which imports
         # fastapi/pydantic unconditionally.
+        # jinja2 too, at the pin the image ships: the sandbox's template
+        # check imports it lazily and passes everything without it, so the
+        # tests of that check failed on a runner that lacked it.
         if: matrix.subset == 'tests/v3-service' || matrix.subset == 'tests/infrastructure'
-        run: pip install -r sandbox/requirements-runtime.txt
+        run: |
+          pip install -r sandbox/requirements-runtime.txt
+          grep -E '^jinja2==' sandbox/requirements-verify.txt | xargs pip install
 
       - name: install lens dependencies (CPU torch)
         if: matrix.subset == 'geometric-lens/tests'

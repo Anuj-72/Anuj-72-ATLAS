@@ -35,6 +35,7 @@ DEP_LICENSES = {
     "fastapi": "MIT",
     "gguf": "MIT",
     "httpx": "BSD-3-Clause",
+    "jinja2": "BSD-3-Clause",
     "mypy": "MIT",
     "numpy": "BSD-3-Clause",
     "pydantic": "MIT",
