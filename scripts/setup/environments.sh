@@ -93,7 +93,11 @@ done
 # The bot's client ID is public (it's in the app's page); only the private
 # key is secret, and that one is pasted in the UI.
 client_id=$(gh api "apps/$BOT_APP" --jq .client_id)
-current=$(gh api "repos/$REPO/environments/bots/variables/ATLAS_BOT_CLIENT_ID" --jq .value 2>/dev/null || true)
+# On a 404, gh prints the error body to stdout, so test the exit status,
+# not the output.
+if ! current=$(gh api "repos/$REPO/environments/bots/variables/ATLAS_BOT_CLIENT_ID" --jq .value 2>/dev/null); then
+    current=""
+fi
 if [[ "$current" == "$client_id" ]]; then
     echo "keep    bots variable ATLAS_BOT_CLIENT_ID"
 else
