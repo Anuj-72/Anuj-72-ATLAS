@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### Fixed: a passing model-server error at lens boot no longer fails the lens for good
+
+The lens is required, so a lens whose boot self-test failed refuses every
+request until the self-test passes. `/ready` re-runs a failed self-test
+only when the failure is retryable, and three paths made a passing
+llama-server error permanent:
+
+- A 503 while llama-server loads was not retryable: the retry rule named
+  urllib's `HTTPError`, and the transport now raises `ModelServerHTTPError`.
+  Connectivity failures and 5xx answers now retry; a 4xx does not.
+- `evaluate_energy` turned any error into zeros, which the self-test
+  reported as "C(x) evaluation returned zeros". It now raises.
+- A drift-fingerprint reference that could not be scored read as drift.
+  It now raises, as a failed measurement; drift means a measured mismatch.
+
+The drift message also named `--pooling mean`; the convention is
+`--pooling none`.
+
 ### Changed: the final summary names the files V3 did not check
 
 When V3 runs out of time or is unavailable on a write, ATLAS still writes

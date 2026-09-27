@@ -464,32 +464,30 @@ def unscored_per_step(failure: dict, error: str) -> dict:
 def evaluate_energy(query: str) -> Tuple[float, float]:
     """Evaluate raw and normalized energy for a query.
 
-    Returns (raw_energy, normalized_energy).
-    Returns (0.0, 0.0) if models aren't loaded.
+    Returns (raw_energy, normalized_energy), or (0.0, 0.0) if models aren't
+    loaded. A failed evaluation raises. Its caller is the boot self-test,
+    which must tell a model server that is not answering yet (retryable)
+    from a real fault; a zero used to stand for both, and a lens whose
+    self-test failed on a passing hiccup stayed failed until a restart.
     """
     if not _ensure_models_loaded():
         return (0.0, 0.0)
 
-    try:
-        import torch
-        from geometric_lens.embedding_extractor import extract_embedding
+    import torch
+    from geometric_lens.embedding_extractor import extract_embedding
 
-        cost_field, _, _, _, _, cx_cfg, _ = _snapshot_weights()
+    cost_field, _, _, _, _, cx_cfg, _ = _snapshot_weights()
 
-        emb = extract_embedding(query)
-        x = torch.tensor(emb, dtype=torch.float32).unsqueeze(0)
+    emb = extract_embedding(query)
+    x = torch.tensor(emb, dtype=torch.float32).unsqueeze(0)
 
-        with torch.no_grad():
-            energy = cost_field(x).item()
+    with torch.no_grad():
+        energy = cost_field(x).item()
 
-        normalized = _normalize_cx_energy(energy, cx_cfg,
-                                          length=_score_length(query))
+    normalized = _normalize_cx_energy(energy, cx_cfg,
+                                      length=_score_length(query))
 
-        return (energy, normalized)
-
-    except Exception as e:
-        logger.error(f"Geometric lens evaluation failed: {e}")
-        return (0.0, 0.0)
+    return (energy, normalized)
 
 
 def get_model_info() -> dict:

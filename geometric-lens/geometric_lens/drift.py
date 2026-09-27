@@ -101,11 +101,10 @@ def check_fingerprint(models_dir: str,
     if fp is None:
         return False, True, ""
     for ref in fp["references"]:
-        try:
-            got = float(score_fn(ref["text"]))
-        except Exception as exc:
-            return True, False, (f"fingerprint reference could not be "
-                                 f"scored: {type(exc).__name__}: {exc}")
+        # A reference that cannot be scored raises: that is a failed
+        # measurement, not drift. Reading it as drift made a passing
+        # model-server hiccup at boot a lasting "drifted" verdict.
+        got = float(score_fn(ref["text"]))
         expected = ref["expected_energy"]
         tol = max(abs(expected) * fp["tolerance_pct"] / 100.0,
                   MIN_ABS_TOLERANCE)
@@ -114,8 +113,8 @@ def check_fingerprint(models_dir: str,
                 f"embedding stack drift: reference scored {got:.2f}, "
                 f"expected {expected:.2f} ±{fp['tolerance_pct']:g}%. The "
                 f"serving stack no longer matches what the lens artifacts "
-                f"were trained on — check the embed server's `--pooling "
-                f"mean` flag and the loaded model."
+                f"were trained on — check the embed server's `--pooling` "
+                f"flag (ATLAS_EMBED_POOLING=none) and the loaded model."
             )
     return True, True, ""
 

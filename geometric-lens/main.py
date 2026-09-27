@@ -196,11 +196,28 @@ def _run_lens_self_test() -> None:
         # runs first, 503s, and /ready stayed 503 forever even though the
         # artifacts had loaded fine and llama came up healthy seconds later.
         # Mark connectivity failures retryable so /ready can settle itself.
-        _BOOT_STATE["self_test_retryable"] = isinstance(
-            e, (OSError, TimeoutError)) or type(e).__name__ in {
-            "HTTPError", "URLError", "ConnectionError", "ReadTimeout",
-            "ConnectTimeout", "RemoteDisconnected",
-        }
+        _BOOT_STATE["self_test_retryable"] = _self_test_retryable(e)
+
+
+def _self_test_retryable(exc: BaseException) -> bool:
+    """Whether a self-test failure is the model server not answering yet.
+
+    Classified the way scoring failures are (embed_capacity.failure_from_
+    exception): no answer at all, or a 5xx while llama-server loads. The
+    transport raises ModelServerHTTPError for an HTTP error, a name the
+    earlier list of type names did not contain, so a 503 at boot had become
+    a failure that never retried. A 4xx is a real fault and does not retry.
+    """
+    from geometric_lens.embed_capacity import (
+        KIND_SERVER_ERROR, KIND_UNREACHABLE, failure_from_exception)
+    failure = failure_from_exception(exc)
+    if failure["kind"] == KIND_UNREACHABLE:
+        return True
+    if failure["kind"] == KIND_SERVER_ERROR:
+        return int(failure.get("status") or 0) >= 500
+    # httpx's own timeouts and resets are not OSError subclasses.
+    return type(exc).__name__ in {"ConnectError", "ConnectTimeout", "ReadTimeout",
+                                  "RemoteProtocolError", "RemoteDisconnected"}
 
 
 def _llama_state() -> Dict[str, Any]:
