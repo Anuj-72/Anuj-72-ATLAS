@@ -806,7 +806,6 @@ These are not part of the public API — every row is consumed by other ATLAS se
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/internal/lens/score-text` | POST | Score text (C(x) only). `scored: false` with `energy`/`normalized` `null` and a `failure` when no score was computed (same kinds as `gx-score`, plus `models_not_loaded`) |
-| `/internal/lens/retrain` | POST | Retrain cost field model. Returns 503 with structured guidance when the models dir is mounted read-only (the standard Compose deployment mounts it `:ro`) — run `atlas lens build` host-side instead. |
 | `/internal/lens/score-per-step` | POST | Per-token C(x)+G(x) scoring (one forward pass over the prompt; returns per-step verdicts plus `first_off_rails_idx` and aggregates). Pass `layer: int` to score a specific intermediate residual layer (requires the per-layer hidden-states extension on llama-server). `scored: false` with an empty `per_step`/`aggregate`, `n_tokens: 0` and a `failure` when no score was computed (same kinds as `gx-score`). |
 
 ---

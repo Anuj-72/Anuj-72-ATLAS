@@ -93,7 +93,6 @@ docker compose logs --tail 50
 | `"lens": false` / "Lens unavailable — verification disabled" | [Lens が読み込まれない / 利用不可](#lens-が読み込まれない--利用不可) |
 | すべての候補のスコアが `cx_energy: 0.0`、`gx_score: 0.5` になる | [すべてのスコアが 0.5 付近](#すべてのスコアが-05-付近) |
 | lens のログに "embedding extraction failed" | [エンベディング抽出の失敗](#エンベディング抽出の失敗) |
-| retrain 時の 503 `models directory is mounted read-only` | [`/internal/lens/retrain` が 503 を返す](#internallensretrain-が-503-models-directory-is-mounted-read-only-を返す) |
 | サンドボックスが `"error_type": "Timeout"` を返す | [コード実行のタイムアウト](#コード実行のタイムアウト) |
 | 特定の言語でサンドボックスがエラーになる | [言語がサポートされていない](#言語がサポートされていない) |
 | `--tasks` を下回る `LIMITED MODE: running N tasks` | [bench が要求より少ないタスクしか実行しない](#bench-が要求より少ないタスクしか実行しないlimited-mode-running-n-tasks-の-n-が---tasks-より小さい) |
@@ -802,7 +801,7 @@ curl -s http://localhost:8099/internal/lens/gx-score \
 
 **原因:** エンベディングサーバーが、Geometric Lens の `C(x)`/`G(x)` アーティファクトの学習時とは異なる `/embedding` の規約で応答しています — 典型的にはプーリング済みではなくトークンごと、あるいは L2 正規化ではなく未正規化（‖v‖ が ~1 ではなく ≈60）。次元数は同じで分布が違うため、コストフィールドの MLP が巨大なエネルギーへ外挿し、`cx_normalized` が飽和します。これは `--pooling mean` なしでサービングスタックを再ビルドした後に発生します（llama-server に `--embd-normalize` というサーバーフラグはありません。レンズは `/embedding` のボディの `embd_normalize` で呼び出しごとに L2 正規化を要求します）。
 
-**確認:** レンズは起動時、およびリロード/リトレーニングのたびに、保存済みのフィンガープリントを再スコアリングします。`/ready` と `/health` を確認してください:
+**確認:** レンズはセルフテスト（起動時、および再試行可能な失敗の後に `/ready` から再実行されるとき）で、保存済みのフィンガープリントを再スコアリングします。`/ready` と `/health` を確認してください:
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
@@ -833,14 +832,6 @@ curl -s http://localhost:8080/embedding \
 ```
 
 `--embeddings` フラグは、すべてのデプロイモード（Compose、ベアメタル、K3s）で llama-server のエントリーポイントが設定します — Geometric Lens が依存しているため、セルフエンベディングは常にオンです。レイヤーごとの hidden-states 拡張を運ぶのも、ネイティブの `/embedding` パス（`/v1/embeddings` ではありません）です。
-
-### `/internal/lens/retrain` が 503 "models directory is mounted read-only" を返す
-
-**症状:** lens サービスに `/internal/lens/retrain` を POST すると、``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"`` 付きの HTTP 503 が返る。
-
-**原因:** 標準の Compose デプロイは lens のモデルディレクトリをコンテナに読み取り専用（`:ro`）でマウントするため、サービス内の retrain エンドポイントは新しいウェイトを書き込めません。エンドポイントはトレーニング前に書き込み可能性をプローブし、トレーニング実行を無駄にする代わりに最初から拒否します。
-
-**修正:** リトレーニングはホスト側で実行してください — `atlas lens build`（ベンチ候補またはラベル付きサンプルファイル）がホスト上にアーティファクトを書き込み、その後 `docker compose restart geometric-lens` でロードします（サービスは起動時にアーティファクトを読み込みます）。ベンチマーク駆動のオンライン再キャリブレーション（`lens_feedback`）は拒否をログに記録してサンプルバッファを保持するため、何も失われません。
 
 ---
 

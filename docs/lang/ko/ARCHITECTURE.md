@@ -364,7 +364,7 @@ Wait 주입은 더 긴 추론 패스를 요청하기 위해 "Wait, let me recons
 
 ### 모듈 맵
 
-파이프라인 스테이지는 `v3-service/stages/`에 있는 13개의 Python 모듈입니다. `v3-service/pipeline.py`가 그중 11개를 오케스트레이션합니다(10개는 직접, `constraint_refinement`는 리파인먼트 루프를 통해). `lens_feedback`과 `embedding_store`는 오프라인 벤치 러너(`atlas/bench/v3_runner.py`)에서만 실행되며, 이 러너는 체크아웃의 `v3-service/`를 자신의 경로에 올리므로 두 호출자가 하나의 스테이지 구현을 공유합니다:
+파이프라인 스테이지는 `v3-service/stages/`에 있는 12개의 Python 모듈입니다. `v3-service/pipeline.py`가 그중 11개를 오케스트레이션합니다(10개는 직접, `constraint_refinement`는 리파인먼트 루프를 통해). `embedding_store`는 오프라인 벤치 러너(`atlas/bench/v3_runner.py`)에서만 실행되며, 이 러너는 체크아웃의 `v3-service/`를 자신의 경로에 올리므로 두 호출자가 하나의 스테이지 구현을 공유합니다:
 
 ```mermaid
 graph LR
@@ -378,14 +378,12 @@ graph LR
     Main --> RL["RefinementLoop 3E"]
     Main --> STG["SelfTestGen"]
     Main --> LLM["LLMClient"]
-    Bench["v3_runner.py\n(bench only)"] --> LF["LensFeedback"]
-    Bench --> ES["EmbeddingStore"]
+    Bench["v3_runner.py\n(bench only)"] --> ES["EmbeddingStore"]
 
     RL --> FA
     RL --> CR["ConstraintRefiner 3B"]
     CG -->|"tier table"| BF
     CG -->|"budget helpers"| RL
-    LF --> BF
 
     style Main fill:#333,color:#fff
     style Bench fill:#333,color:#fff
@@ -400,7 +398,6 @@ graph LR
     style RL fill:#5c3a1a,color:#fff
     style STG fill:#333,color:#fff
     style LLM fill:#333,color:#fff
-    style LF fill:#333,color:#fff
     style ES fill:#333,color:#fff
 ```
 
@@ -436,8 +433,6 @@ graph LR
     V -->|"below artifact severe"| LI["likely_incorrect"]
 
     TR["Training Pipeline\ncontrastive ranking loss"] --> CX
-    EWC["EWC\nFisher information\nprevents catastrophic forgetting"] --> TR
-    RB["Replay Buffer\ndomain-stratified\n30% old / 70% new"] --> TR
 
     MT["Metric Tensor\ndiagonal G(x) in PCA space\n(code exists, not deployed)"] -.-> CORR["Correction Engine\n-α · G⁻¹ · ∇C"]
 
@@ -446,8 +441,6 @@ graph LR
     style GX fill:#2d5016,color:#fff
     style SVC fill:#333,color:#fff
     style TR fill:#1a3a5c,color:#fff
-    style EWC fill:#1a3a5c,color:#fff
-    style RB fill:#1a3a5c,color:#fff
     style MT fill:#555,color:#ccc
     style CORR fill:#555,color:#ccc
 ```

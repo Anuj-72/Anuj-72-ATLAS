@@ -337,7 +337,7 @@ Wait 注入は、より長い推論パスを要求するために「Wait, let me
 
 ### モジュールマップ
 
-`v3-service/stages/` 内の13個の Python モジュールがパイプラインステージです。`v3-service/pipeline.py` はそのうち11個をオーケストレーションします（10個は直接、`constraint_refinement` はリファインメントループ経由）; `lens_feedback` と `embedding_store` はオフラインのベンチランナー（`atlas/bench/v3_runner.py`）の下でのみ動作します。ベンチランナーはチェックアウトの `v3-service/` を自身のパスに載せるため、両方の呼び出し元が単一のステージ実装を共有します:
+`v3-service/stages/` 内の12個の Python モジュールがパイプラインステージです。`v3-service/pipeline.py` はそのうち11個をオーケストレーションします（10個は直接、`constraint_refinement` はリファインメントループ経由）; `embedding_store` はオフラインのベンチランナー（`atlas/bench/v3_runner.py`）の下でのみ動作します。ベンチランナーはチェックアウトの `v3-service/` を自身のパスに載せるため、両方の呼び出し元が単一のステージ実装を共有します:
 
 ```mermaid
 graph LR
@@ -351,14 +351,12 @@ graph LR
     Main --> RL["RefinementLoop 3E"]
     Main --> STG["SelfTestGen"]
     Main --> LLM["LLMClient"]
-    Bench["v3_runner.py\n(bench only)"] --> LF["LensFeedback"]
-    Bench --> ES["EmbeddingStore"]
+    Bench["v3_runner.py\n(bench only)"] --> ES["EmbeddingStore"]
 
     RL --> FA
     RL --> CR["ConstraintRefiner 3B"]
     CG -->|"tier table"| BF
     CG -->|"budget helpers"| RL
-    LF --> BF
 
     style Main fill:#333,color:#fff
     style Bench fill:#333,color:#fff
@@ -373,7 +371,6 @@ graph LR
     style RL fill:#5c3a1a,color:#fff
     style STG fill:#333,color:#fff
     style LLM fill:#333,color:#fff
-    style LF fill:#333,color:#fff
     style ES fill:#333,color:#fff
 ```
 
@@ -409,8 +406,6 @@ graph LR
     V -->|"below artifact severe"| LI["likely_incorrect"]
 
     TR["Training Pipeline\ncontrastive ranking loss"] --> CX
-    EWC["EWC\nFisher information\nprevents catastrophic forgetting"] --> TR
-    RB["Replay Buffer\ndomain-stratified\n30% old / 70% new"] --> TR
 
     MT["Metric Tensor\ndiagonal G(x) in PCA space\n(code exists, not deployed)"] -.-> CORR["Correction Engine\n-α · G⁻¹ · ∇C"]
 
@@ -419,8 +414,6 @@ graph LR
     style GX fill:#2d5016,color:#fff
     style SVC fill:#333,color:#fff
     style TR fill:#1a3a5c,color:#fff
-    style EWC fill:#1a3a5c,color:#fff
-    style RB fill:#1a3a5c,color:#fff
     style MT fill:#555,color:#ccc
     style CORR fill:#555,color:#ccc
 ```

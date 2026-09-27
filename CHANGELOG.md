@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Removed: the lens retrain endpoint
+
+`POST /internal/lens/retrain` answered 503 in every shipped deployment:
+Compose mounts the models directory read-only, and the K3s image runs as a
+user that cannot write it. Its only caller, the bench runner's opt-in
+`--enable-feedback` collector, turned itself off on that 503. It retrained
+on accumulated benchmark embeddings, the test-set-into-scorer path the lens
+training corpus was removed for. Removed with it: `reload_weights`,
+`retrain_cost_field_bce` and `load_cost_field`, the EWC and replay-buffer
+modules, `stages/lens_feedback.py`, the runner's `--enable-feedback` flag
+and its five `ATLAS_V3_*` settings, and the tests and docs of the path. The
+lens is still built host-side with `atlas lens build`.
+
 ### Changed: V3 runs on every request
 
 `bypass_v3`, `v3_mode` and `feasibility_mode` are removed. The first two

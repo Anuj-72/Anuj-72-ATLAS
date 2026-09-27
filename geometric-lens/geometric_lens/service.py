@@ -14,13 +14,12 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Guards the mutable model globals below. reload_weights()/_ensure_models_loaded
-# mutate them as a set; scoring paths read them as a set. Both run concurrently
-# in FastAPI's threadpool (and the v3 ThreadingHTTPServer), so a hot reload can
-# otherwise null a global mid-scoring. Reentrant because the load path nests
-# (_ensure_models_loaded → reload_weights → _ensure_models_loaded). Held only
-# for the global read/swap — never across the torch/xgboost forward passes or
-# the embedding HTTP call.
+# Guards the mutable model globals below. _ensure_models_loaded populates them
+# as a set on the one-time load; scoring paths read them as a set through
+# _snapshot_weights(). Both run concurrently in FastAPI's threadpool (and the
+# v3 ThreadingHTTPServer). Held across the one-time artifact load and the
+# snapshot read — never across the torch/xgboost forward passes or the
+# embedding HTTP call.
 _weights_lock = threading.RLock()
 
 # Lazy-loaded models (CPU only)
@@ -39,7 +38,7 @@ _active_models_dir = None
 
 # Cached llama-server /v1/models probe. The lens artifact must match the
 # model the server is actually serving, not just whatever ATLAS_MODEL_NAME
-# was exported at container start. Reset by reload_weights().
+# was exported at container start. Probed once, on the one-time load.
 _served_model_id = None
 _served_model_probed = False
 
@@ -62,8 +61,8 @@ _gx_thresholds = None
 def _probe_served_model() -> str:
     """Return the model id llama-server is actually serving ("" if unknown).
 
-    Cheap by design: short timeout, one probe per load cycle (the result is
-    cached until reload_weights() resets it).
+    Cheap by design: short timeout, one probe per process (the result is
+    cached; the artifacts load once).
     """
     global _served_model_id, _served_model_probed
     if _served_model_probed:
@@ -198,8 +197,8 @@ def _snapshot_weights():
     """Read the mutable model globals into locals as one consistent set.
 
     Scoring paths call this once, then compute against the returned
-    references so a concurrent reload_weights() cannot null a global (or
-    mix generations) mid-forward-pass. Returns a tuple in a fixed order.
+    references, so a forward pass never reads a global that the one-time
+    load is still populating. Returns a tuple in a fixed order.
     """
     with _weights_lock:
         return (
@@ -212,8 +211,8 @@ def _snapshot_weights():
 def _gx_verdict(score: float, thresholds=None) -> str:
     """Classify a G(x) score only when this model has calibration.
 
-    thresholds defaults to the module global; scoring paths pass a snapshot
-    taken under _weights_lock so a concurrent reload can't swap it mid-call.
+    thresholds defaults to the module global; scoring paths pass the
+    snapshot they took under _weights_lock.
     """
     t = _gx_thresholds if thresholds is None else thresholds
     if t is None:
@@ -281,9 +280,8 @@ class _BoosterClassifier:
 def _load_gx_models(models_dir: str) -> None:
     """Load G(x) models from `models_dir` (XGBoost preferred, metric tensor legacy).
 
-    Shared by _ensure_models_loaded and the reload_weights(model_dir=...)
-    path so per-directory reloads yield a complete lens. Non-fatal: any
-    failure leaves the corresponding G(x) slot None and scoring degrades
+    Called by the one-time load (_do_load_models). Non-fatal: any failure
+    leaves the corresponding G(x) slot None and scoring degrades
     gracefully.
     """
     global _gx_xgboost, _gx_pca_components, _gx_pca_mean, _gx_top_dims
@@ -413,84 +411,6 @@ def _do_load_models() -> bool:
     except Exception as e:
         logger.error(f"Failed to load Geometric Lens models: {e}")
         return False
-
-
-def reload_weights(model_dir: str = None) -> dict:
-    """Reload C(x) and G(x) weights from disk without restarting the process.
-
-    Used after retraining to hot-swap model weights.
-
-    All global mutation happens in _reload_weights_locked(), which declares
-    the globals it assigns; this wrapper only takes the lock.
-    """
-    # Hold the lock across the whole reset+load so scoring never observes the
-    # nulled-then-repopulated globals of an in-progress swap. This is the write
-    # critical section; the artifact loads here are not scoring forward passes.
-    with _weights_lock:
-        return _reload_weights_locked(model_dir)
-
-
-def _reload_weights_locked(model_dir: str = None) -> dict:
-    """Body of reload_weights(); callers hold _weights_lock."""
-    global _cost_field, _gx_xgboost, _gx_pca_components
-    global _gx_pca_mean, _gx_top_dims, _models_loaded, _load_attempted
-    global _cx_normalization, _gx_thresholds
-    global _artifact_model_identity, _model_identity_error
-    global _served_model_id, _served_model_probed, _active_models_dir
-
-    _models_loaded = False
-    _load_attempted = False
-    _cost_field = None
-    _gx_xgboost = None
-    _gx_pca_components = None
-    _gx_pca_mean = None
-    _gx_top_dims = None
-    _cx_normalization = None
-    _gx_thresholds = None
-    _artifact_model_identity = None
-    _model_identity_error = ""
-    _active_models_dir = None
-    from geometric_lens.embedding_extractor import set_embedding_contract
-    set_embedding_contract(None)
-    # Re-probe llama-server on reload — the served model may have changed.
-    _served_model_id = None
-    _served_model_probed = False
-
-    if model_dir:
-        try:
-            from geometric_lens.training import load_cost_field
-            cost_field = load_cost_field(model_dir)
-            dim = next(cost_field.parameters()).shape[1]
-            if not _verify_model_identity(model_dir, embedding_dim=int(dim)):
-                raise ValueError(_model_identity_error)
-            _cost_field = cost_field
-            _active_models_dir = model_dir
-            _load_cx_normalization(model_dir)
-            _load_gx_thresholds(model_dir)
-            _load_gx_models(model_dir)
-            _models_loaded = True
-            _load_attempted = True
-            logger.info(f"Geometric Lens C(x) reloaded from {model_dir}")
-            return {
-                "status": "reloaded",
-                "model_dir": model_dir,
-                "gx_loaded": _gx_xgboost is not None,
-            }
-        except Exception as e:
-            logger.error(f"Failed to reload models from {model_dir}: {e}",
-                         exc_info=True)
-            _load_attempted = True
-            # The message reaches the /internal/lens/retrain HTTP response —
-            # full detail stays in the log above.
-            return {"status": "error",
-                    "message": f"{type(e).__name__}: reload failed "
-                               "(see service log)"}
-    else:
-        success = _ensure_models_loaded()
-        return {
-            "status": "reloaded" if success else "error",
-            "gx_loaded": _gx_xgboost is not None,
-        }
 
 
 # --- a score that did not happen ------------------------------------------------------

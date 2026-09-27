@@ -96,7 +96,6 @@ docker compose logs --tail 50
 | `"lens": false` / "Lens unavailable — verification disabled" | [Lens 未加载/不可用](#lens-未加载不可用) |
 | 每个候选都得到 `cx_energy: 0.0`、`gx_score: 0.5` | [所有分数接近 0.5](#所有分数接近-05) |
 | lens 日志中出现 "embedding extraction failed" | [嵌入向量提取失败](#嵌入向量提取失败) |
-| 重训练时 503 `models directory is mounted read-only` | [`/internal/lens/retrain` 返回 503](#internallensretrain-返回-503-models-directory-is-mounted-read-only) |
 | Sandbox 返回 `"error_type": "Timeout"` | [代码执行超时](#代码执行超时) |
 | Sandbox 对特定语言报错 | [语言不受支持](#语言不受支持) |
 | `LIMITED MODE: running N tasks` 的 N 低于 `--tasks` | [bench 运行的任务数少于请求数](#bench-运行的任务数少于请求数limited-mode-running-n-tasks-的-n-小于---tasks) |
@@ -805,7 +804,7 @@ curl -s http://localhost:8099/internal/lens/gx-score \
 
 **原因：** 嵌入服务器提供的 `/embedding` 约定，与 Geometric Lens 的 `C(x)`/`G(x)` 工件训练时所用的不一致 —— 通常是逐 token 而非池化，或未归一化而非 L2 归一化（‖v‖≈60 而不是 ~1）。维度相同、分布不同；cost-field MLP 会外推出一个巨大的能量，`cx_normalized` 随之饱和。这通常发生在没有 `--pooling mean` 就重建服务栈之后（llama-server 没有 `--embd-normalize` 这个服务端标志；lens 通过 `/embedding` 请求体中的 `embd_normalize` 逐次请求 L2 归一化）。
 
-**验证：** lens 会在启动时以及每次重载/重训练时，对存储的指纹重新打分。检查 `/ready` 和 `/health`：
+**验证：** lens 会在自检中（启动时，以及可重试的失败之后由 `/ready` 重新运行时）对存储的指纹重新打分。检查 `/ready` 和 `/health`：
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
@@ -836,14 +835,6 @@ curl -s http://localhost:8080/embedding \
 ```
 
 `--embeddings` 标志由 llama-server 的入口点在每种部署模式（Compose、裸机、K3s）中都会设置 —— 自嵌入始终开启，因为 Geometric Lens 依赖它。逐层 hidden-states 扩展也由原生的 `/embedding` 路径（而非 `/v1/embeddings`）承载。
-
-### `/internal/lens/retrain` 返回 503 "models directory is mounted read-only"
-
-**现象：** 对 lens 服务 POST `/internal/lens/retrain` 返回 HTTP 503，带 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``。
-
-**原因：** 标准的 Compose 部署把 lens 模型目录以只读（`:ro`）挂载进容器，因此服务内的重训练端点无法写出新权重。该端点在训练前会探测可写性，宁可提前拒绝也不浪费一轮训练。
-
-**解决方法：** 在主机侧运行重训练 —— `atlas lens build`（bench 候选或带标签的样本文件）在主机上写出工件，然后 `docker compose restart geometric-lens` 加载它们（服务在启动时读取工件）。基准驱动的在线重校准（`lens_feedback`）会记录这次拒绝并保留其样本缓冲区，因此不会丢失任何东西。
 
 ---
 

@@ -638,7 +638,7 @@ Each tier maps to a system prompt (direct vs. think-step-by-step) and a max-toke
 
 ### Module Map
 
-The pipeline stages are 13 Python modules in `v3-service/stages/`. `v3-service/pipeline.py` orchestrates 11 of them (10 directly; `constraint_refinement` via the refinement loop); `lens_feedback` and `embedding_store` run only under the offline bench runner (`atlas/bench/v3_runner.py`, which puts the checkout's `v3-service/` on its path so both callers share one stage implementation):
+The pipeline stages are 12 Python modules in `v3-service/stages/`. `v3-service/pipeline.py` orchestrates 11 of them (10 directly; `constraint_refinement` via the refinement loop); `embedding_store` runs only under the offline bench runner (`atlas/bench/v3_runner.py`, which puts the checkout's `v3-service/` on its path so both callers share one stage implementation):
 
 ```mermaid
 graph LR
@@ -652,14 +652,12 @@ graph LR
     Main --> RL["RefinementLoop 3E"]
     Main --> STG["SelfTestGen"]
     Main --> LLM["LLMClient"]
-    Bench["v3_runner.py\n(bench only)"] --> LF["LensFeedback"]
-    Bench --> ES["EmbeddingStore"]
+    Bench["v3_runner.py\n(bench only)"] --> ES["EmbeddingStore"]
 
     RL --> FA
     RL --> CR["ConstraintRefiner 3B"]
     CG -->|"tier table"| BF
     CG -->|"budget helpers"| RL
-    LF --> BF
 
     style Main fill:#333,color:#fff
     style Bench fill:#333,color:#fff
@@ -674,7 +672,6 @@ graph LR
     style RL fill:#5c3a1a,color:#fff
     style STG fill:#333,color:#fff
     style LLM fill:#333,color:#fff
-    style LF fill:#333,color:#fff
     style ES fill:#333,color:#fff
 ```
 
@@ -710,16 +707,12 @@ graph LR
     V -->|"below artifact severe"| LI["likely_incorrect"]
 
     TR["Training Pipeline\ncontrastive ranking loss"] --> CX
-    EWC["EWC\nFisher information\nprevents catastrophic forgetting"] --> TR
-    RB["Replay Buffer\ndomain-stratified\n30% old / 70% new"] --> TR
 
     style EE fill:#333,color:#fff
     style CX fill:#2d5016,color:#fff
     style GX fill:#2d5016,color:#fff
     style SVC fill:#333,color:#fff
     style TR fill:#1a3a5c,color:#fff
-    style EWC fill:#1a3a5c,color:#fff
-    style RB fill:#1a3a5c,color:#fff
 ```
 
 The following figures describe the frozen reference artifacts used for the

@@ -96,7 +96,6 @@ docker compose logs --tail 50
 | `"lens": false` / "Lens unavailable — verification disabled" | [Lens가 로드되지 않음 / 사용 불가](#lens가-로드되지-않음--사용-불가) |
 | 모든 후보가 `cx_energy: 0.0`, `gx_score: 0.5`를 받음 | [모든 점수가 0.5 부근](#모든-점수가-05-부근) |
 | lens 로그에 "embedding extraction failed" | [임베딩 추출 실패](#임베딩-추출-실패) |
-| 재학습 시 503 `models directory is mounted read-only` | [`/internal/lens/retrain`이 503을 반환](#internallensretrain이-503-models-directory-is-mounted-read-only를-반환) |
 | 샌드박스가 `"error_type": "Timeout"`을 반환 | [코드 실행 타임아웃](#코드-실행-타임아웃) |
 | 특정 언어에서 샌드박스 오류 | [지원되지 않는 언어](#지원되지-않는-언어) |
 | `--tasks`보다 작은 `LIMITED MODE: running N tasks` | [bench가 요청보다 적은 태스크만 실행함](#bench가-요청보다-적은-태스크만-실행함-limited-mode-running-n-tasks의-n이---tasks보다-작음) |
@@ -825,7 +824,7 @@ curl -s http://localhost:8099/internal/lens/gx-score \
 
 **원인:** 임베딩 서버가 Geometric Lens의 `C(x)`/`G(x)` 아티팩트가 학습된 것과 다른 `/embedding` 규약으로 응답하고 있습니다 — 보통 풀링 대신 토큰별, 또는 L2 정규화 대신 비정규화(‖v‖가 ~1이 아니라 ≈60). 차원은 같고 분포가 다르므로, 코스트 필드 MLP가 거대한 에너지로 외삽하고 `cx_normalized`가 포화됩니다. `--pooling mean` 없이 서빙 스택을 재빌드한 뒤에 발생합니다(llama-server에는 `--embd-normalize` 서버 플래그가 없습니다. 렌즈는 `/embedding` 본문의 `embd_normalize`로 호출마다 L2 정규화를 요청합니다).
 
-**확인:** 렌즈는 부팅 시, 그리고 리로드/재학습 때마다 저장된 지문을 다시 채점합니다. `/ready`와 `/health`를 확인하세요:
+**확인:** 렌즈는 자체 테스트(부팅 시, 그리고 재시도 가능한 실패 후 `/ready`가 다시 실행할 때)에서 저장된 지문을 다시 채점합니다. `/ready`와 `/health`를 확인하세요:
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
@@ -856,14 +855,6 @@ curl -s http://localhost:8080/embedding \
 ```
 
 `--embeddings` 플래그는 모든 배포 모드(Compose, 베어메탈, K3s)에서 llama-server 엔트리포인트가 설정합니다 — Geometric Lens가 셀프 임베딩에 의존하므로 항상 켜져 있습니다. 레이어별 hidden-states 확장을 실어 나르는 것도 네이티브 `/embedding` 경로입니다(`/v1/embeddings`가 아님).
-
-### `/internal/lens/retrain`이 503 "models directory is mounted read-only"를 반환
-
-**증상:** lens 서비스에 `/internal/lens/retrain`을 POST하면 ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``과 함께 HTTP 503이 반환됩니다.
-
-**원인:** 표준 Compose 배포는 lens 모델 디렉토리를 읽기 전용(`:ro`)으로 컨테이너에 마운트하므로, 서비스 내 재학습 엔드포인트가 새 가중치를 쓸 수 없습니다. 엔드포인트는 학습 전에 쓰기 가능 여부를 탐침하고, 학습 실행을 낭비하는 대신 처음부터 거부합니다.
-
-**해결:** 재학습을 호스트 측에서 실행하세요 — `atlas lens build`(벤치 후보 또는 레이블된 샘플 파일)가 호스트에 아티팩트를 쓰고, `docker compose restart geometric-lens`로 로드합니다(서비스는 시작 시 아티팩트를 읽습니다). 벤치마크 기반 온라인 재캘리브레이션(`lens_feedback`)은 거부를 로그로 남기고 샘플 버퍼를 유지하므로 잃는 것은 없습니다.
 
 ---
 

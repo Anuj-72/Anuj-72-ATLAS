@@ -5,8 +5,9 @@ health checks green — the 2026-07-15 bench incident: a rebuilt embed
 server switched to per-token unnormalized responses, C(x) served ~600
 against a calibrated range of ~20-30, and pods stayed Ready throughout.
 A fingerprint written at training time makes that state detectable: the
-boot self-test (and every reload/retrain) re-scores the references and
-fails /ready when any deviates beyond tolerance.
+lens self-test (at boot, and again from /ready after a retryable failure)
+re-scores the references and fails /ready when any deviates beyond
+tolerance.
 
 File format (drift_fingerprint.json, next to cost_field.pt):
 
@@ -125,8 +126,8 @@ def write_fingerprint(models_dir: str,
                       tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
                       note: str = "") -> str:
     """Score the reference texts through the live stack and persist the
-    fingerprint next to the artifacts. Called after a successful retrain
-    so the expectations always describe the current weights + embedding
+    fingerprint next to the artifacts. Write it right after training, so
+    the expectations describe the current weights + embedding
     convention."""
     fp = validate_fingerprint({
         "tolerance_pct": tolerance_pct,

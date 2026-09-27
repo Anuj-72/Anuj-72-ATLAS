@@ -66,7 +66,7 @@ under `itigges22/*`, hash-pinned in the registry.
 ## Research implementations
 
 ATLAS implements techniques from published research (clean-room, from
-the papers): PlanSearch, budget forcing, EWC, Thompson sampling
+the papers): PlanSearch, budget forcing, Thompson sampling
 routing, activation steering, speculative-decode-era patches,
 and others — the full citation list with arXiv links is
 `docs/SOURCES.md`. No third-party research *code* is vendored.

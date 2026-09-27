@@ -97,7 +97,6 @@ Exact error strings and symptoms, mapped to their entries.
 | Every candidate scores `cx_energy: 0.0`, `gx_score: 0.5` | [All Scores Near 0.5](#all-scores-near-05) |
 | Scores plausible but off-scale; `fingerprint_ok: false` / `drifted: true` | [Embedding-convention drift](#scores-look-plausible-but-are-wildly-off-scale-embedding-convention-drift) |
 | "embedding extraction failed" in lens logs | [Embedding Extraction Fails](#embedding-extraction-fails) |
-| 503 `models directory is mounted read-only` on retrain | [`/internal/lens/retrain` Returns 503](#internallensretrain-returns-503-models-directory-is-mounted-read-only) |
 | Sandbox returns `"error_type": "Timeout"` | [Code Execution Timeout](#code-execution-timeout) |
 | Sandbox errors on a specific language | [Language Not Supported](#language-not-supported) |
 | `LIMITED MODE: running N tasks` below `--tasks` | [Bench runs fewer tasks than requested](#bench-runs-fewer-tasks-than-requested-limited-mode-running-n-tasks-with-n-below---tasks) |
@@ -851,7 +850,7 @@ If `enabled: false` or `cx_energy: 0.0`, the models aren't loaded. This is expec
 
 **Cause:** The embed server is serving a different `/embedding` convention than the one the Geometric Lens `C(x)`/`G(x)` artifacts were trained on — typically per-token instead of pooled, or unnormalized instead of L2-normalized (‖v‖≈60 instead of ~1). Same dimensionality, wrong distribution; the cost-field MLP extrapolates to a huge energy and `cx_normalized` saturates. This happens after rebuilding the serving stack without `--pooling mean` (llama-server has no `--embd-normalize` server flag; the lens requests L2 normalization per-call via `embd_normalize` in the `/embedding` body).
 
-**Verify:** the lens re-scores a stored fingerprint at boot and on every reload/retrain. Check `/ready` and `/health`:
+**Verify:** the lens re-scores a stored fingerprint in its self-test (at boot, and again from `/ready` after a retryable failure). Check `/ready` and `/health`:
 ```bash
 curl -s http://localhost:8099/health | python3 -m json.tool | grep -A2 fingerprint
 ```
@@ -903,14 +902,6 @@ curl -s http://localhost:8099/health | python3 -c "import sys,json; l=json.load(
 `embed_capacity_tokens` is the longest input the lens can score; `embed_capacity_source` is `declared` (from `ATLAS_UBATCH`) or `observed` (from a refusal, authoritative).
 
 **Fix:** Raising `ATLAS_UBATCH` raises the capacity, at a VRAM cost of roughly `ubatch × n_embd × 280` bytes for the compute buffer (about 4.4 GB at 4,096 on a 3,840-dim model): size it with `atlas tier fit`, recreate llama-server, and confirm it starts under `--fit off`. Lowering `ATLAS_MAX_TOKENS` bounds the writes the proxy asks the lens to score. Neither makes a split input scorable; scoring past the physical batch needs the calibration work described in [ADR 0010](adr/0010-lens-capacity-boundary-is-typed.md).
-
-### `/internal/lens/retrain` Returns 503 "models directory is mounted read-only"
-
-**Symptom:** POSTing `/internal/lens/retrain` on the lens service returns HTTP 503 with ``"reason": "models directory is mounted read-only; run host-side retrain via `atlas lens build`"``.
-
-**Cause:** The standard Compose deployment mounts the lens models directory into the container read-only (`:ro`), so the in-service retrain endpoint cannot write new weights. The endpoint probes writability before training and refuses up front rather than burning a training run.
-
-**Fix:** Run the retrain host-side — `atlas lens build` (bench candidates or a labeled sample file) writes the artifacts on the host, then `docker compose restart geometric-lens` loads them (the service reads its artifacts at startup). Benchmark-driven online recalibration (`lens_feedback`) logs the refusal and keeps its sample buffer, so nothing is lost.
 
 ---
 

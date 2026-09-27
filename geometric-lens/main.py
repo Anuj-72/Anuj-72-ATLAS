@@ -1,9 +1,6 @@
 import logging
-import os
-import tempfile
-import threading
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -63,8 +60,8 @@ from geometric_lens.structured_log import (install as _install_logging,
 _install_logging("geometric-lens")
 logger = logging.getLogger(__name__)
 
-# Boot-time self-test cache. Populated in lifespan() and re-populated after a
-# successful reload/retrain; read by /health and /ready.
+# Boot-time self-test cache. Populated in lifespan() and re-populated when
+# /ready re-runs a retryable self-test; read by /health and /ready.
 # Keys: lens_enabled, lens_cost_field_loaded, lens_cost_field_dim, lens_gx_loaded,
 #       lens_gx_type, lens_cx_calibrated, lens_gx_calibrated, lens_artifact_model,
 #       embed_dim,
@@ -93,11 +90,6 @@ _BOOT_STATE_DEFAULTS: Dict[str, Any] = {
 }
 _BOOT_STATE: Dict[str, Any] = dict(_BOOT_STATE_DEFAULTS)
 
-# Serializes concurrent /internal/lens/retrain calls against each other —
-# retrain mutates both the geometric_lens.service module globals and the
-# on-disk artifacts.
-_lens_weights_lock = threading.Lock()
-
 
 def _lens_drifted() -> bool:
     """True when the drift fingerprint check failed — scoring responses
@@ -119,7 +111,7 @@ def _apply_drift_flags(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _run_lens_self_test() -> None:
-    """C(x)/G(x) self-test — run at boot and after a successful reload/retrain.
+    """C(x)/G(x) self-test — run at boot, and again by /ready after a retryable failure.
 
     Loads weights, fetches a dummy embedding from llama-server, checks the
     cost-field input dim matches the embedding dim (the silent killer
@@ -452,177 +444,6 @@ def lens_score_text(request: LensScoreTextRequest):
             "failure": failure_record(e, "score-text"),
             "error": _safe_detail(e, "lens score-text"),
         }
-
-
-class LensRetrainRequest(BaseModel):
-    training_data: List[Dict]
-    epochs: int = 50
-    domain: str = "LCB"
-    use_replay: bool = True
-    use_ewc: bool = True
-    lambda_ewc: float = 1000.0
-
-
-def _models_dir_writable(models_dir: str) -> bool:
-    """Probe whether the models dir accepts writes.
-
-    docker-compose mounts the models dir read-only (:ro); os.access alone
-    can misreport on such mounts, so back it with a tempfile probe.
-    """
-    if not os.access(models_dir, os.W_OK):
-        return False
-    try:
-        fd, probe = tempfile.mkstemp(dir=models_dir, prefix=".write_probe_")
-        os.close(fd)
-        os.remove(probe)
-        return True
-    except OSError:
-        return False
-
-
-@app.post("/internal/lens/retrain")
-def lens_retrain(request: LensRetrainRequest):
-    """Retrain C(x) on accumulated pass/fail embeddings from benchmark execution."""
-    models_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "geometric_lens", "models"
-    )
-    # Fail before burning a training run: in the standard compose deployment
-    # the models dir is mounted read-only into this container.
-    if not _models_dir_writable(models_dir):
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "status": "error",
-                "reason": ("models directory is mounted read-only; "
-                           "run host-side retrain via `atlas lens build`"),
-            },
-        )
-
-    with _lens_weights_lock:
-        try:
-            from geometric_lens.training import retrain_cost_field_bce
-            from geometric_lens.service import reload_weights
-
-            embeddings = [d["embedding"] for d in request.training_data]
-            labels = [d["label"] for d in request.training_data]
-
-            save_path = os.path.join(models_dir, "cost_field.pt")
-
-            # Phase 4: Load replay buffer if enabled (4A-CL)
-            replay_buffer = None
-            if request.use_replay:
-                from geometric_lens.replay_buffer import ReplayBuffer
-                replay_buffer = ReplayBuffer(max_size=5000)
-                replay_path = os.path.join(models_dir, "replay_buffer.json")
-                replay_buffer.load(replay_path)  # OK if file doesn't exist yet
-
-            # Phase 4: Load EWC state if enabled (4A-EWC)
-            ewc = None
-            if request.use_ewc:
-                from geometric_lens.ewc import ElasticWeightConsolidation
-                ewc = ElasticWeightConsolidation(lambda_ewc=request.lambda_ewc)
-                ewc_path = os.path.join(models_dir, "ewc_state.pt")
-                ewc.load(ewc_path)  # OK if file doesn't exist yet
-
-            metrics = retrain_cost_field_bce(
-                embeddings=embeddings,
-                labels=labels,
-                epochs=request.epochs,
-                save_path=save_path,
-                replay_buffer=replay_buffer,
-                ewc=ewc,
-                domain=request.domain,
-            )
-
-            if not metrics.get("skipped", False):
-                from geometric_lens.calibration import (
-                    derive_cx_normalization, save_cx_normalization,
-                )
-                calibration = derive_cx_normalization(
-                    metrics["pass_energy_mean"], metrics["fail_energy_mean"])
-                save_cx_normalization(models_dir, calibration)
-
-                # The load path hard-requires model_identity.json (the
-                # cross-model artifact guard). A retrain produces a new
-                # bundle for the model llama-server is serving RIGHT NOW,
-                # so stamp/refresh the identity here — without this, a
-                # retrained bundle fails the identity check on the next
-                # container restart and the whole lens stays disabled.
-                from geometric_lens.identity import save_model_identity
-                from geometric_lens.service import _probe_served_model
-                served = _probe_served_model() or os.environ.get(
-                    "ATLAS_MODEL_NAME", "").strip()
-                if served and embeddings:
-                    # Record the embedding convention the training data was
-                    # extracted under — the caller embedded via this same
-                    # server, so the live convention IS the trained one.
-                    from geometric_lens.embedding_extractor import (
-                        observe_embedding_convention,
-                    )
-                    try:
-                        contract = observe_embedding_convention()
-                    except Exception as exc:
-                        logger.warning(
-                            "retrain: embedding-convention probe failed "
-                            "(%s) — identity written without a contract",
-                            exc)
-                        contract = None
-                    save_model_identity(models_dir, served,
-                                        len(embeddings[0]),
-                                        embedding_contract=contract)
-                    metrics["model_identity"] = served
-                else:
-                    logger.warning(
-                        "retrain: could not resolve the served model — "
-                        "model_identity.json not written; the reloaded "
-                        "bundle will fail the identity check on restart")
-
-            # Remove non-serializable 'model' key from metrics
-            metrics.pop("model", None)
-
-            # Hot-reload if retrain succeeded and wasn't skipped
-            if not metrics.get("skipped", False):
-                reload_result = reload_weights()
-                metrics["reload_status"] = reload_result.get("status", "unknown")
-
-                # Phase 4: Save replay buffer and EWC state
-                if replay_buffer is not None:
-                    replay_path = os.path.join(models_dir, "replay_buffer.json")
-                    replay_buffer.save(replay_path)
-                    metrics["replay_buffer_size"] = len(replay_buffer)
-
-                if ewc is not None:
-                    ewc_path = os.path.join(models_dir, "ewc_state.pt")
-                    ewc.save(ewc_path)
-                    metrics["ewc_initialized"] = ewc.is_initialized
-
-                # Refresh the boot-state cache so /ready reflects the
-                # freshly-retrained weights instead of the boot snapshot.
-                if reload_result.get("status") == "reloaded":
-                    # Write the fingerprint BEFORE the self-test re-runs:
-                    # the retrain moved the energies, so the previous
-                    # fingerprint would (correctly) flag the new weights
-                    # as drifted and wedge /ready.
-                    try:
-                        from geometric_lens import service as _svc
-                        from geometric_lens.drift import write_fingerprint
-                        write_fingerprint(
-                            models_dir,
-                            lambda t: _svc.evaluate_energy(t)[0],
-                            note=f"/internal/lens/retrain for "
-                                 f"{served or 'unknown model'}")
-                        metrics["fingerprint_written"] = True
-                    except Exception as exc:
-                        logger.warning(
-                            "drift fingerprint write failed after "
-                            "retrain: %s", exc)
-                        metrics["fingerprint_written"] = False
-                    _run_lens_self_test()
-
-            return {"status": "ok", "metrics": metrics}
-        except Exception as e:
-            return {"status": "error", "error": _safe_detail(e, "lens retrain")}
 
 
 @app.post("/internal/lens/gx-score")

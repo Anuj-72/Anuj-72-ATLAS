@@ -484,10 +484,6 @@ deploy_manifests() {
     log_info "Deploying Atlas services..."
     kubectl apply -n "$ATLAS_NAMESPACE" -f "$K8S_DIR/manifests/sandbox-deployment.yaml"
 
-    # Apply training CronJob if enabled
-    # Nightly lens-retrain CronJob removed: /internal/lens/retrain requires a
-    # training_data payload a scheduled curl cannot supply. Re-add a template
-    # once the service exposes a self-contained retrain trigger.
     log_info "Manifests deployed"
 }
 

@@ -360,7 +360,7 @@ Wait 注入会追加 "Wait, let me reconsider.\n" 以请求更长的一轮推理
 
 ### 模块图
 
-pipeline 阶段是 `v3-service/stages/` 中的 13 个 Python 模块。`v3-service/pipeline.py` 编排其中 11 个（10 个直接调用，`constraint_refinement` 通过精化循环）；`lens_feedback` 和 `embedding_store` 只在离线 bench 运行器（`atlas/bench/v3_runner.py`）下运行，该运行器会把 checkout 中的 `v3-service/` 加入自身路径，因此两个调用方共享同一份阶段实现：
+pipeline 阶段是 `v3-service/stages/` 中的 12 个 Python 模块。`v3-service/pipeline.py` 编排其中 11 个（10 个直接调用，`constraint_refinement` 通过精化循环）；`embedding_store` 只在离线 bench 运行器（`atlas/bench/v3_runner.py`）下运行，该运行器会把 checkout 中的 `v3-service/` 加入自身路径，因此两个调用方共享同一份阶段实现：
 
 ```mermaid
 graph LR
@@ -374,14 +374,12 @@ graph LR
     Main --> RL["RefinementLoop 3E"]
     Main --> STG["SelfTestGen"]
     Main --> LLM["LLMClient"]
-    Bench["v3_runner.py\n(bench only)"] --> LF["LensFeedback"]
-    Bench --> ES["EmbeddingStore"]
+    Bench["v3_runner.py\n(bench only)"] --> ES["EmbeddingStore"]
 
     RL --> FA
     RL --> CR["ConstraintRefiner 3B"]
     CG -->|"tier table"| BF
     CG -->|"budget helpers"| RL
-    LF --> BF
 
     style Main fill:#333,color:#fff
     style Bench fill:#333,color:#fff
@@ -396,7 +394,6 @@ graph LR
     style RL fill:#5c3a1a,color:#fff
     style STG fill:#333,color:#fff
     style LLM fill:#333,color:#fff
-    style LF fill:#333,color:#fff
     style ES fill:#333,color:#fff
 ```
 
@@ -432,8 +429,6 @@ graph LR
     V -->|"below artifact severe"| LI["likely_incorrect"]
 
     TR["Training Pipeline\ncontrastive ranking loss"] --> CX
-    EWC["EWC\nFisher information\nprevents catastrophic forgetting"] --> TR
-    RB["Replay Buffer\ndomain-stratified\n30% old / 70% new"] --> TR
 
     MT["Metric Tensor\ndiagonal G(x) in PCA space\n(code exists, not deployed)"] -.-> CORR["Correction Engine\n-α · G⁻¹ · ∇C"]
 
@@ -442,8 +437,6 @@ graph LR
     style GX fill:#2d5016,color:#fff
     style SVC fill:#333,color:#fff
     style TR fill:#1a3a5c,color:#fff
-    style EWC fill:#1a3a5c,color:#fff
-    style RB fill:#1a3a5c,color:#fff
     style MT fill:#555,color:#ccc
     style CORR fill:#555,color:#ccc
 ```

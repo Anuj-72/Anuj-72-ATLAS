@@ -664,11 +664,6 @@ Consumed by `atlas/bench/v3_runner.py:_load_v3_config` for ablation studies. The
 |----------|---------|-------------|
 | `ATLAS_V3_BUDGET_FORCING_DEFAULT_TIER` | `"standard"` | Default Budget Forcing tier when difficulty estimation is unavailable |
 | `ATLAS_V3_PLAN_SEARCH_NUM_PLANS` | `3` | Plans generated per problem (overrides `PlanSearchConfig.num_plans`) |
-| `ATLAS_V3_EWC_LAMBDA` | `1000.0` | EWC regularization strength (Phase 4A-EWC) |
-| `ATLAS_V3_REPLAY_BUFFER_MAX_SIZE` | `5000` | Replay buffer capacity (Phase 4A-CL) |
-| `ATLAS_V3_REPLAY_BUFFER_REPLAY_RATIO` | `0.30` | Fraction of new training mixed with replayed examples |
-| `ATLAS_V3_LENS_FEEDBACK_ENABLED` | `false` | Toggle online lens recalibration during benchmark runs |
-| `ATLAS_V3_LENS_FEEDBACK_RETRAIN_INTERVAL` | `50` | Retrain every N benchmark problems |
 
 ### 8.9 Advanced
 
@@ -687,4 +682,4 @@ The install scripts also honor three runtime-only env vars (not in `atlas.conf` 
 
 ### 8.10 Removed variables
 
-Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_LENS_TRAINING_DIR` (the hostPath of the lens training corpus the proxy no longer collects), `ATLAS_PVC_LENS_STATE_SIZE` (sized the `lens-state` PVC, removed with the pattern cache and its SQLite store), `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is host-side `atlas lens build`).
+Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_V3_EWC_LAMBDA`, `ATLAS_V3_REPLAY_BUFFER_MAX_SIZE`, `ATLAS_V3_REPLAY_BUFFER_REPLAY_RATIO`, `ATLAS_V3_LENS_FEEDBACK_ENABLED` and `ATLAS_V3_LENS_FEEDBACK_RETRAIN_INTERVAL` (bench-runner knobs for the online lens retrain, removed with the lens retrain endpoint; the runner applied only the retrain interval), `ATLAS_LENS_TRAINING_DIR` (the hostPath of the lens training corpus the proxy no longer collects), `ATLAS_PVC_LENS_STATE_SIZE` (sized the `lens-state` PVC, removed with the pattern cache and its SQLite store), `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is host-side `atlas lens build`).

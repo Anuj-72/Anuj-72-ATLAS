@@ -59,13 +59,6 @@ Tree-sitter-backed structural tooling: `structural_edit`, the symbol index, the 
 
 - **Sotnikov, D., 2026.** *chiasmus: tree-sitter + solver call graph for code analysis.* GitHub [yogthos/chiasmus](https://github.com/yogthos/chiasmus). Inspiration for the structural code-reasoning layer.
 
-### Lens Evolution — continual learning (shipped)
-
-Phase 4 of the V3 PRD. ATLAS retrains C(x) across domains without wiping prior knowledge using EWC + replay buffer. Code lives in `geometric-lens/geometric_lens/{ewc,replay_buffer,training}.py`; validation in `tests/v3/test_phase4_validation.py`.
-
-- **Kirkpatrick et al., 2017.** *Overcoming Catastrophic Forgetting in Neural Networks (EWC).* PNAS, [doi:10.1073/pnas.1611835114](https://doi.org/10.1073/pnas.1611835114). **Primary citation for the EWC implementation** — diagonal Fisher penalty added during C(x) retraining to protect prior-domain weights.
-- **Lin, 1992 / Parisi et al., 2019.** Experience Replay / continual learning surveys. Basis for the domain-stratified replay buffer that samples representative pass/fail pairs from every domain C(x) has trained on.
-
 ### Design constraints (shipped)
 
 Papers that informed architectural decisions by describing what *not* to do.
@@ -79,6 +72,8 @@ Papers that informed architectural decisions by describing what *not* to do.
 Research that informed components that are *not* part of the current release. Kept for historical context.
 
 - **Ebbinghaus, 1885**, *Über das Gedächtnis*; **ACT-R** (Anderson et al.); **Park et al., 2025**, *Memoria: Human-Inspired Memory Architecture*, arXiv [2310.03052](https://arxiv.org/abs/2310.03052). The decay term, its half-life baseline and the Hebbian co-occurrence weights of the pattern cache. **The pattern cache was removed in 2026-09**: it stored the solution of every successful session, evaluation runs included, and injected them into later runs.
+
+- **Kirkpatrick et al., 2017.** *Overcoming Catastrophic Forgetting in Neural Networks (EWC).* PNAS, [doi:10.1073/pnas.1611835114](https://doi.org/10.1073/pnas.1611835114); **Lin, 1992 / Parisi et al., 2019**, Experience Replay / continual learning surveys. The diagonal Fisher penalty and the domain-stratified replay buffer of the Phase 4 online C(x) retrain. **Both were removed in 2026-09 with the lens retrain endpoint they served**, which every shipped deployment refused (the service cannot write its models dir) and no product path called. Lens retraining is host-side `atlas lens build`.
 
 - **Liu et al., 2025.** *Compute-Optimal TTS: 0.5B beats GPT-4o.* arXiv [2512.02008](https://arxiv.org/abs/2512.02008). Motivated the Confidence Router's difficulty-aware routing. **The router was removed in the 2026-07 simplification** — it was reachable only through lens endpoints nothing in the product called.
 - **VectifyAI, 2025.** *MAFIN 2.5 / PageIndex.* Reasoning-based retrieval over tree structures. Basis for the PageIndex V2 indexer (tree-sitter AST + BM25 + LLM-guided traversal), **removed with the retrieval stack in the 2026-08 simplification**.
