@@ -16,6 +16,9 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays 06:00 UTC
 
+# No token scopes by default; the job below asks for what it needs.
+permissions: {}
+
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true

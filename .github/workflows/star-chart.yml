@@ -16,13 +16,15 @@ on:
     - cron: '0 5 * * 1'   # weekly, Monday 05:00 UTC
   workflow_dispatch: {}
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   render:
     if: github.repository == 'inferstep/ATLAS'
     runs-on: ubuntu-latest
+    permissions:
+      # Pushes the rendered SVGs to the star-history branch.
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
