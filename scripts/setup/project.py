@@ -73,12 +73,12 @@ OTHER_FIELDS = {"Shepherd": "TEXT", "Start Date": "DATE", "Target Date": "DATE"}
 # (name, layout, filter). The API sets name, layout, filter and visible
 # fields; sorting, grouping and roadmap dates are set in the browser.
 # Custom fields with spaces are filtered by their hyphenated name.
-# Milestones have no @current keyword, so "Current Release" shows every
-# open item until a release milestone exists and its name goes here.
+# Milestones have no @current keyword, so "Current Release" names the
+# release in progress; change it when that release ships.
 VIEWS = [
     ("Start Here", "TABLE_LAYOUT", "status:Ready contributor-level:Starter no:assignee"),
     ("Help Wanted", "TABLE_LAYOUT", "status:Ready no:assignee"),
-    ("Current Release", "BOARD_LAYOUT", "is:open"),
+    ("Current Release", "BOARD_LAYOUT", 'milestone:"v3.1.4"'),
     ("Critical Path", "TABLE_LAYOUT", "critical-path:Yes -status:Done"),
     ("Roadmap", "ROADMAP_LAYOUT", "type:Epic"),
     ("RFCs", "TABLE_LAYOUT", "type:RFC is:open"),
