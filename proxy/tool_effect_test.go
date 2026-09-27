@@ -1583,7 +1583,6 @@ func TestWhichMutatorsCanEverPromoteACheckpoint(t *testing.T) {
 			ctx := ledgerToolCtx(t, dir)
 			ctx.SandboxURL = srv.URL
 			ctx.V3URL = srv.URL
-			ctx.BypassV3 = true
 			if c.read {
 				r, _ := json.Marshal(map[string]string{"path": "m.py"})
 				executeToolCall("read_file", r, ctx)

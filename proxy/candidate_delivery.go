@@ -53,6 +53,11 @@ type deliveryAuthorization struct {
 	AutomaticEligible bool
 	// AutomaticRefusal names the first thing that was wrong when it did not.
 	AutomaticRefusal string
+	// Vetoes are the hard vetoes, and Unmet the classified unmet obligations
+	// they were computed from: the one list the automatic eligibility and the
+	// policy owner both read.
+	Vetoes []string
+	Unmet  map[string]AuthorizationReason
 	// Basis is why a licence would exist, kept even when capture-only takes it
 	// away, so the acquisition can record which rule earned it.
 	Basis grantBasis
@@ -147,27 +152,36 @@ func authorizeCandidateDelivery(ctx *AgentContext, entry routeEntry, path, code 
 	}
 	d := decideAuthorization(ctx, in)
 	recordAuthorizationDecision(ctx, in, d)
+	// The hard vetoes, computed after the decision and the structural
+	// classification they read. Computed before them, the decision's vetoes
+	// (weaker than the baseline, stale identity, missing evidence) and a
+	// syntax check that never ran could not fire, and an automatic delivery
+	// landed on a declared output whose check never ran.
+	vetoIn := automatic.VetoInput
+	vetoIn.Unmet, vetoIn.Decision = unmet, d
+	vetoes := advisoryVetoes(vetoIn)
 	// Contractless traffic, a contract that stated no output knowledge under
 	// strict or advisory, and an automatic request whose tool call named no
 	// usable target: there is nothing for a typed answer to be about, and the
 	// existing delivery decision keeps its exact previous behaviour.
 	if !declared && !structured {
-		return deliveryAuthorization{Typed: false, Decision: d}
+		return deliveryAuthorization{Typed: false, Decision: d, Vetoes: vetoes, Unmet: unmet}
 	}
 
 	met, _ := declaredVerificationCoverage(in.Obligations, evidence)
 	auth := deliveryAuthorization{
 		Typed: true, Decision: d, MetCommands: met,
 		BaselinePreserved: baselineObligationsSatisfied(in.Obligations, d),
+		Vetoes:            vetoes, Unmet: unmet,
 	}
 	// The automatic question, asked once, here, where the bytes and their
-	// identity are both fixed. It reads the vetoes the policy owner computed
-	// rather than recomputing them, because two answers about one candidate
-	// are two chances to disagree.
+	// identity are both fixed. It reads the same veto list the policy owner
+	// is handed, because two answers about one candidate are two chances to
+	// disagree.
 	basis := grantBasisStrict
 	auth.AutomaticEligible, auth.AutomaticRefusal = automaticDeliveryAllowed(
 		automaticEligibilityInput{
-			Mode: automatic.Mode, Vetoes: automatic.Vetoes,
+			Mode: automatic.Mode, Vetoes: vetoes,
 			SelectedCandidateID: selectedCandidateID,
 			CandidateHash:       hash,
 			Identity:            asked,

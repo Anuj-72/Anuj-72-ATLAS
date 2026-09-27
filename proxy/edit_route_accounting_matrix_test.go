@@ -270,7 +270,6 @@ func TestACancelledEditRegistersNothing(t *testing.T) {
 	}
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.PermissionMode = PermissionYolo
-	ctx.V3Mode = V3ModeFull
 	// A producer address the route will try: the request is cancelled before
 	// dispatch, so nothing is ever sent to it.
 	ctx.V3URL = "http://127.0.0.1:9"

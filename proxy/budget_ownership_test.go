@@ -90,7 +90,6 @@ func newBudgetWorld(t *testing.T) *budgetWorld {
 	ctx.PermissionMode = PermissionYolo
 	ctx.Ctx = context.Background()
 	ctx.V3URL, ctx.SandboxURL = srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	ctx.Messages = []AgentMessage{{Role: "user", Content: "write the module"}}
 	w.ctx = ctx
 	return w
@@ -139,10 +138,10 @@ func TestNoGenerationWhenNoCandidateCouldBeDelivered(t *testing.T) {
 	if n := w.v3Calls(); n != 0 {
 		t.Errorf("%d generation request(s) in a session where no candidate could be delivered", n)
 	}
-	if got := writeGenerationBypass(w.ctx, Tier2Medium, false, true); got != bypassCandidateUndeliverable {
+	if got := writeGenerationBypass(w.ctx, Tier2Medium, false); got != bypassCandidateUndeliverable {
 		t.Errorf("bypass reason = %q", got)
 	}
-	if got := editGenerationBypass(w.ctx, Tier2Medium, true, false, true); got != bypassCandidateUndeliverable {
+	if got := editGenerationBypass(w.ctx, Tier2Medium, true, false); got != bypassCandidateUndeliverable {
 		t.Errorf("edit bypass reason = %q", got)
 	}
 }
@@ -189,7 +188,7 @@ func TestNoGenerationWhenItsCapWouldBreachTheWorkAllowance(t *testing.T) {
 		w.ctx.TaskContract = declaredOutputs("solve.py")
 		work, cancel := context.WithTimeout(context.Background(), c.left)
 		w.ctx.Ctx = work
-		got := writeGenerationBypass(w.ctx, Tier2Medium, false, true)
+		got := writeGenerationBypass(w.ctx, Tier2Medium, false)
 		if (got == bypassNone) != c.generate {
 			t.Errorf("%s left (allowance %s): bypass %q, want generate=%v", c.left, allowance, got, c.generate)
 		}
@@ -211,7 +210,7 @@ func TestNoGenerationWhenItsCapWouldBreachTheWorkAllowance(t *testing.T) {
 	work, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	w.ctx.Ctx = work
-	if got := writeGenerationBypass(w.ctx, Tier2Medium, false, true); got != bypassWorkAllowance {
+	if got := writeGenerationBypass(w.ctx, Tier2Medium, false); got != bypassWorkAllowance {
 		t.Errorf("uncapped generation with a deadline: %q, want %q", got, bypassWorkAllowance)
 	}
 }
@@ -352,7 +351,7 @@ func TestACheckServiceOutageIsVisibleWhenGenerationIsSkipped(t *testing.T) {
 			t.Fatalf("write %d did not land: %s", i, res.Error)
 		}
 	}
-	if got := writeGenerationBypass(w.ctx, Tier2Medium, false, true); got != bypassCandidateUndeliverable {
+	if got := writeGenerationBypass(w.ctx, Tier2Medium, false); got != bypassCandidateUndeliverable {
 		t.Fatalf("fixture must skip generation, got %q", got)
 	}
 	shown := 0

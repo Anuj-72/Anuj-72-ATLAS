@@ -73,9 +73,13 @@ type supersededWrite struct {
 }
 
 // deliveredDiffersFromSubmitted reports whether a successful write installed
-// content other than the caller's, reading the filesystem rather than trusting
-// any field. Every route is covered, including ones that do not set V3
-// provenance, because the question is about bytes and the bytes are on disk.
+// content other than the caller's, reading the filesystem for the answer.
+//
+// write_file sends a whole file, which compares with disk directly. The four
+// edit tools send a fragment, so their whole-file proposal comes from the
+// delivery that replaced it (ToolResult.Substituted). Without that, an edit a
+// V3 candidate replaced reached the model as its own: the note that the bytes
+// differ was never sent, and the model went on editing a file it had not seen.
 //
 // A false answer is the overwhelmingly common case and costs one read of a
 // file the write just touched.
@@ -84,23 +88,20 @@ func deliveredDiffersFromSubmitted(ctx *AgentContext, tool string,
 	if ctx == nil || result == nil || !result.Success {
 		return supersededWrite{}, false
 	}
-	if tool != "write_file" && tool != "edit_file" {
+	var submitted, rel, path string
+	switch {
+	case tool == "write_file":
+		content, ok := extractScorableContent(tool, args)
+		rel = extractToolTarget(tool, args)
+		if !ok || content == "" || rel == "" {
+			return supersededWrite{}, false
+		}
+		submitted, path = content, resolveAgentPath(ctx, rel)
+	case result.Substituted != nil:
+		submitted, rel, path = result.Substituted.Submitted, result.Substituted.Rel, result.Substituted.Path
+	default:
 		return supersededWrite{}, false
 	}
-	// edit_file sends a fragment, not a file, so "what was submitted" is not
-	// comparable with what is on disk. Only whole-file writes can answer this.
-	if tool != "write_file" {
-		return supersededWrite{}, false
-	}
-	submitted, ok := extractScorableContent(tool, args)
-	if !ok || submitted == "" {
-		return supersededWrite{}, false
-	}
-	rel := extractToolTarget(tool, args)
-	if rel == "" {
-		return supersededWrite{}, false
-	}
-	path := resolveAgentPath(ctx, rel)
 	onDisk, err := os.ReadFile(path)
 	if err != nil {
 		// Nothing to compare against. Saying nothing is right: a claim about

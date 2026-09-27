@@ -444,15 +444,12 @@ def test_h6_still_reports_a_parse_failure_the_session_died_on(rel, tmp_path):
     assert any("parse model response" in d for d in rel.h6_service_fault(s))
 
 
-# --- the V3-disabled control arm -------------------------------------------
+# --- V3 is always on -------------------------------------------------------
 #
-# The independent confirmation needs incumbents ATLAS produces with the V3
-# capability absent and NOTHING else changed. `bypass_v3` is the proxy's
-# existing per-request field for exactly that: it short-circuits the V3
-# orchestration while ctx.V3URL stays set, so structural_check,
-# embedded_script_check, symbol_index and orphaned_symbols — the mutation
-# gates — keep running. Clearing ATLAS_V3_URL instead would silently
-# disable those gates too, which is a different experiment.
+# The runners measure the shipped system. No request field turns V3 off: the
+# proxy refuses bypass_v3, v3_mode and feasibility_mode when they ask for a
+# different system, so a V3-free comparison takes a research build, never a
+# flag on the product.
 
 
 def _capture_body(rel, monkeypatch, **kwargs):
@@ -478,46 +475,27 @@ def _capture_body(rel, monkeypatch, **kwargs):
     return seen
 
 
-def test_bypass_v3_reaches_the_agent_request(rel, monkeypatch, tmp_path):
-    import json as _json
-    globals()["json"] = _json
-    seen = _capture_body(rel, monkeypatch)
-    task = rel.Task(name="t", prompt="do it", files={}, check=lambda ws, s=None: (True, ""))
-    rel.run_session(task, 0, "http://proxy", tmp_path, "e2e", 30, bypass_v3=True)
-    assert seen["body"]["bypass_v3"] is True
-    assert seen["body"]["message"] == "do it"
-
-
-def test_the_field_is_absent_by_default(rel, monkeypatch, tmp_path):
+def test_the_runner_sends_no_removed_switch(rel, monkeypatch, tmp_path):
     import json as _json
     globals()["json"] = _json
     seen = _capture_body(rel, monkeypatch)
     task = rel.Task(name="t", prompt="do it", files={}, check=lambda ws, s=None: (True, ""))
     rel.run_session(task, 0, "http://proxy", tmp_path, "e2e", 30)
-    assert "bypass_v3" not in seen["body"], \
-        "every existing caller's request body must be unchanged"
+    assert seen["body"]["message"] == "do it"
+    for field in ("bypass_v3", "v3_mode", "feasibility_mode"):
+        assert field not in seen["body"], f"the runner still sends {field}"
 
 
-def test_the_proxy_declares_the_field():
-    """Only honest if the server accepts it under this exact name."""
-    agent = (REPO / "proxy" / "agent.go").read_text()
-    assert 'BypassV3         bool   `json:"bypass_v3,omitempty"`' in agent
-
-
-# Every symbol through which a request's V3 capability mode can be read. A
-# mutation gate that mentions any of them has stopped being mode-independent.
-_V3_MODE_SYMBOLS = ("BypassV3", "V3Mode", "effectiveV3Mode", "V3Bypassed",
-                    "V3GenerationEnabled", "V3PlanningEnabled")
+# Names that once read a switch turning V3, its gates or its generation off.
+_REMOVED_SWITCHES = ("BypassV3", "V3Mode", "effectiveV3Mode", "V3Bypassed",
+                     "V3GenerationEnabled", "V3PlanningEnabled",
+                     "FeasibilityEnforce", "generationSkipped")
 
 # The gate implementations, and the v3-service route each one must still reach.
 _MUTATION_GATES = {
     "checkStructuralUnresolved": "/internal/structural_check",
     "embeddedScriptOutcome": "/internal/embedded_script_check",
 }
-
-# The bridge call that dispatches candidate generation. Everything upstream of
-# it is what "V3 generation" means at the proxy.
-_GENERATION_BRIDGE = "callV3GenerateStreaming("
 
 
 def _go_funcs(src):
@@ -544,82 +522,22 @@ def _go_funcs(src):
     return funcs
 
 
-def _proxy_funcs():
-    """{(file, func): body} across the proxy's non-test sources."""
-    out = {}
-    for path in sorted((REPO / "proxy").glob("*.go")):
-        if path.name.endswith("_test.go"):
-            continue
-        for name, body in _go_funcs(path.read_text()).items():
-            out[(path.name, name)] = body
-    return out
+def test_the_mutation_gates_depend_on_no_switch():
+    """Every mutation gate runs on every request.
 
-
-def test_disabling_v3_does_not_disable_the_mutation_gates():
-    """Turning V3 candidate generation off must leave every mutation gate on.
-
-    Pinned to the property, not to a spelling. The previous version counted
-    literal `!ctx.BypassV3` expressions; fb45b74 moved the generation call
-    sites to the typed predicate `ctx.V3GenerationEnabled()` and the count
-    went to zero, so the test failed while the property it named still held.
-    A count would have gone vacuous just as quietly had it been relaxed.
-
-    Three facts, each read out of the source rather than assumed:
-
-      1. the gate implementations name no V3-mode symbol at all -- they gate
-         on ctx.V3URL, so they run identically in every mode;
-      2. every function that reaches the generation bridge is called only from
-         a function that consults ctx.V3GenerationEnabled() first;
-      3. the demo-baseline relaxation is off-mode only, so planner_only turns
-         generation off and keeps the whole guarded write path.
+    The gates still reach the v3-service routes they check with, and no
+    production source names a switch that could turn V3, a gate or candidate
+    generation off: the three the proxy had are gone.
     """
     sources = {p.name: p.read_text()
                for p in (REPO / "proxy").glob("*.go")
                if not p.name.endswith("_test.go")}
-
-    # 1. the gates are mode-independent
     gates = _go_funcs(sources["gates.go"])
     for fn, route in _MUTATION_GATES.items():
         body = gates.get(fn)
         assert body, f"{fn} is gone; repoint this test at its replacement"
         assert route in body, f"{fn} no longer reaches {route}"
-        leaked = [s for s in _V3_MODE_SYMBOLS if s in body]
-        assert not leaked, (
-            f"{fn} consults {leaked}; a mutation gate must depend on "
-            "ctx.V3URL alone so that disabling V3 cannot disable it")
-
-    # 2. every generation dispatch is guarded, before the call, by the typed
-    #    predicate -- and by nothing else
-    funcs = _proxy_funcs()
-    dispatchers = {name for (_f, name), body in funcs.items()
-                   if _GENERATION_BRIDGE in body.split("\n", 1)[1]}
-    dispatchers.discard(_GENERATION_BRIDGE.rstrip("("))
-    assert dispatchers, (
-        "no function dispatches V3 candidate generation; repoint this test "
-        f"at whatever replaced {_GENERATION_BRIDGE}")
-    for dispatcher in sorted(dispatchers):
-        callers = {(f, n): b for (f, n), b in funcs.items()
-                   if n != dispatcher and dispatcher + "(" in b.split("\n", 1)[1]}
-        assert callers, f"{dispatcher} is unreachable from any tool"
-        for (fname, caller), body in sorted(callers.items()):
-            guard = body.find("ctx.V3GenerationEnabled()")
-            call = body.find(dispatcher + "(", body.find("\n"))
-            assert guard != -1, (
-                f"{fname}:{caller} reaches {dispatcher} without consulting "
-                "ctx.V3GenerationEnabled()")
-            assert guard < call, (
-                f"{fname}:{caller} calls {dispatcher} before it consults "
-                "ctx.V3GenerationEnabled()")
-            assert "ctx.BypassV3" not in body, (
-                f"{fname}:{caller} reads the legacy boolean directly; the "
-                "typed predicate is the only authority at a generation site")
-
-    # 3. planner_only disables generation and keeps the gates
-    types = _go_funcs(sources["types.go"])
-    assert "V3ModeOff" in types["V3Bypassed"], (
-        "V3Bypassed must name the off mode it relaxes for")
-    assert "V3ModePlannerOnly" not in types["V3Bypassed"], (
-        "the demo-baseline relaxation must be off-mode only; planner_only "
-        "executes through the ordinary guarded write path")
-    assert "V3ModeFull" in types["V3GenerationEnabled"], (
-        "only full mode may dispatch candidate generation")
+    for name, src in sorted(sources.items()):
+        for symbol in _REMOVED_SWITCHES:
+            assert not re.search(rf"\b{symbol}\b", src), (
+                f"{name} names the removed switch {symbol}")

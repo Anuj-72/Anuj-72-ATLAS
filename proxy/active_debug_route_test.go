@@ -227,7 +227,6 @@ func runDebugRoute(t *testing.T, o debugRouteOpts) (*ToolResult, string, *debugR
 	// outputs make this session one, so the fixture still reaches the V3 route.
 	ctx.TaskContract = declaredOutputs(o.rel)
 	ctx.StreamFn = func(string, interface{}) {}
-	ctx.BypassV3 = false
 	ctx.V3URL = srv.URL
 	if !o.noSandbox {
 		ctx.SandboxURL = srv.URL
@@ -269,7 +268,7 @@ func runDebugRoute(t *testing.T, o debugRouteOpts) (*ToolResult, string, *debugR
 		t.Fatalf("fixture must be Tier2+ so the predicate is the ONLY thing "+
 			"holding V3 off, got %v", tier)
 	}
-	if ctx.V3URL == "" || ctx.BypassV3 {
+	if ctx.V3URL == "" {
 		t.Fatal("V3 must be configured and unbypassed for the routing proof")
 	}
 	if got := isActiveDebugIteration(ctx, o.rel); got != !o.passingRun {

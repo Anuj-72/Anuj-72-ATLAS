@@ -39,8 +39,6 @@ const (
 	bypassEditBelowComplexityFloor candidateBypassReason = "edit_below_complexity_floor"
 	// No producer is configured for this session.
 	bypassProducerNotConfigured candidateBypassReason = "producer_not_configured"
-	// A producer exists but this session's mode does not permit generation.
-	bypassGenerationDisabled candidateBypassReason = "generation_disabled"
 	// The edit-test-fix fast path: the session is iterating on a file it just
 	// watched fail, and execution is the feedback.
 	bypassActiveDebugIteration candidateBypassReason = "active_debug_iteration"
@@ -65,7 +63,7 @@ const (
 func knownCandidateBypassReason(r candidateBypassReason) bool {
 	switch r {
 	case bypassTierBelowThreshold, bypassEditBelowComplexityFloor,
-		bypassProducerNotConfigured, bypassGenerationDisabled,
+		bypassProducerNotConfigured,
 		bypassActiveDebugIteration, bypassProposalFailedSyntaxGuard,
 		bypassCandidateUndeliverable, bypassWorkAllowance,
 		bypassUnclassified:
@@ -77,26 +75,15 @@ func knownCandidateBypassReason(r candidateBypassReason) bool {
 // writeGenerationBypass is THE answer to whether the new-file route consults
 // the producer, and why not when it does not.
 //
-// Exactly the condition it replaces:
-//
-//	fileTier >= Tier2Medium && ctx.V3URL != "" && ctx.V3GenerationEnabled() && !iterating
-//
-// negated one clause at a time, in the order the `&&` chain evaluated them, so
-// the first reason a caller would have failed on is the reason it reports.
-// generationPermitted is passed in rather than read here, and the dispatch
-// site names it. The owner still owns the ORDER and the reasons; what the site
-// owns is the visible dependency, so a reader looking at the call that reaches
-// the producer can see that disabling generation reaches it -- without having
-// to follow a call to find out.
-func writeGenerationBypass(ctx *AgentContext, fileTier Tier, iterating bool,
-	generationPermitted bool) candidateBypassReason {
+// Every reason is a routing or cost rule, checked in a fixed order so the
+// first reason a caller fails on is the reason it reports. None of them is a
+// switch: V3 runs whenever the work warrants it and a producer is there.
+func writeGenerationBypass(ctx *AgentContext, fileTier Tier, iterating bool) candidateBypassReason {
 	switch {
 	case fileTier < Tier2Medium:
 		return bypassTierBelowThreshold
 	case ctx == nil || ctx.V3URL == "":
 		return bypassProducerNotConfigured
-	case !generationPermitted:
-		return bypassGenerationDisabled
 	case iterating:
 		return bypassActiveDebugIteration
 	case !candidateDeliverableUnderPolicy(ctx):
@@ -108,13 +95,8 @@ func writeGenerationBypass(ctx *AgentContext, fileTier Tier, iterating bool,
 }
 
 // editGenerationBypass is the same answer for the four edit tools.
-//
-// Exactly the conditions it replaces, in their original order:
-//
-//	fileTier < Tier2Medium || !editWarrantsV3(...) || ctx.V3URL == "" || !ctx.V3GenerationEnabled()
-//	isActiveDebugIteration(ctx, relPath)
 func editGenerationBypass(ctx *AgentContext, fileTier Tier, warrants bool,
-	iterating bool, generationPermitted bool) candidateBypassReason {
+	iterating bool) candidateBypassReason {
 	switch {
 	case fileTier < Tier2Medium:
 		return bypassTierBelowThreshold
@@ -122,8 +104,6 @@ func editGenerationBypass(ctx *AgentContext, fileTier Tier, warrants bool,
 		return bypassEditBelowComplexityFloor
 	case ctx == nil || ctx.V3URL == "":
 		return bypassProducerNotConfigured
-	case !generationPermitted:
-		return bypassGenerationDisabled
 	case iterating:
 		return bypassActiveDebugIteration
 	case !candidateDeliverableUnderPolicy(ctx):

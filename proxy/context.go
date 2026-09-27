@@ -520,7 +520,11 @@ func detectPython(projectDir string, files map[string]bool) *ProjectInfo {
 	}
 
 	info.TestCommand = "python -m pytest"
-	info.BuildCommand = "python -m py_compile *.py"
+	// No build command. "python -m py_compile *.py" was invented here and
+	// forwarded to V3 as the project's build: it compiles only top-level
+	// files (passing a candidate in src/ that it never compiled), fails on
+	// every project with none, and V3 recorded it as a passed build. The
+	// syntax check V3 already runs on the candidate itself covers the file.
 
 	return info
 }
@@ -543,9 +547,11 @@ func detectGo(files map[string]bool) *ProjectInfo {
 		return nil
 	}
 	return &ProjectInfo{
-		Language:     "go",
-		ConfigFiles:  []string{"go.mod"},
-		BuildCommand: "go build .",
+		Language:    "go",
+		ConfigFiles: []string{"go.mod"},
+		// ./... builds every package; "." failed with no Go files at the
+		// root and skipped the subpackages.
+		BuildCommand: "go build ./...",
 		DevCommand:   "go run .",
 		TestCommand:  "go test ./...",
 	}
@@ -584,11 +590,11 @@ func detectShell(projectDir string, files map[string]bool) *ProjectInfo {
 		return nil
 	}
 
+	// No build or test command: "bash -n *.sh" checks only the first file
+	// (the rest become its arguments), and a syntax check is not a test.
 	return &ProjectInfo{
-		Language:     "shell",
-		ConfigFiles:  []string{},
-		BuildCommand: "bash -n *.sh",
-		TestCommand:  "bash -n *.sh",
+		Language:    "shell",
+		ConfigFiles: []string{},
 	}
 }
 

@@ -183,7 +183,6 @@ func runPreflight(t *testing.T, o preflightOpts) (*ToolResult, string, *prefligh
 	// outputs make this session one, so the fixture still reaches the V3 route.
 	ctx.TaskContract = declaredOutputs(o.rel)
 	ctx.StreamFn = func(event string, _ interface{}) { events = append(events, event) }
-	ctx.BypassV3 = false
 	ctx.V3URL = srv.URL
 	ctx.SandboxURL = srv.URL
 	// Session-owned so the write is the model's own draft, and the most recent
@@ -199,7 +198,7 @@ func runPreflight(t *testing.T, o preflightOpts) (*ToolResult, string, *prefligh
 	if tier := classifyFileTier(o.rel, o.proposal); tier < Tier2Medium {
 		t.Fatalf("fixture must be Tier2+ to reach the V3 preflight, got %v", tier)
 	}
-	if ctx.V3URL == "" || ctx.BypassV3 {
+	if ctx.V3URL == "" {
 		t.Fatal("V3 must be configured and unbypassed")
 	}
 	if isActiveDebugIteration(ctx, o.rel) {

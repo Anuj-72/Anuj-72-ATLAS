@@ -190,10 +190,7 @@ func completionClaimGaps(workingDir string) []string {
 // leaves a pre-existing unresolved name in place, i.e. a repair-in-
 // progress, is allowed). Wired into edit_file, structural_edit, and every
 // write_file branch (V3 winner, V3-error fallback, iteration fast-path,
-// T0/T1 direct); under BypassV3 only the non-iterating T0/T1 direct
-// write_file skips the gate (so the demo baseline pane shows the raw
-// model) — the edit paths and the iteration fast-path stay gated in all
-// modes. Python-only and fail-open: if v3-service is unreachable, the file
+// T0/T1 direct), on every request. Python-only and fail-open: if v3-service is unreachable, the file
 // isn't .py, or tree-sitter is unavailable, the write proceeds — the gate
 // only blocks on a POSITIVE, newly-introduced unresolved call.
 

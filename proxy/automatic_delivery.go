@@ -150,6 +150,9 @@ func automaticDeliveryAllowed(in automaticEligibilityInput) (bool, string) {
 // reader of the mode is a second place the answer can be different from the
 // one the policy owner reached.
 type automaticIntent struct {
-	Mode   candidatePolicyMode
-	Vetoes []string
+	Mode candidatePolicyMode
+	// VetoInput is what the route knows about the candidate before the
+	// authorization decision. The vetoes are computed from it only after the
+	// decision and the structural classification, which they also read.
+	VetoInput advisoryInput
 }

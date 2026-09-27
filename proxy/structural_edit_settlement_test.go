@@ -57,7 +57,6 @@ func structuralEditWorld(t *testing.T, before, after string, checkerSaysValid bo
 	ctx.StreamFn = func(string, interface{}) {}
 	ctx.V3URL = srv.URL
 	ctx.SandboxURL = srv.URL
-	ctx.BypassV3 = true // the splice itself is under test, not V3 rewriting
 	ctx.RecordFileRead(path, before)
 	ctx.RecordBodySeen(path)
 

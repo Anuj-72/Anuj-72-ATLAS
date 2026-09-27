@@ -433,22 +433,6 @@ func TestBuildResponseFormat_UnknownModeDefaultsToStrict(t *testing.T) {
 	}
 }
 
-func TestDemoBaselineExcludesOrchestrationTool(t *testing.T) {
-	ctx := &AgentContext{
-		BypassV3: true,
-		Messages: []AgentMessage{{Role: "user", Content: "build the project"}},
-	}
-	prompt := buildSystemPrompt(ctx)
-	if strings.Contains(prompt, "plan_tasks") {
-		t.Fatal("prompt advertises the removed plan_tasks tool")
-	}
-	// With no orchestration exclusions, the baseline needs no override
-	// grammar on a plain first step.
-	if _, grammar := buildStepRequest(ctx); grammar != "" {
-		t.Fatalf("baseline unexpectedly received override grammar: %q", grammar)
-	}
-}
-
 func TestNormalAgentPromptOmitsRemovedTools(t *testing.T) {
 	ctx := &AgentContext{Messages: []AgentMessage{{Role: "user", Content: "build the project"}}}
 	if prompt := buildSystemPrompt(ctx); strings.Contains(prompt, "plan_tasks") {
@@ -1697,7 +1681,7 @@ func TestFinishedBackgroundNote(t *testing.T) {
 // game" run: refused at turn 11, re-sent at 12 and 13, dead at 757s.
 func TestIdenticalEditRefusalNamesAWayOut(t *testing.T) {
 	dir := t.TempDir()
-	ctx := &AgentContext{WorkingDir: dir, BypassV3: true,
+	ctx := &AgentContext{WorkingDir: dir,
 		FilesRead:     map[string]string{},
 		BodySeen:      map[string]bool{},
 		FileReadTimes: map[string]time.Time{}}

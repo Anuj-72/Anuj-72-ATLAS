@@ -53,7 +53,6 @@ func newFileCase(t *testing.T, rel, content string, withSandbox bool) (*ToolResu
 	ctx := NewAgentContext(dir, Tier2Medium)
 	ctx.PermissionMode = PermissionYolo
 	ctx.StreamFn = func(string, interface{}) {}
-	ctx.BypassV3 = false
 	if withSandbox {
 		ctx.SandboxURL = srv.URL
 	}

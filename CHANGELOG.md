@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+### Changed: V3 runs on every request
+
+`bypass_v3`, `v3_mode` and `feasibility_mode` are removed. The first two
+turned V3 off, or left only its planner, for the evaluation runners' V3-off
+arm; `feasibility_mode: enforce` skipped generation when no closure path was
+found, for a canary. A switch lets the measured configuration drift from the
+shipped one, and `bypass_v3` did more than its runners said: it also turned
+off three write gates (unresolved calls, embedded scripts, a duplicate
+module entrypoint), so a V3-off arm measured a system with fewer gates, not
+the same system without V3. Earlier V3-off comparisons are confounded by
+that.
+
+- Planning and generation run whenever the routing rules send a write to
+  them: a file of Tier 2 or above, a V3 service configured, and a session
+  not iterating on a file it just watched fail. The three write gates run on
+  every write.
+- A request that asks for V3 off, planner-only or `enforce` is refused with
+  400. `false`, `full` and `observe` are accepted and change nothing.
+- The feasibility answer is still recorded, and never stops generation.
+- `scripts/e2e-reliability.py` and `scripts/novel-atlas.py` lose their V3-off
+  arm. A measurement without V3 takes a research build.
+
 ### Fixed: commands ran without approval, and credential files reached the model
 
 - `run_background` started any command without the approval prompt in the

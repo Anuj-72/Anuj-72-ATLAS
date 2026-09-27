@@ -1049,8 +1049,7 @@ func writeFileTool() *ToolDef {
 			// what order; this is the dependency being visible where the
 			// dispatch happens, so a reader looking at the call that reaches
 			// generation can see that disabling generation reaches it.
-			writeBypass := writeGenerationBypass(ctx, fileTier, iterating,
-				ctx.V3GenerationEnabled())
+			writeBypass := writeGenerationBypass(ctx, fileTier, iterating)
 			recordCandidateGenerationBypass(ctx, "write_file", writeBypass,
 				fileTier, strings.Count(input.Content, "\n")+1)
 			logBudgetBypass("write_file", input.Path, writeBypass)
@@ -1208,9 +1207,6 @@ func writeFileTool() *ToolDef {
 					}
 				}
 			}
-			if ctx.V3Bypassed() {
-				log.Printf("[write_file] V3 bypassed (demo baseline pane) — direct write %s", input.Path)
-			}
 
 			// #147: the T0/T1 direct path skipped the structural gate — a
 			// sub-10-line .py calling an unimported name landed as verified,
@@ -1220,9 +1216,8 @@ func writeFileTool() *ToolDef {
 			// this branch exists to handle (JSONC, multi-doc and templated
 			// YAML, scaffold .py templates). An unreadable existing original
 			// skips the gate (fail open) — treating it as empty would count
-			// every pre-existing call as introduced. BypassV3 stays ungated
-			// so the demo baseline pane shows the raw model.
-			if !iterating && !ctx.V3Bypassed() {
+			// every pre-existing call as introduced.
+			if !iterating {
 				if original, ok := readOriginalForGate(path); ok {
 					if introduced := editIntroducesUnresolved(ctx, path, original, input.Content); len(introduced) > 0 {
 						log.Printf("[write_file] direct write introduces unresolved call(s) %v in %s — rejecting", logPaths(introduced), logPath(input.Path))
@@ -1313,26 +1308,23 @@ func writeFileTool() *ToolDef {
 			// writes (writeFileWithV3). They are checks on the write, not part
 			// of candidate generation, so a write that does not generate --
 			// small, mid-iteration, or with nothing deliverable -- must not skip
-			// them. Healthy->broken and fail-soft, as there. The demo baseline
-			// pane stays ungated.
-			if !ctx.V3Bypassed() {
-				if original, ok := readOriginalForGate(path); ok {
-					if msg := embeddedScriptGate(ctx, path, original, input.Content); msg != "" {
-						log.Printf("[write_file] direct write breaks an embedded script in %s — rejecting", logPath(input.Path))
-						return &ToolResult{Success: false, Error: msg,
-							MutationStatus:   MutationRefused,
-							ValidationKind:   ValidationKindStructural,
-							ValidationStatus: ValidationFailed,
-							ValidationDetail: msg}, nil
-					}
-					if msg := duplicateMainGuard(path, original, input.Content); msg != "" {
-						log.Printf("[write_file] direct write duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
-						return &ToolResult{Success: false, Error: msg,
-							MutationStatus:   MutationRefused,
-							ValidationKind:   ValidationKindStructural,
-							ValidationStatus: ValidationFailed,
-							ValidationDetail: msg}, nil
-					}
+			// them. Healthy->broken and fail-soft, as there.
+			if original, ok := readOriginalForGate(path); ok {
+				if msg := embeddedScriptGate(ctx, path, original, input.Content); msg != "" {
+					log.Printf("[write_file] direct write breaks an embedded script in %s — rejecting", logPath(input.Path))
+					return &ToolResult{Success: false, Error: msg,
+						MutationStatus:   MutationRefused,
+						ValidationKind:   ValidationKindStructural,
+						ValidationStatus: ValidationFailed,
+						ValidationDetail: msg}, nil
+				}
+				if msg := duplicateMainGuard(path, original, input.Content); msg != "" {
+					log.Printf("[write_file] direct write duplicates the module entrypoint in %s — rejecting", logPath(input.Path))
+					return &ToolResult{Success: false, Error: msg,
+						MutationStatus:   MutationRefused,
+						ValidationKind:   ValidationKindStructural,
+						ValidationStatus: ValidationFailed,
+						ValidationDetail: msg}, nil
 				}
 			}
 
@@ -1911,18 +1903,8 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	defer lifecycle.finalizeDefault(ctx)
 	mode, policySource := candidatePolicyOf(ctx)
 	lifecycle.notePolicy(mode, policySource)
-	if skipped, why := generationSkipped(ctx, observeInvocationFeasibility(ctx, entry)); skipped {
-		// No candidate is generated. The run continues through the same
-		// direct-write path a V3 outage takes, so nothing about the plan, the
-		// prompt, recovery, the terminal rules, permissions or the completion
-		// gates changes -- and no candidate pool, selection or delivery record
-		// is invented for a pipeline that never ran.
-		log.Printf("[write_file] no closure path for %s (%s) — writing directly",
-			logPath(path), why)
-		lifecycle.finish(ctx, routingSkippedInfeasible, "", AuthorizationReason(why))
-		return writeWithoutCandidate(ctx, path, baselineContent,
-			"  \u2514\u2500 no structured closure path — writing your version")
-	}
+	// Recorded, never enforced: generation proceeds whatever it says.
+	observeInvocationFeasibility(ctx, entry)
 
 	// Tell the user V3 is taking over so they don't think the file
 	// vanished. write_file with V3 holds the disk write until V3 picks
@@ -2226,21 +2208,26 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	stagingMutatedAssets := false
 	if ev, id, seen := observeDeliveredCandidateSyntax(ctx, entry, path, code, deliveredCheck); seen && candidateProposed {
 		observed, evID = []proxyEvidence{ev}, id
-		// THE production call path for the client-declared verification
-		// producer. It stages these exact bytes in a workspace that is not the
-		// caller's and runs the commands the client declared there, so the
-		// behavioral question has an answer rather than a blocker. It runs at
-		// all only for a request that declared commands, and the staging
-		// budget bounds what it may spend on one.
-		behavioral, why, mutatedAssets := observeCandidateVerification(ctx, path, code, evID)
-		observed, unmet = append(observed, behavioral...), why
-		stagingMutatedAssets = mutatedAssets
 	}
 	if candidateProposed && evID.InvocationID == "" {
 		// No producer spoke -- a request that declared no outputs owes no
-		// syntax obligation -- but the candidate is still this route entry's
-		// and these exact bytes, and the authorization owner binds to that.
+		// syntax obligation, and a class the syntax gate does not check owes
+		// none either -- but the candidate is still this route entry's and
+		// these exact bytes, and the authorization owner binds to that.
 		evID = proposedCandidateIdentity(ctx, entry, code)
+	}
+	if candidateProposed {
+		// THE production call path for the client-declared verification
+		// producer. It stages these exact bytes in a workspace that is not the
+		// caller's and runs the commands the client declared there, so the
+		// behavioral question has an answer rather than a blocker. It runs
+		// commands only for a request that declared them, and the staging
+		// budget bounds what it may spend on one. It no longer waits for a
+		// syntax obligation: a declared main.rs has none, so its declared
+		// command was owed and never run.
+		behavioral, why, mutatedAssets := observeCandidateVerification(ctx, path, code, evID)
+		observed, unmet = append(observed, behavioral...), why
+		stagingMutatedAssets = mutatedAssets
 	}
 	selected := ""
 	if v3Result != nil && v3Result.Evidence != nil {
@@ -2259,10 +2246,10 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	if candidateProposed {
 		recordMutationScope(ctx, scope, scopeAdmits, scopeRefusal)
 	}
-	// ONE veto computation, two readers. The authorization owner needs the
+	// ONE veto list, two readers. The authorization owner needs the
 	// disqualifying facts before it can mint an automatic grant, and the
-	// policy owner needs them to reach its decision. Computed here so both
-	// read the same list rather than each deriving its own.
+	// policy owner needs them to reach its decision. The authorization owner
+	// computes it, after its decision, and both read that list.
 	vetoInput := advisoryInput{
 		Observed:                    deliveredCheck,
 		TargetDeclared:              outputKnowledgeDeclared(ctx),
@@ -2276,12 +2263,16 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		ScopeRefusal:                scopeRefusal,
 	}
 	vetoInput.Envelope = envelopeOf(v3Result)
-	vetoes := advisoryVetoes(vetoInput)
+	// Nil without a candidate: the policy owner then computes the list itself,
+	// from the same input.
+	var vetoes []string
 	var delivery deliveryAuthorization
 	if candidateProposed {
 		delivery = authorizeCandidateDelivery(ctx, entry, path, code, evID,
 			v3Result.Evidence, observed, selected, unmet, deliveredCheck, scope,
-			automaticIntent{Mode: mode, Vetoes: vetoes})
+			automaticIntent{Mode: mode, VetoInput: vetoInput})
+		vetoes = delivery.Vetoes
+		vetoInput.Unmet = delivery.Unmet
 		lifecycle.noteAuthorization(delivery, evID, contentSHA256(code), vetoes)
 	}
 	// THE policy owner. It reads the typed answer, the trusted observations and
@@ -2291,9 +2282,8 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 	policyInput.Decision = delivery.Decision
 	policyInput.CaptureOnlySuppressed = delivery.CaptureOnly
 	policyInput.AutomaticEligible = delivery.AutomaticEligible
-	// The vetoes the authorization owner was handed, verbatim. Recomputing
-	// them here from the same input would give the same answer today and is
-	// exactly the duplication that lets two answers drift apart later.
+	// The vetoes the authorization owner computed, verbatim. Recomputing them
+	// here is exactly the duplication that lets two answers drift apart.
 	policyInput.Vetoes = vetoes
 	// The would-have, not the outcome: an acquisition control takes the licence
 	// and leaves the answer, so the policy is asked the question it would have
@@ -3324,7 +3314,7 @@ func structuralEditTool() *ToolDef {
 			// V3-improve on every corrective edit until the clock died.
 			structuralBypass := editGenerationBypass(ctx, fileTier,
 				editWarrantsV3(finalContent, cc, ccOK),
-				isActiveDebugIteration(ctx, input.Path), ctx.V3GenerationEnabled())
+				isActiveDebugIteration(ctx, input.Path))
 			recordCandidateGenerationBypass(ctx, "structural_edit", structuralBypass,
 				fileTier, strings.Count(finalContent, "\n")+1)
 			logBudgetBypass("structural_edit", input.Path, structuralBypass)
@@ -6150,7 +6140,7 @@ func runEditPipeline(ctx *AgentContext, tool, path, relPath, original,
 	// fast-track, which keeps the session's clock on executions rather than
 	// candidates -- and now the skip says which threshold turned it away.
 	bypass := editGenerationBypass(ctx, fileTier, editWarrantsV3(edited, cc, ccOK),
-		isActiveDebugIteration(ctx, relPath), ctx.V3GenerationEnabled())
+		isActiveDebugIteration(ctx, relPath))
 	recordCandidateGenerationBypass(ctx, tool, bypass, fileTier,
 		strings.Count(edited, "\n")+1)
 	logBudgetBypass(tool, relPath, bypass)

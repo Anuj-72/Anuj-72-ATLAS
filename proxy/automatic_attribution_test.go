@@ -120,8 +120,6 @@ func TestDeriveAutomaticRefusalCoversEveryValue(t *testing.T) {
 		{"producer offered the same bytes", ended(routingBaselineRetained, ""),
 			automaticOutcomeNotLanded, automaticRefusalNoCandidate},
 		{"v3 unavailable", ended(routingProducerUnavailable, ""), automaticOutcomeNotLanded, automaticRefusalV3Unavailable},
-		{"generation disabled", ended(routingSkippedInfeasible, AuthorizationReason(bypassGenerationDisabled)),
-			automaticOutcomeNotLanded, automaticRefusalV3Unavailable},
 		{"v3 timed out", ended(routingProducerTimedOut, ""), automaticOutcomeNotLanded, automaticRefusalV3TimedOut},
 		{"cancelled by the route", ended(routingCancelled, ""), automaticOutcomeNotLanded, automaticRefusalCancelled},
 		{"route gate revoked", ended(routingRevokedByGate, ""), automaticOutcomeNotLanded, automaticRefusalRouteGateRevoked},
@@ -667,5 +665,36 @@ func TestTheAttributionCannotBecomeAnObligationOrAVerificationResult(t *testing.
 		if strings.HasPrefix(k, "obligation") || strings.HasPrefix(k, "verification") {
 			t.Errorf("attribution key %q reads like an obligation or verification field", k)
 		}
+	}
+}
+
+// An edit V3 replaced reached the model as its own. Only write_file, whose
+// whole-file content compares with disk, got the note that the bytes differ;
+// the model then kept editing a file it had never seen. Every edit tool now
+// carries its whole-file proposal, so the model is told for all four, and its
+// read state follows what landed.
+func TestTheModelIsToldWhenACandidateReplacedItsEdit(t *testing.T) {
+	for _, c := range editCases() {
+		t.Run(c.tool, func(t *testing.T) {
+			r := editLoopFixture(t, map[string]string{"mod.py": accountingSeed}, tuiAutomaticContract,
+				"Change helper in mod.py and check it.",
+				script(stepRead("mod.py"), c.step(t), stepRun("python3 mod.py"), stepDone("done")),
+				editLoopOptions{v3Winner: c.winner})
+			if r.disk(t, "mod.py") != c.winner {
+				t.Fatalf("the winner did not land: %s", r.describe())
+			}
+			told := false
+			for _, p := range r.prompts {
+				if strings.Contains(p, "NOT the ones you sent") {
+					told = true
+				}
+			}
+			if !told {
+				t.Errorf("the model was never told the bytes on disk are not its edit")
+			}
+			if seen := r.ctx.FilesRead[filepath.Join(r.dir, "mod.py")]; seen != c.winner {
+				t.Errorf("read state does not follow what landed")
+			}
+		})
 	}
 }

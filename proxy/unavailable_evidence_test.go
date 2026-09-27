@@ -191,16 +191,6 @@ func TestAvailabilityReachesFeasibilityConsistently(t *testing.T) {
 	if len(without) != 0 {
 		t.Errorf("producible with the sandbox down: %v", without)
 	}
-	// And the default mode is still observe: availability changes what the
-	// answer IS, and only an explicit enforce lets it change what happens.
-	if got := defaultFeasibilityMode(); got != FeasibilityObserve {
-		t.Errorf("default feasibility mode is %q, want observe", got)
-	}
-	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
-	if skipped, _ := generationSkipped(ctx, FeasibilityDecision{
-		Feasible: false, Reason: FeasibilityNoTrustedSource}); skipped {
-		t.Error("an infeasible invocation was skipped under the default mode")
-	}
 }
 
 func TestTruthfulReasonsCarryNoContent(t *testing.T) {

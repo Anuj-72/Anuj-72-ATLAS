@@ -450,7 +450,6 @@ func newRouteWorldWithClosure(t *testing.T, contract string,
 	ctx.PermissionMode = PermissionYolo
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-route")
 	ctx.V3URL, ctx.SandboxURL = srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	ctx.HumanTask = "Make solve fast."
 	if contract != "" {
 		ctx.TaskContract = mustContract(t, dir, contract)

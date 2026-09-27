@@ -205,10 +205,6 @@ def main() -> int:
     ap.add_argument("--json", dest="json_out", default="")
     ap.add_argument("--save-events", default="",
                     help="directory for per-session event dumps")
-    ap.add_argument("--bypass-v3", action="store_true",
-                    help="run the agent loop with V3 orchestration disabled "
-                         "(the proxy's own per-request switch). The mutation "
-                         "gates stay active; only V3 generation is absent.")
     ap.add_argument("--seed-manifest", default="",
                     help="write the ordered frozen task manifest here and exit")
     ap.add_argument("--artifacts", default="",
@@ -302,8 +298,7 @@ def main() -> int:
         raw_fh = open(raw_path, "w") if raw_path else None
         try:
             session = e2e.run_session(task, 1, url, workspace, args.subdir,
-                                      args.timeout, raw_sink=raw_fh,
-                                      bypass_v3=args.bypass_v3)
+                                      args.timeout, raw_sink=raw_fh)
         finally:
             if raw_fh:
                 raw_fh.close()

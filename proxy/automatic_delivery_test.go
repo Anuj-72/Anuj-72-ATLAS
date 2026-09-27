@@ -96,7 +96,6 @@ func newAutomaticWorld(t *testing.T, contract, winner string,
 	ctx.PermissionMode = PermissionYolo
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-automatic")
 	ctx.V3URL, ctx.SandboxURL = srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	ctx.HumanTask = "Make solve fast."
 	ctx.TaskContract = mustContract(t, dir, contract)
 	return &automaticWorld{ctx: ctx, dir: dir, path: filepath.Join(dir, "solve.py"),
@@ -491,11 +490,15 @@ func TestAutomaticSharesTheOneAuthorizationAndDeliveryOwner(t *testing.T) {
 			t.Errorf("the delivery owner re-decides the policy via %s", banned)
 		}
 	}
-	// Both routes compute the vetoes once and hand the same list to both owners.
+	// The authorization owner computes the vetoes once, after its decision,
+	// and both routes hand it their facts rather than computing a list of
+	// their own that the decision cannot reach.
+	if n := strings.Count(body["candidate_delivery.go"], "advisoryVetoes("); n != 1 {
+		t.Errorf("the authorization owner computes the vetoes %d times, want once", n)
+	}
 	for _, route := range []string{"tools.go", "edit_route_delivery.go"} {
-		if n := strings.Count(body[route], "advisoryVetoes("); n != 1 {
-			t.Errorf("%s computes the vetoes %d times, want once",
-				route, strings.Count(body[route], "advisoryVetoes("))
+		if n := strings.Count(body[route], "advisoryVetoes("); n != 0 {
+			t.Errorf("%s computes the vetoes itself (%d times)", route, n)
 		}
 		if !strings.Contains(body[route], "automaticIntent{") {
 			t.Errorf("%s does not hand the authorization owner its intent", route)

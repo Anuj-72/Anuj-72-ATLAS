@@ -186,7 +186,6 @@ func newReachWorld(t *testing.T, contract string) *reachWorld {
 	ctx.PermissionMode = PermissionYolo
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-reach")
 	ctx.V3URL, ctx.SandboxURL = srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	// The prose, exactly as the client sent it. It is the only thing about the
 	// task this session knows.
 	ctx.HumanTask = reachProse

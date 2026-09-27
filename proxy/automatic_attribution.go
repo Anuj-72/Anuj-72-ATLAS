@@ -212,9 +212,6 @@ func dispositionRefusalReason(d routingDisposition, reason AuthorizationReason) 
 	case routingRevokedByGate, routingNotClosureEligible:
 		return automaticRefusalRouteGateRevoked
 	case routingSkippedInfeasible:
-		if string(reason) == string(bypassGenerationDisabled) {
-			return automaticRefusalV3Unavailable
-		}
 		return automaticRefusalAuthorizationUnavailable
 	}
 	return automaticRefusalUnattributed

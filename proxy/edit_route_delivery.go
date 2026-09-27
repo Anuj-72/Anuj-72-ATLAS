@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
-	"strings"
 )
 
 // Trusted candidate delivery for the edit routes.
@@ -81,24 +80,6 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 		"route_entry": entry.ID,
 	}))
 
-	// The generation site's own precondition, checked here and not only in the
-	// callers that decide eligibility.
-	//
-	// runEditPipeline and structural_edit both ask editGenerationBypass before
-	// they get this far, so in the shipped topology this is unreachable. It is
-	// here because "V3 is disabled" is a property of the SITE that reaches the
-	// producer, not of whoever happened to route to it: a fifth caller added
-	// later would otherwise generate candidates in a deployment that turned
-	// generation off, and every mutation gate below would still run while the
-	// one thing the operator switched off did not stay off.
-	if !ctx.V3GenerationEnabled() {
-		recordCandidateGenerationBypass(ctx, tool, bypassGenerationDisabled,
-			classifyFileTier(relPath, edited), strings.Count(edited, "\n")+1)
-		lifecycle.finish(ctx, routingSkippedInfeasible, "",
-			AuthorizationReason(bypassGenerationDisabled))
-		return keep
-	}
-
 	improved, meta, err := improveContentWithV3(path, edited, ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || (ctx.Ctx != nil && ctx.Ctx.Err() != nil) {
@@ -151,19 +132,20 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 
 	evidence, evID, seen := observeDeliveredCandidateSyntax(ctx, entry, path, improved, observed)
 	var pool []proxyEvidence
-	var unmet map[string]AuthorizationReason
-	mutatedAssets := false
 	if seen {
 		pool = []proxyEvidence{evidence}
-		behavioral, why, mutated := observeCandidateVerification(ctx, path, improved, evID)
-		pool, unmet, mutatedAssets = append(pool, behavioral...), why, mutated
 	}
 	if evID.InvocationID == "" {
 		// No producer spoke -- a request that declared no outputs owes no
-		// syntax obligation -- but the candidate is still this route entry's
-		// and these exact bytes, and the authorization owner binds to that.
+		// syntax obligation, and a class the syntax gate does not check owes
+		// none either -- but the candidate is still this route entry's and
+		// these exact bytes, and the authorization owner binds to that.
 		evID = proposedCandidateIdentity(ctx, entry, improved)
 	}
+	// Declared commands are staged whether or not a syntax obligation exists,
+	// as on the new-file route.
+	behavioral, unmet, mutatedAssets := observeCandidateVerification(ctx, path, improved, evID)
+	pool = append(pool, behavioral...)
 
 	scopeAdmits, scopeRefusal := false, scopeRefusedNoScope
 	if scopeOK {
@@ -171,8 +153,8 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	}
 	recordMutationScope(ctx, scope, scopeAdmits, scopeRefusal)
 
-	// ONE veto computation, two readers -- the same arrangement the new-file
-	// route uses, for the same reason.
+	// ONE veto list, two readers -- the same arrangement the new-file route
+	// uses, for the same reason.
 	vetoInput := advisoryInput{
 		Observed:               observed,
 		TargetDeclared:         outputKnowledgeDeclared(ctx),
@@ -185,7 +167,6 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 		ScopeAdmits:            scopeAdmits,
 		ScopeRefusal:           scopeRefusal,
 	}
-	vetoes := advisoryVetoes(vetoInput)
 	// The selected-candidate identity, from the service's own record. The edit
 	// route reaches V3 through improveContentWithV3, which returns the winner
 	// it was given; this is the hash that winner was named by, and an
@@ -196,7 +177,9 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	}
 	delivery := authorizeCandidateDelivery(ctx, entry, path, improved, evID,
 		meta.Envelope, pool, selected, unmet, observed, scope,
-		automaticIntent{Mode: mode, Vetoes: vetoes})
+		automaticIntent{Mode: mode, VetoInput: vetoInput})
+	vetoes := delivery.Vetoes
+	vetoInput.Unmet = delivery.Unmet
 	lifecycle.noteAuthorization(delivery, evID, contentSHA256(improved), vetoes)
 	// The same policy owner the new-file route asks, over the same kinds of
 	// fact. An edit route that decided this for itself is how the two paths
@@ -248,6 +231,12 @@ func deliverEditCandidate(ctx *AgentContext, tool, path, relPath,
 	keep.Result, keep.Meta = withDeliveryProvenance(result, provenance), meta
 	if derr != nil {
 		keep.Result = result
+	}
+	if keep.Result != nil && improved != edited {
+		// The model computed `edited`; `improved` is what went to disk. The
+		// agent loop checks disk against this and tells the model.
+		keep.Result.Substituted = &supersededWrite{Path: resolveAgentPath(ctx, path),
+			Rel: relPath, Submitted: edited, Delivered: improved}
 	}
 	return keep
 }

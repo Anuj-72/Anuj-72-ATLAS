@@ -177,7 +177,6 @@ func editLoopFixture(t *testing.T, seed map[string]string, contract, prompt stri
 	r.ctx.TrustMode = trustFullyTrusted
 	r.ctx.VerifyOnHost = true
 	r.ctx.MaxTurns = 0
-	r.ctx.V3Mode = V3ModeFull
 	// Every production request carries an id; the automatic route's identity
 	// checks refuse a candidate whose binding has none.
 	base := context.WithValue(context.Background(), requestIDKey, "req-edit-loop")

@@ -173,14 +173,13 @@ type corpusRun struct {
 	Terminal       string `json:"terminal_reason"`
 }
 
-func runCorpusCase(t *testing.T, c corpusCase, mode FeasibilityMode) corpusRun {
+func runCorpusCase(t *testing.T, c corpusCase) corpusRun {
 	t.Helper()
 	w := newRouteWorld(t, c.contract, c.commands)
 	w.path = w.dir + "/" + c.file
 	if err := os.WriteFile(w.path, []byte(c.body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w.ctx.FeasibilityMode = mode
 	if c.before != nil {
 		c.before(t, w)
 	}
@@ -230,10 +229,10 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 	var feasibleUnrealized []string
 
 	for _, c := range cases {
-		run := runCorpusCase(t, c, FeasibilityObserve)
+		run := runCorpusCase(t, c)
 		observed[c.name] = run
-		// Observe always generates, whatever it concluded -- except where the
-		// request itself ended first. Cancellation has its own owner and its
+		// Generation always proceeds, whatever feasibility concluded -- except
+		// where the request itself ended first. Cancellation has its own owner and its
 		// own reason to skip; attributing it to feasibility would credit this
 		// decision with something it did not do.
 		wantGenerations := 1
@@ -241,7 +240,7 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 			wantGenerations = 0
 		}
 		if run.Generations != wantGenerations {
-			t.Errorf("%s: %d generation calls under observe, want %d",
+			t.Errorf("%s: %d generation calls, want %d",
 				c.name, run.Generations, wantGenerations)
 		}
 		// The one-sided rule.
@@ -265,52 +264,6 @@ func TestFeasibilityAgreementCorpus(t *testing.T) {
 	}
 	t.Logf("corpus: %d cases, %d false negatives, %d feasible-but-unrealized",
 		len(cases), len(falseNegatives), len(feasibleUnrealized))
-
-	// The enforce replay.
-	for _, c := range cases {
-		want := observed[c.name]
-		got := runCorpusCase(t, c, FeasibilityEnforce)
-		if strings.HasSuffix(c.name, "/cancelled") {
-			// Cancelled either way, by the same owner. Enforce adds nothing
-			// and must take nothing away.
-			if got.Generations != want.Generations || got.GrantsConsumed != want.GrantsConsumed {
-				t.Errorf("%s: enforce changed a cancelled invocation (%+v vs %+v)",
-					c.name, got, want)
-			}
-			continue
-		}
-		switch {
-		case want.Feasible:
-			// A feasible case must be byte-identical through generation and
-			// delivery: enforce may only remove invocations, never change one.
-			if got.Generations != want.Generations {
-				t.Errorf("%s: enforce generated %d, observe %d",
-					c.name, got.Generations, want.Generations)
-			}
-			if got.Disk != want.Disk {
-				t.Errorf("%s: enforce left different bytes on disk", c.name)
-			}
-			if got.LandedWinner != want.LandedWinner ||
-				got.GrantsConsumed != want.GrantsConsumed ||
-				got.LedgerHash != want.LedgerHash {
-				t.Errorf("%s: enforce differs from observe (%+v vs %+v)", c.name, got, want)
-			}
-		default:
-			// An infeasible case must skip exactly, and land where the direct
-			// path lands.
-			if got.Generations != 0 {
-				t.Errorf("%s: enforce generated %d for an infeasible invocation",
-					c.name, got.Generations)
-			}
-			if got.GrantsConsumed != 0 {
-				t.Errorf("%s: a skipped invocation consumed %d grants",
-					c.name, got.GrantsConsumed)
-			}
-			if got.LandedWinner {
-				t.Errorf("%s: a skipped invocation landed a candidate", c.name)
-			}
-		}
-	}
 
 	// No content leaks anywhere in the corpus's own records.
 	blob, err := json.Marshal(observed)

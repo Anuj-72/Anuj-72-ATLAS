@@ -14,8 +14,9 @@ and asserts every stage happened, in order, with the file actually
 fixed on disk. The model is a four-step script served by the fake
 llama-server; everything else (agent loop, guardrails, permission
 gate, workspace containment, sandbox execution, SSE protocol) is the
-production code path. V3 is bypassed here by request flag — the
-V3/Lens pipeline path is covered by test_v3_lens_acceptance.py.
+production code path. The V3 service here is a dead port, so generation
+fails and the model's own edit lands; the V3/Lens pipeline path is covered
+by test_v3_lens_acceptance.py.
 
 Requirements (provided by the e2e CI job; skipped cleanly when absent
 locally): the proxy binary at $ATLAS_PROXY_BINARY (default
@@ -140,7 +141,7 @@ def proxy(fake_llama, sandbox_executor):
         "ATLAS_INFERENCE_URL": f"http://127.0.0.1:{fake_llama}",
         "ATLAS_SANDBOX_URL": f"http://127.0.0.1:{sandbox_executor}",
         "ATLAS_LENS_URL": "http://127.0.0.1:9",  # dead — lens fail-soft
-        "ATLAS_V3_URL": "http://127.0.0.1:9",    # bypass_v3 skips it anyway
+        "ATLAS_V3_URL": "http://127.0.0.1:9",    # dead: generation fails, the model's edit lands
     })
     yield port
     proc.terminate()
@@ -155,7 +156,6 @@ def test_full_agent_turn_read_edit_verify_permission_done(proxy, workspace):
         "working_dir": str(workspace),
         "mode": "default",
         "session_id": session,
-        "bypass_v3": True,
     })
 
     def tool_call(name):
@@ -211,7 +211,6 @@ def test_session_less_destructive_call_is_denied(proxy, workspace):
         "working_dir": str(workspace),
         "mode": "default",
         "session_id": "",
-        "bypass_v3": True,
     }, deadline_s=60.0)
 
     assert any(e["type"] == "permission_denied" for e in events), (

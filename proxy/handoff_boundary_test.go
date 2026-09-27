@@ -214,7 +214,6 @@ func runHandoffWorld(t *testing.T, winner string, scripts []string) *handoffWorl
 	// is reached.
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-handoff-loop")
 	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	ctx.PermissionMode = PermissionYolo
 	ctx.TrustMode = trustFullyTrusted
 	ctx.VerifyOnHost = true

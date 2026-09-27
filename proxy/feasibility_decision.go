@@ -242,7 +242,6 @@ func anyAdapterMeasures(kind string) bool {
 // recordFeasibilityDecision writes the answer to private telemetry.
 func recordFeasibilityDecision(ctx *AgentContext, entry routeEntry,
 	d FeasibilityDecision, targets int) {
-	skipped, _ := generationSkipped(ctx, d)
 	sink := activeShadowSink.Load()
 	if !sink.enabled() {
 		return
@@ -264,18 +263,13 @@ func recordFeasibilityDecision(ctx *AgentContext, entry routeEntry,
 		"unreachable_obligations": d.Unreachable,
 		"authorization_floor":     d.Floor,
 		"authorized_target_count": targets,
-		// Whether candidates were actually generated for this invocation.
-		// Under observe always; under enforce only when a closure path
-		// exists. Asserting `true` unconditionally, as this did while the
-		// answer was inert, would make the record describe a run that did not
-		// happen.
-		"generation_proceeded": !skipped,
-		"mode":                 string(feasibilityModeOf(ctx)),
-		// True under enforce, because there the answer decides whether
-		// candidates are generated at all; false under observe, where it is
-		// computed and discarded. Derived from the mode rather than asserted,
-		// so the record cannot disagree with what the build actually does.
-		"influences_live_decision": feasibilityModeOf(ctx) == FeasibilityEnforce,
+		// The answer is recorded and never enforced: generation proceeds
+		// whatever it says. The enforce mode, a canary experiment, was
+		// removed with the other switches; the fields keep their meaning for
+		// existing readers.
+		"generation_proceeded":     true,
+		"mode":                     "observe",
+		"influences_live_decision": false,
 		"build_version":            APIVersion,
 	})
 }
@@ -339,83 +333,4 @@ func baselineFloorReachable(required string, producible map[string]string) bool 
 		}
 	}
 	return false
-}
-
-// --- the operational mode -------------------------------------------------------
-
-// FeasibilityMode is what this build does with the answer. Two members, and a
-// closed vocabulary on purpose: a boolean would let "enabled" drift into
-// meaning three different things over three releases, and prose inference is
-// how a typo silently turns generation off.
-type FeasibilityMode string
-
-const (
-	// FeasibilityObserve computes the decision, records it, and always
-	// proceeds to generation. This is the shipped default and preserves
-	// current behaviour exactly.
-	FeasibilityObserve FeasibilityMode = "observe"
-	// FeasibilityEnforce lets the decision stop a generation that has no
-	// closure path. The corrected canary sets it explicitly; nothing else
-	// does until that canary passes.
-	FeasibilityEnforce FeasibilityMode = "enforce"
-)
-
-var feasibilityModes = map[FeasibilityMode]bool{
-	FeasibilityObserve: true, FeasibilityEnforce: true,
-}
-
-// defaultFeasibilityMode is what a request gets when nobody said otherwise.
-func defaultFeasibilityMode() FeasibilityMode { return FeasibilityObserve }
-
-// ParseFeasibilityMode resolves a declared mode, and fails closed.
-//
-// Empty is the default rather than an error: a client that says nothing is
-// asking for current behaviour. Anything else unrecognised is refused, because
-// a mode nobody registered is a state nobody has reasoned about, and defaulting
-// it to enforce would skip generation on a typo.
-func ParseFeasibilityMode(raw string) (FeasibilityMode, bool) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return defaultFeasibilityMode(), true
-	}
-	mode := FeasibilityMode(trimmed)
-	if !feasibilityModes[mode] {
-		return defaultFeasibilityMode(), false
-	}
-	return mode, true
-}
-
-// feasibilityModeOf is the one place a request's mode is read.
-func feasibilityModeOf(ctx *AgentContext) FeasibilityMode {
-	if ctx == nil || !feasibilityModes[ctx.FeasibilityMode] {
-		return defaultFeasibilityMode()
-	}
-	return ctx.FeasibilityMode
-}
-
-// generationSkipped reports whether this invocation's candidate generation is
-// to be skipped, and why.
-//
-// Only under enforce, and only for a decision that is not
-// closure_path_available. Everything that is not that -- including a reason
-// nobody classified -- skips, because generating candidates that provably
-// cannot close is the cost this exists to avoid; but the reason travels
-// unchanged so an operator can tell "the adapter cannot measure this" from
-// "nobody classified this state".
-func generationSkipped(ctx *AgentContext, d FeasibilityDecision) (bool, FeasibilityReason) {
-	if feasibilityModeOf(ctx) != FeasibilityEnforce {
-		return false, d.Reason
-	}
-	if d.Feasible && d.Reason == FeasibilityClosurePathAvailable {
-		return false, d.Reason
-	}
-	reason := d.Reason
-	if !feasibilityReasons[reason] {
-		// An unclassified state is still skipped -- proceeding would be
-		// generating without a closure path on the strength of not knowing --
-		// but it is reported as its own thing rather than as one of the
-		// classified refusals.
-		reason = FeasibilityUnknown
-	}
-	return true, reason
 }

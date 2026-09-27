@@ -93,7 +93,6 @@ func newRetainWorld(t *testing.T, produced string, unresolvedFor string) *retain
 	ctx.PermissionMode = PermissionYolo
 	ctx.Ctx = context.WithValue(context.Background(), requestIDKey, "req-retain")
 	ctx.V3URL, ctx.SandboxURL = srv.URL, srv.URL
-	ctx.V3Mode = V3ModeFull
 	ctx.HumanTask = "Make solve fast."
 	ctx.TaskContract = mustContract(t, dir,
 		`{"task_mode":"work","output_knowledge":"declared","expected_outputs":["solve.py"]}`)

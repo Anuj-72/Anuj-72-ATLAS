@@ -223,7 +223,6 @@ func runAudit(t *testing.T, c auditCase) auditResult {
 	ctx.PermissionMode = PermissionYolo
 	ctx.StreamFn = func(event string, _ interface{}) { events = append(events, event) }
 	ctx.Ctx = context.WithValue(reqCtx, requestIDKey, "req-audit")
-	ctx.BypassV3 = false
 	// The client declares the artifact it asked for. Without that there is no
 	// target to authorize against, no licence to mint and no candidate
 	// delivery to walk -- which is the point of this audit.

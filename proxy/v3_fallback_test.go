@@ -174,7 +174,6 @@ func runFallback(t *testing.T, o fallbackOpts) (*ToolResult, string, *fallbackSt
 	ctx.TaskContract = declaredOutputs(o.rel)
 	ctx.StreamFn = func(event string, _ interface{}) { events = append(events, event) }
 	ctx.Ctx = reqCtx
-	ctx.BypassV3 = false
 	ctx.V3URL = srv.URL
 	ctx.SandboxURL = srv.URL
 	ctx.SessionWrites[o.rel] = true
@@ -187,7 +186,7 @@ func runFallback(t *testing.T, o fallbackOpts) (*ToolResult, string, *fallbackSt
 	if tier := classifyFileTier(o.rel, o.proposal); tier < Tier2Medium {
 		t.Fatalf("fixture must be Tier2+ to enter the V3 pipeline, got %v", tier)
 	}
-	if ctx.V3URL == "" || ctx.BypassV3 {
+	if ctx.V3URL == "" {
 		t.Fatal("V3 must be configured and unbypassed")
 	}
 	if isActiveDebugIteration(ctx, o.rel) {
