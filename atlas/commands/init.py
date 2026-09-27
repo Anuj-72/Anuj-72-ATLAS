@@ -540,6 +540,9 @@ def _render_env(m: model_registry.Model, profile: tier.TierProfile,
         "ATLAS_MODELS_DIR": models_value,
         "ATLAS_MODEL_FILE": m.model_file,
         "ATLAS_MODEL_NAME": m.model_file.rsplit(".", 1)[0],
+        # The model's grammar mode from the registry: an install runs the
+        # configuration the model was measured with.
+        "ATLAS_GRAMMAR_MODE": m.grammar_mode,
         "ATLAS_CTX_SIZE": str(profile.context_length),
         "ATLAS_PARALLEL_SLOTS": str(profile.parallel_slots),
         "ATLAS_KV_TYPE_K": profile.kv_cache_k,

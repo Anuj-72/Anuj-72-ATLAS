@@ -400,3 +400,25 @@ def test_workspace_mounts_skip_when_not_running():
     result = doctor.check_workspace_mounts(
         [{"Service": "atlas-proxy", "Name": "x", "State": "running"}])
     assert result.status == "skip"
+
+
+def test_grammar_mode_check_compares_the_env_with_the_registry(tmp_path):
+    """A .env edited by hand, or written before the registry carried the
+    mode, can run a model in a configuration it was not measured with."""
+    from atlas.commands import doctor
+    env = tmp_path / ".env"
+    env.write_text("ATLAS_MODEL_FILE=gemma-4-12b-it-Q4_K_M.gguf\n"
+                   "ATLAS_GRAMMAR_MODE=strict\n")
+    r = doctor.check_grammar_mode(str(tmp_path))
+    assert r.status == "warn", r
+    assert "loose" in r.message and "ATLAS_GRAMMAR_MODE=loose" in r.detail
+    env.write_text("ATLAS_MODEL_FILE=gemma-4-12b-it-Q4_K_M.gguf\n"
+                   "ATLAS_GRAMMAR_MODE=loose\n")
+    assert doctor.check_grammar_mode(str(tmp_path)).status == "pass"
+    # Unset means the proxy's default, strict, which is the Qwen profile.
+    env.write_text("ATLAS_MODEL_FILE=Qwen3.5-9B-Q6_K.gguf\n")
+    assert doctor.check_grammar_mode(str(tmp_path)).status == "pass"
+    # A model the registry does not know has no profile to compare.
+    env.write_text("ATLAS_MODEL_FILE=my-own-model.gguf\n")
+    assert doctor.check_grammar_mode(str(tmp_path)).status == "skip"
+

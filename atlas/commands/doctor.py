@@ -735,6 +735,32 @@ def check_asa_steering(atlas_root: str) -> CheckResult:
     return CheckResult("asa_steering", status, message, verdict.reason)
 
 
+def check_grammar_mode(atlas_root: Optional[str] = None) -> CheckResult:
+    """Does ATLAS_GRAMMAR_MODE match the registry's profile for the model?
+
+    The mode is a property of the model: gemma under the strict schema
+    grammar emits `done` instead of calling tools. `atlas init` writes the
+    registry's value; a .env edited by hand, or written before the registry
+    carried it, can disagree, and then the install runs a configuration the
+    model was not measured with.
+    """
+    from atlas.commands import model_registry
+    values = compose_config.read_env_file(atlas_root) if atlas_root else _ENV
+    model = (values.get("ATLAS_MODEL_FILE") or values.get("ATLAS_MODEL_NAME") or "")
+    m = (model_registry.by_model_file(model) or model_registry.by_name(model)) if model else None
+    if m is None:
+        return CheckResult("grammar_mode", "skip",
+                           "model not in the registry; no grammar profile to compare")
+    effective = (values.get("ATLAS_GRAMMAR_MODE") or "strict").strip().lower()
+    if effective != m.grammar_mode:
+        return CheckResult(
+            "grammar_mode", "warn",
+            f"ATLAS_GRAMMAR_MODE is {effective}; {m.name} is measured with {m.grammar_mode}",
+            f"set ATLAS_GRAMMAR_MODE={m.grammar_mode} in .env and restart the proxy")
+    return CheckResult("grammar_mode", "pass",
+                       f"ATLAS_GRAMMAR_MODE={effective} matches {m.name}")
+
+
 def check_tier_constraints(atlas_root: Optional[str] = None) -> CheckResult:
     """PC-055.1 cross-check: does the host meet the recommended tier's
     per-axis minimums (RAM, CPU, disk)?
@@ -1270,6 +1296,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # but on by default when present; sits next to lens_weights since both
     # are host-side artifact checks.
     _add(check_asa_steering(atlas_root))
+    _add(check_grammar_mode(atlas_root))
 
     # 9.5. Workspace mount alignment — proxy file tools and sandbox
     # run_command must see the same host directory as /workspace, or the

@@ -131,6 +131,20 @@ def test_gemma_asa_is_unverified_until_measured():
     assert "ast_edit_steering.gguf" in m.asa_artifact_files
 
 
+def test_grammar_mode_is_a_property_of_the_model():
+    """Gemma under the strict schema grammar emits `done` instead of
+    calling tools, and every recorded gemma measurement ran loose. The
+    registry says so, and env_vars carries it so an install writes it."""
+    gemma = model_registry.by_name("gemma-4-12b-it-Q4_K_M")
+    assert gemma.grammar_mode == "loose"
+    assert gemma.env_vars()["ATLAS_GRAMMAR_MODE"] == "loose"
+    for m in model_registry.REGISTRY:
+        assert m.grammar_mode in ("strict", "loose"), m.name
+        if not m.name.startswith("gemma"):
+            assert m.grammar_mode == "strict", m.name
+            assert m.env_vars()["ATLAS_GRAMMAR_MODE"] == "strict", m.name
+
+
 # ---------------------------------------------------------------------------
 # Lookups
 # ---------------------------------------------------------------------------

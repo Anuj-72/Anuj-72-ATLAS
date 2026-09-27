@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Fixed: a new gemma install used the grammar mode gemma cannot use
+
+The docs say gemma needs `ATLAS_GRAMMAR_MODE=loose` (under the strict
+schema grammar it emits `done` instead of calling tools), and every gemma
+measurement on the dev server ran loose. Nothing wrote it: compose and the
+proxy default to strict, so a gemma install made by `atlas init` ran
+strict. The mode is now a property of the model in the registry
+(`grammar_mode`: gemma `loose`, the Qwen entries `strict`); `atlas init`
+writes it, the model's env vars carry it, and `atlas doctor` warns when
+`.env` disagrees with the registry for the configured model.
+
 ### Changed: steering is always on, and its labels say what was measured
 
 ASA steering was on in production and in every recorded dev-server

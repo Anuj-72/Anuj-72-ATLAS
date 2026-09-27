@@ -157,12 +157,18 @@ class Model:
     # are relative to the model gguf).
     asa_artifact_url_base: Optional[str] = None
     notes: str = ""
+    # How the proxy constrains this model's tool-call JSON (ATLAS_GRAMMAR_MODE).
+    # A property of the model, written by the installer, so an install
+    # runs the configuration the model was measured with. "strict" sends the
+    # full tool-call schema as a grammar; "loose" sends plain JSON mode.
+    grammar_mode: str = "strict"
 
     def env_vars(self) -> Dict[str, str]:
         """The .env keys the wizard / installer would write for this model."""
         return {
             "ATLAS_MODEL_FILE": self.model_file,
             "ATLAS_MODEL_NAME": self.model_file.rsplit(".", 1)[0],
+            "ATLAS_GRAMMAR_MODE": self.grammar_mode,
         }
 
     @property
@@ -417,6 +423,10 @@ REGISTRY: List[Model] = [
         asa_status="unverified",
         asa_artifact_files=["ast_edit_steering.gguf"],
         asa_hf_repo="itigges22/atlas-asa-gemma4-12b",
+        # Gemma under the strict schema grammar emits `done` instead of
+        # calling tools (docs/CONFIGURATION.md, ADR 0008); every recorded
+        # gemma measurement ran loose. Not A/B measured against strict.
+        grammar_mode="loose",
         asa_artifact_url_base=(
             "https://huggingface.co/itigges22/atlas-asa-gemma4-12b/"
             "resolve/main/"
