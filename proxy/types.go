@@ -351,6 +351,9 @@ type SearchFilesOutput struct {
 	Matches    []SearchMatch `json:"matches"`
 	TotalCount int           `json:"total_count"`
 	Truncated  bool          `json:"truncated,omitempty"`
+	// SkippedCredentialFiles counts files not searched because they hold
+	// credentials (see denyReadPathReason).
+	SkippedCredentialFiles int `json:"skipped_credential_files,omitempty"`
 }
 
 // -- find_file --
@@ -682,8 +685,8 @@ func (c *AgentContext) isToolAllowed(toolName string) bool {
 type PermissionMode int
 
 const (
-	PermissionDefault     PermissionMode = iota // Ask for write/edit/run
-	PermissionAcceptEdits                       // Auto-approve write/edit, ask for run
+	PermissionDefault     PermissionMode = iota // Ask before write_file, delete_file, stop_background and every command; in-place edits and moves run
+	PermissionAcceptEdits                       // Also run write_file without asking; still ask before deletes and commands
 	PermissionYolo                              // Auto-approve everything
 )
 

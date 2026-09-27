@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### Security: commands ran without approval, and file search read credential files
+
+- `run_background` started any command without the approval prompt in the
+  default and accept-edits modes, and was checked against a narrower
+  deny-list than `run_command` (`env rm -rf /` and `(rm -rf /)` passed it).
+  Outside yolo, every tool that runs a command now asks, and one command
+  policy covers both. It looks where a command can start: behind `env`,
+  `nohup`, `nice`, `time`, `timeout` or `exec`, in a subshell and in a
+  command substitution. `grep mkfs notes.txt` is no longer refused.
+- `search_files` returned the contents of credential files that
+  `read_file` refuses (`.env`, keys, cloud credentials) and followed
+  symlinks out of the workspace. It now skips both and reports how many
+  credential files it skipped (`skipped_credential_files`). `move_file`
+  refuses to move a credential file to another name, and `insert_after`
+  gets the write deny-list. The rules follow what a tool does, and a test
+  fails when a new tool is outside them. Shell commands are not covered,
+  and the docs now say so.
+- Approval prompts cut a command at 100 characters, so the end of a chain
+  was never shown. The proxy sends the whole command, and
+  `stop_background` names its job.
+
 ### Measured reliability
 
 A day of running ATLAS against itself and fixing what the sessions showed.

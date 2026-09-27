@@ -43,14 +43,21 @@ the sandbox with conservative memory/CPU/PID caps, never unlimited.
 
 Two defaults reduce accidental data exposure:
 
-**Sensitive-file exclusion** — the agent's read tools refuse known
+**Sensitive-file exclusion** — the agent's file tools keep known
 credential-bearing files (`.env` and variants, `.netrc`, `.npmrc`,
 `.pypirc`, key files, SSH/AWS/kube/docker credential stores,
-`secrets/service-token`, `secrets/api-keys.json`) so their contents never enter model context, session
-files, or lens training samples by default. A user who knows a
+`secrets/service-token`, `secrets/api-keys.json`) out of model context,
+session files and lens training samples by default: `read_file` and
+`outline_file` refuse them, `search_files` skips them and never follows a
+symlink, and `move_file` refuses to move one to another name. A user who knows a
 specific file is non-sensitive can include it explicitly by setting
 `ATLAS_ALLOW_CREDENTIAL_READS=1` on the proxy (the refusal message
 says exactly this). `.env.example` stays readable — it's a template.
+
+Shell commands are not covered. `run_command` and `run_background` run
+in the sandbox, where the workspace is mounted, so `cat .env` there
+reads the file. In the default and accept-edits modes every command
+asks for approval first, and the prompt shows the whole command.
 
 **Private-value filtering** — log output across all services passes
 through a shared filter that masks credential-shaped values
