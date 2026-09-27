@@ -1482,14 +1482,15 @@ class V3PipelineService:
         capture = _capture if _capture is not None else _PoolCapture.disabled()
 
         # PC-048: derive language from the target file's extension. Used
-        # only by smoke_compile_check below to pick the right syntax
-        # checker. Defaults to Python when no file_path is supplied.
+        # by smoke_compile_check below to pick the right syntax checker, and
+        # to keep the Python-only checks off other files. Python only when no
+        # file_path is supplied (a bench task names no file).
         _ext = Path(file_path).suffix.lower() if file_path else ""
         # Only languages scoring.smoke_compile_check can actually verify —
         # an entry here that the checker rejects would fail every candidate
         # with "verification unavailable" instead of checking anything.
         _ext_to_lang = {
-            ".py": "python", ".pyw": "python",
+            ".py": "python", ".pyw": "python", ".pyi": "python",
             ".html": "html", ".htm": "html",
             ".json": "json",
             ".yaml": "yaml", ".yml": "yaml",
@@ -1504,7 +1505,15 @@ class V3PipelineService:
             ".rb": "ruby",
             ".php": "php",
         }
-        smoke_language = _ext_to_lang.get(_ext, "python")
+        # A named file of a class the checker cannot verify keeps its own
+        # name, so it fails as "verification unavailable". Defaulting it to
+        # Python parsed a stylesheet, a C file or a Makefile as Python: every
+        # candidate failed with a SyntaxError that said nothing about the
+        # file, and the Python-only checks ran on it.
+        if file_path:
+            smoke_language = _ext_to_lang.get(_ext, _ext.lstrip(".") or "unknown")
+        else:
+            smoke_language = "python"
 
         # If existing file context is provided, prepend it to the problem
         # so all V3 modules (PlanSearch, PR-CoT, etc.) can see the code

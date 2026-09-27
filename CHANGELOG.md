@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed: V3 checked files of unknown type as Python
+
+The V3 pipeline picked a syntax checker by file extension and fell back to
+Python for any extension it did not list. A stylesheet, a C file or a
+Makefile was parsed as Python, so every candidate failed with a SyntaxError
+that said nothing about the file, and the Python-only checks ran on it.
+Such a file now fails as "verification unavailable" for its own class.
+Python remains the default only for a bench task that names no file.
+`.pyi` stubs are checked as Python.
+
 ### Fixed: the V3 service planned against a budget the proxy did not honour
 
 The proxy cuts each V3 call to half of the session's remaining time, at

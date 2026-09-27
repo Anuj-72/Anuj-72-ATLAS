@@ -157,6 +157,32 @@ def test_the_closing_candidate_is_the_models_exact_bytes(monkeypatch):
     assert rec["candidate_content_hash"] == C.content_hash(result["code"])
 
 
+# The syntax check is chosen by the file's own class. A named file the
+# checker cannot verify is not parsed as Python: a stylesheet or a C file
+# checked as Python failed every candidate with a meaningless SyntaxError.
+@pytest.mark.parametrize("file_path, want", [
+    ("theme.css", "css"),
+    ("main.c", "c"),
+    ("Makefile", "unknown"),
+    ("stubs/api.pyi", "python"),
+    ("solve.py", "python"),
+    ("", "python"),  # a bench task names no file
+])
+def test_the_syntax_check_follows_the_file_class(monkeypatch, file_path, want):
+    service, _ = _service(monkeypatch, task_type="interactive",
+                          code="body { color: red; }\n")
+    seen = []
+
+    def record(code, sandbox, language=None, filename=""):
+        seen.append(language)
+        return True, "ok", ""
+
+    monkeypatch.setattr(scoring, "smoke_compile_check", record)
+    _run(service, file_path)
+    assert seen, "no syntax check ran"
+    assert set(seen) == {want}, seen
+
+
 # 5. A contract whose declared floor IS syntax may close on syntax evidence.
 def test_syntax_floor_contract_closes_on_syntax(monkeypatch):
     service, calls = _service(monkeypatch, task_type="interactive",
