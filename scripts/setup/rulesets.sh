@@ -53,7 +53,8 @@ DEPENDABOT_APP_ID=$(gh api apps/dependabot --jq .id)
 MAINTAINERS_ID=$(gh api "orgs/$ORG/teams/maintainers" --jq .id)
 ADMIN_ROLE_ID=5  # the built-in repository "admin" role
 
-# The 21 checks main and dev required before the move to rulesets.
+# The 21 checks main and dev required before the move to rulesets, plus
+# the two PR-only checks from dependency-review.yml and pr-title.yml.
 CHECKS=(
     "go test (proxy)" "go test (tui)" "pytest (tests/v3)" "pytest (tests/cli)"
     "shellcheck" "docker compose config" "yamllint (workflows)"
@@ -62,6 +63,7 @@ CHECKS=(
     "pytest (tests/v3-service)" "pytest (tests/contracts)" "pytest (tests/infrastructure)"
     "pytest (geometric-lens/tests)" "llama.cpp patches apply to pinned SHA"
     "e2e acceptance (proxy + sandbox + fake llama)" "bootstrap via sudo for a regular user"
+    "dependency review" "pr title"
 )
 checks_json() {
     local first=1 c
