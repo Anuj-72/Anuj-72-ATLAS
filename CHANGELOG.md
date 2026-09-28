@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Changed: the TUI and VS Code show whether a run completed, and why
+
+The `done` event carries `status` (completed, incomplete, stopped,
+timed_out, failed) and `reason`, but both clients showed only the summary,
+so a stopped or failed run looked like a finished one until its text was
+read. Both now show the status and the reason at the end of every run, even
+with no summary. Each status has its own color. A missing status reads as
+incomplete, as docs/API.md says.
+
 ### Fixed: the lens drift check never ran, because no bundle had a fingerprint
 
 The lens re-scores fixed reference texts at boot and fails `/ready` when an

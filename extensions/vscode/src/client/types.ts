@@ -116,6 +116,11 @@ export interface LlmPromptProgressEventData {
 export interface DoneEventData {
 	/** Empty for a text-shaped turn. */
 	summary: string;
+	/** completed, incomplete, stopped, timed_out or failed. An older proxy
+	 * omits it; read that as incomplete (docs/API.md). */
+	status?: string;
+	/** Why the run ended with that status, for example repair_unfinished. */
+	reason?: string;
 }
 
 export interface ErrorEventData {

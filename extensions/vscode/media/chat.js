@@ -342,17 +342,27 @@
 				denyToolChip(message.tool);
 				break;
 			case 'doneSummary': {
-				// Final answer of a tool-shaped turn (done.summary) — assistant-
-				// style bubble with a "done" marker, distinct from streamed text.
+				// The run's outcome: a marker colored by status, the reason, and
+				// the final answer of a tool-shaped turn (done.summary) when there
+				// is one. The status class comes from doneOutcome, which only
+				// passes known statuses through.
 				closeAssistantBubble();
 				const bubble = appendBlock('msg assistant done-summary', '');
 				const marker = document.createElement('span');
-				marker.className = 'done-marker';
-				marker.textContent = 'done';
+				marker.className = 'done-marker done-' + message.cls;
+				marker.textContent = message.label;
 				bubble.appendChild(marker);
-				const body = document.createElement('span');
-				body.textContent = message.text;
-				bubble.appendChild(body);
+				if (message.reason) {
+					const reason = document.createElement('span');
+					reason.className = 'done-reason';
+					reason.textContent = message.reason;
+					bubble.appendChild(reason);
+				}
+				if (message.text) {
+					const body = document.createElement('span');
+					body.textContent = message.text;
+					bubble.appendChild(body);
+				}
 				break;
 			}
 			case 'note':

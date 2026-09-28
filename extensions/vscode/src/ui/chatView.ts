@@ -27,6 +27,7 @@ import type {
 	V3StageEventData,
 } from '../client/types';
 import { editTargetPath, predictEdit, type EditPrediction } from '../session/editPreview';
+import { doneOutcome, type DoneOutcome } from '../session/doneOutcome';
 import { summarizeToolResult } from '../session/toolSummary';
 import {
 	PendingPermission,
@@ -56,7 +57,7 @@ type OutboundMessage =
 	| { type: 'toolCall'; name: string; detail: string }
 	| { type: 'toolResult'; tool: string; success: boolean; elapsed?: string; error?: string; diffId?: number; summary?: string }
 	| { type: 'toolDenied'; tool: string }
-	| { type: 'doneSummary'; text: string }
+	| ({ type: 'doneSummary' } & DoneOutcome)
 	| { type: 'note'; text: string }
 	| { type: 'badge'; text: string }
 	| { type: 'permissionPrompt'; id: number; tool: string; detail: string; message: string; canDiff: boolean; note?: string; oneTimeOnly: boolean }
@@ -437,13 +438,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				break;
 			}
 			case 'done': {
-				// On a tool-shaped turn the model's final answer arrives ONLY in
-				// this summary (proxy/agent.go) — render it like the TUI does
-				// (tui/model.go renders a chat row for non-empty summaries).
-				const payload = data as DoneEventData;
-				if (typeof payload?.summary === 'string' && payload.summary !== '') {
-					this.post({ type: 'doneSummary', text: payload.summary });
-				}
+				// The run's outcome (status and reason) and, on a tool-shaped
+				// turn, the model's final answer, which arrives ONLY in this
+				// summary (proxy/agent.go). Posted even with no summary: whether
+				// the run completed, stopped or failed is the point (#236).
+				this.post({ type: 'doneSummary', ...doneOutcome(data as DoneEventData) });
 				break;
 			}
 			// High-volume / TUI-internal streams the panel deliberately drops:

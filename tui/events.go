@@ -436,15 +436,22 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 		})
 
 	case "done":
+		// The run's outcome, not only its summary (#236): whether it
+		// completed, stopped or failed is what a user needs at a glance. A
+		// missing status reads as incomplete, as docs/API.md says.
 		var p struct {
 			Summary string `json:"summary"`
+			Status  string `json:"status"`
+			Reason  string `json:"reason"`
 		}
 		_ = json.Unmarshal(ev.Data, &p)
-		if p.Summary != "" {
-			m.chat = append(m.chat, chatMessage{
-				Role: roleSystem, Meta: "done", Body: p.Summary,
-			})
+		if p.Status == "" {
+			p.Status = "incomplete"
 		}
+		m.chat = append(m.chat, chatMessage{
+			Role: roleSystem, Meta: "done", Body: p.Summary,
+			Status: p.Status, Reason: p.Reason,
+		})
 
 	case "v3_llm_start":
 		// V3 is starting an LLM call. Insert a dim "v3-llm" row that

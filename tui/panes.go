@@ -425,6 +425,16 @@ func renderChatMessage(m chatMessage, renderer *glamour.TermRenderer,
 		case "V3":
 			header = chatV3Style.Render(fmt.Sprintf("· %s · %s", tag, m.Body))
 			return []string{header}
+		case "done":
+			head := "· done · " + doneStatusLabel(m.Status)
+			if m.Reason != "" {
+				head += " · " + m.Reason
+			}
+			header = doneStatusStyle(m.Status).Render(head)
+			if m.Body == "" {
+				return []string{header}
+			}
+			return prependPrefix(header, wrapPlain(m.Body, width-2))
 		}
 		header = chatSystemStyle.Render(fmt.Sprintf("· %s", tag))
 		body := wrapPlain(m.Body, width-2)
@@ -473,6 +483,33 @@ func wrapPlain(s string, width int) []string {
 		out = append(out, string(runes))
 	}
 	return out
+}
+
+// doneStatusStyles give each terminal status its own color (#236), so a
+// stopped or failed run cannot be mistaken for a completed one.
+var doneStatusStyles = map[string]lipgloss.Style{
+	"completed":  lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true),  // green
+	"incomplete": lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true), // amber
+	"stopped":    lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true), // orange
+	"timed_out":  lipgloss.NewStyle().Foreground(lipgloss.Color("180")).Bold(true), // tan
+	"failed":     lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true), // red
+}
+
+// doneStatusStyle is the style of a status; one the TUI does not know yet
+// reads like incomplete.
+func doneStatusStyle(status string) lipgloss.Style {
+	if st, ok := doneStatusStyles[status]; ok {
+		return st
+	}
+	return doneStatusStyles["incomplete"]
+}
+
+// doneStatusLabel is the status in words.
+func doneStatusLabel(status string) string {
+	if status == "timed_out" {
+		return "timed out"
+	}
+	return status
 }
 
 func prependPrefix(header string, body []string) []string {
