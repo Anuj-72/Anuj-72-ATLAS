@@ -2160,6 +2160,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							wfInput.Content = inline
 							log.Printf("[agent] fenced sentinel stripped for %s (%d bytes arrived inline)", wfInput.Path, len(inline))
 						} else {
+							stallsBefore := ctx.FencedStalls
 							fetched, ferr := fetchFencedContent(ctx, rawResponseForFence(parsed), wfInput.Path)
 							if ferr != nil {
 								log.Printf("[agent] fenced-content fetch failed for %s: %v", wfInput.Path, ferr)
@@ -2185,9 +2186,16 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 									// The channel is off for the rest of the run;
 									// telling the model to try fenced again would
 									// only stall. Steer it to inline, the safe path.
+									// Say where the stall was: this fetch's own
+									// stall used to be reported as "earlier in
+									// this run" (#254).
+									when := "stalled earlier in this run"
+									if ctx.FencedStalls > stallsBefore {
+										when = "stalled on this file just now (it sent no content)"
+									}
 									fencedBounce = fmt.Sprintf(
-										"The fenced-content channel stalled earlier in this run and is now off for the rest of the session — a fenced sub-call would only stall again. Re-issue write_file for %s with the COMPLETE file inline in the content field (write any inner double-quote as \\\"), or make a targeted change with edit_file or structural_edit.",
-										wfInput.Path)
+										"The fenced-content channel %s and is now off for the rest of the session — a fenced sub-call would only stall again. Re-issue write_file for %s with the COMPLETE file inline in the content field (write any inner double-quote as \\\"), or make a targeted change with edit_file or structural_edit.",
+										when, wfInput.Path)
 								}
 								st.bounceToolCall(ctx, "write_file", fencedBounce)
 								// A refusal here is a failed call like any
@@ -4038,6 +4046,7 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 	// Stale from the previous turn otherwise, which would blame a clean
 	// parse failure on a cut that happened earlier.
 	ctx.LastStreamCut = ""
+	ctx.LastFencedStream = fencedStreamStats{}
 	wireMessages := toWireMessages(messages)
 	wireMessages = appendLastReadRestatementFor(ctx, wireMessages, restateOnly)
 
@@ -4200,6 +4209,11 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 
 	resp, err := llmStreamClient.Do(httpReq)
 	if err != nil {
+		// No response at all before the first-content watchdog fired: the
+		// fenced_fetch event says so (#254).
+		if fencedSubCall && reqCtx.Err() != nil && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
+			ctx.LastFencedStream = fencedStreamStats{Cut: "first_content"}
+		}
 		return "", 0, fmt.Errorf("LLM request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -4259,10 +4273,19 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 	// Recording what actually came back over the wire is what distinguishes
 	// "nothing was sent" from "something was sent and not parsed".
 	rawLines, firstLine := 0, ""
+	var firstFrame time.Duration
+	watchdogCut := ""
 	if fencedSubCall {
 		log.Printf("[agent] fenced sub-call response: status=%s content-type=%q transfer-encoding=%v content-length=%d",
 			resp.Status, resp.Header.Get("Content-Type"),
 			resp.TransferEncoding, resp.ContentLength)
+		// What the wire showed, for the caller's fenced_fetch event (#254).
+		defer func() {
+			ctx.LastFencedStream = fencedStreamStats{
+				FirstFrame: firstFrame, WireLines: rawLines, FirstLine: truncateStr(firstLine, 160),
+				ReasoningChars: reasoningBuf.Len(), ContentChars: contentBuf.Len(), Cut: watchdogCut,
+			}
+		}()
 	}
 
 	for scanner.Scan() {
@@ -4271,6 +4294,7 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 			rawLines++
 			if firstLine == "" && strings.TrimSpace(line) != "" {
 				firstLine = line
+				firstFrame = time.Since(sentAt)
 				// The stream is open and generating; content is due now.
 				armStalled()
 				log.Printf("[agent] fenced sub-call first wire line after %s: %s",
@@ -4412,6 +4436,18 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 		// on a large context were cut at the watchdog with the file already
 		// in reasoning_content, and the run died with only the first file.
 		if fencedSubCall && (ctx.Ctx == nil || ctx.Ctx.Err() == nil) {
+			// Which watchdog fired follows from what had arrived: none arms
+			// only once a frame has come, and content re-arms the idle one.
+			if reqCtx.Err() != nil {
+				switch {
+				case firstLine == "":
+					watchdogCut = "first_content"
+				case contentBuf.Len() == 0:
+					watchdogCut = "stalled"
+				default:
+					watchdogCut = "idle"
+				}
+			}
 			log.Printf("[agent] fenced sub-call stream cut (%v) after %s; wire lines=%d first=%q; reasoning_content held %d chars, content %d",
 				err, time.Since(sentAt).Round(time.Millisecond), rawLines,
 				truncateStr(firstLine, 120), reasoningBuf.Len(), contentBuf.Len())
@@ -6017,6 +6053,19 @@ const (
 	defaultFencedStalledSec = 25
 )
 
+// fencedStreamStats is what the wire showed during one fenced sub-call.
+type fencedStreamStats struct {
+	FirstFrame     time.Duration // since the request; 0 when no frame came
+	WireLines      int
+	FirstLine      string
+	ReasoningChars int
+	ContentChars   int
+	// Cut names the watchdog that ended the stream: first_content (no
+	// frame at all), stalled (frames, but no content), or idle (content,
+	// then none). Empty when no watchdog cut it.
+	Cut string
+}
+
 func fencedFirstContentTimeout() time.Duration {
 	return envDurationSec("ATLAS_FENCED_FIRST_CONTENT_SEC", defaultFencedFirstContentSec)
 }
@@ -6239,6 +6288,16 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 		// the session and skipped that retry.
 		cutWithContent := err != nil && strings.TrimSpace(reply) != "" &&
 			(ctx.Ctx == nil || ctx.Ctx.Err() == nil)
+		outcome := "unusable"
+		switch {
+		case err != nil && !cutWithContent && ctx.Ctx != nil && ctx.Ctx.Err() != nil:
+			outcome = "cancelled"
+		case err != nil && !cutWithContent:
+			outcome = "stalled"
+		case got:
+			outcome = "used"
+		}
+		emitFencedFetch(ctx, path, attempt, grammar, elapsed, tokens, outcome)
 		if err != nil && !cutWithContent {
 			// Every way this attempt can end WITHOUT a fenced block charges
 			// the session: watchdog cancellation, transport error, HTTP
@@ -6295,6 +6354,35 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 	return "", fmt.Errorf("no fenced block after %d attempt(s) for %s this session; "+
 		"send the file inline or edit it instead",
 		ctx.FencedFailures[fencedKey(ctx, path)], path)
+}
+
+// emitFencedFetch records one fenced attempt (#254): what the wire showed
+// and what became of it. The outcome is the branch the fetch loop takes:
+// used, unusable (retried while attempts remain), stalled (charged against
+// the session's stall limit), or cancelled.
+func emitFencedFetch(ctx *AgentContext, path string, attempt int, grammar string,
+	elapsed time.Duration, tokens int, outcome string) {
+	fs := ctx.LastFencedStream
+	g := "raw"
+	if isFenceBlockGrammar(grammar) {
+		g = "fence"
+	}
+	ev := map[string]interface{}{
+		"path": path, "attempt": attempt + 1, "grammar": g, "outcome": outcome,
+		"elapsed_ms": elapsed.Milliseconds(), "tokens": tokens,
+		"first_frame_ms": fs.FirstFrame.Milliseconds(), "wire_lines": fs.WireLines,
+		"content_chars": fs.ContentChars, "reasoning_chars": fs.ReasoningChars,
+	}
+	if fs.Cut != "" {
+		ev["cut"] = fs.Cut
+	}
+	if ctx.LastStreamCut != "" {
+		ev["stream_cut"] = ctx.LastStreamCut
+	}
+	if fs.ContentChars == 0 && fs.FirstLine != "" {
+		ev["first_line"] = fs.FirstLine
+	}
+	ctx.Stream("fenced_fetch", ev)
 }
 
 func extractModelResponse(raw string) (ModelResponse, error) {

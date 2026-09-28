@@ -293,6 +293,35 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 			})
 		}
 
+	case "fenced_fetch":
+		// One attempt to fetch a file body through the fenced channel (#254):
+		// how it went and what the wire showed, so a stall has a visible
+		// cause instead of a pause.
+		var p struct {
+			Path           string `json:"path"`
+			Attempt        int    `json:"attempt"`
+			Grammar        string `json:"grammar"`
+			Outcome        string `json:"outcome"`
+			ElapsedMS      int64  `json:"elapsed_ms"`
+			ContentChars   int    `json:"content_chars"`
+			ReasoningChars int    `json:"reasoning_chars"`
+			Cut            string `json:"cut"`
+		}
+		if json.Unmarshal(ev.Data, &p) != nil {
+			break
+		}
+		body := fmt.Sprintf("fenced %s, attempt %d (%s): %s, %d chars in %.1fs",
+			p.Path, p.Attempt, p.Grammar, p.Outcome, p.ContentChars, float64(p.ElapsedMS)/1000)
+		if p.Cut != "" {
+			body += ", cut by the " + strings.ReplaceAll(p.Cut, "_", "-") + " watchdog"
+		}
+		if p.ReasoningChars > 0 {
+			body += fmt.Sprintf(", %d reasoning chars", p.ReasoningChars)
+		}
+		m.chat = append(m.chat, chatMessage{
+			Role: roleSystem, Meta: "fenced", Body: body, Echo: true,
+		})
+
 	case "repair":
 		// A file the session left unparseable (#214): shown when it opens,
 		// when an attempt changes it and it still fails, when it is fixed,

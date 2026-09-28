@@ -1048,6 +1048,9 @@ type AgentContext struct {
 	// off session-wide (fencedChannelDisabledForSession) and writes go inline,
 	// which the swallowed-content detector now makes safe.
 	FencedStalls int
+	// LastFencedStream is what the wire showed during the last fenced
+	// sub-call (#254), for the fenced_fetch event its attempt emits.
+	LastFencedStream fencedStreamStats
 
 	// RequestCtx is the RESPONSE lifetime: alive for finalisation after the
 	// work context has been cancelled. Ctx is the WORK lifetime -- LLM calls,

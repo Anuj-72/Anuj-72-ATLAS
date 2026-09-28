@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### Added: each fenced fetch attempt is recorded in a `fenced_fetch` event
+
+A file body sent through the fenced channel is fetched in up to two
+attempts. Each attempt now streams a `fenced_fetch` event with:
+- the file and the attempt number, and whether the fence grammar was used;
+- how long it took, and when the first frame came;
+- how much content and reasoning arrived;
+- which watchdog cut it, if one did;
+- what happened to it: used, unusable, stalled or cancelled.
+
+The TUI shows one line per attempt. Before, a stall showed only as a pause.
+
+### Fixed: the fenced channel's refusal blamed an earlier stall for its own
+
+When a fetch's own stall turned the fenced channel off, the refusal said the
+channel "stalled earlier in this run". It now says it stalled on this file
+just now.
+
 ### Changed: a file the session leaves unparseable must be fixed before it finishes
 
 A file the session leaves unparseable (a new file written with a parse
