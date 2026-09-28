@@ -6,7 +6,8 @@ Commands, one per workflow in .github/workflows/bot-*.yml:
   claim       `/claim` or `/unclaim` as the first line of an issue comment
   stale       daily: remind, then release, a /claim with no linked pull request
   sync        hourly: mirror Ready/Blocked to labels, area labels on PRs,
-              welcome first-time PR authors
+              welcome first-time PR authors, close issues whose fix
+              reached dev
   welcome     issue opened: welcome a first-time issue author
   rfc-dedupe  RFC or Feature opened: link open RFCs and Epics with similar titles
 
@@ -37,6 +38,9 @@ COMMAND = re.compile(r"^/(claim|unclaim)\s*$")
 MAINTAINER = ("OWNER", "MEMBER")
 FIRST_PR = ("FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER")
 STATUS_LABELS = {"Ready": "status/ready", "Blocked": "status/blocked"}
+# GitHub's closing keywords. They act only on the default branch (main), and
+# work merges into dev, so sync closes the issues itself.
+CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.IGNORECASE)
 STOPWORDS = set("""about after again against also allow allows because before being
 between could does doing during each from have into just like make more most need
 needs only other over same should some such than that their them then there these
@@ -166,6 +170,21 @@ class API:
 
     def open_pulls(self) -> list:
         return list(self._pages(f"/repos/{self.repo}/pulls?state=open"))
+
+    def branch_commits(self, branch: str, since: str) -> list:
+        """Commits on a branch since an ISO time: [{sha, message}]."""
+        q = urllib.parse.urlencode({"sha": branch, "since": since})
+        return [{"sha": c["sha"], "message": c["commit"]["message"]}
+                for c in self._pages(f"/repos/{self.repo}/commits?{q}")]
+
+    def merged_pulls(self, branch: str, since_day: str) -> list:
+        """Pull requests merged into a branch since a date: [{number, body}]."""
+        return [{"number": i["number"], "body": i.get("body") or ""}
+                for i in self.search(f"is:pr is:merged base:{branch} merged:>={since_day}")]
+
+    def close_issue(self, number: int) -> None:
+        self._call("PATCH", f"/repos/{self.repo}/issues/{number}",
+                   {"state": "closed", "state_reason": "completed"})
 
     def pull_files(self, number: int) -> list:
         return [f["filename"] for f in self._pages(f"/repos/{self.repo}/pulls/{number}/files")]
@@ -408,6 +427,33 @@ class Bot:
                 if not any(self._mine(x) and marker("welcome") in x.get("body", "")
                            for x in self.api.comments(n)):
                     self.api.comment(n, self._welcome_pr(pr["user"]["login"]))
+        self._close_fixed()
+
+    def _close_fixed(self) -> None:
+        """Close the open issues that a commit or merged pull request on the
+        work branch names with a closing keyword. The board then marks them
+        Done by itself, and the milestone names the release that ships them."""
+        d = self.cfg["done"]
+        since = self.now - dt.timedelta(days=int(d["lookback_days"]))
+        where: dict = {}
+        for c in self.api.branch_commits(d["branch"], since.strftime("%Y-%m-%dT%H:%M:%SZ")):
+            for num in CLOSING.findall(c["message"]):
+                where.setdefault(int(num), c["sha"][:7])
+        for pr in self.api.merged_pulls(d["branch"], since.strftime("%Y-%m-%d")):
+            for num in CLOSING.findall(pr["body"]):
+                where.setdefault(int(num), f"#{pr['number']}")
+        for n, ref in sorted(where.items()):
+            try:
+                issue = self.api.issue(n)
+            except RuntimeError:  # no such issue: a typo in a commit message
+                continue
+            if "pull_request" in issue or issue.get("state") != "open":
+                continue
+            if not any(self._mine(x) and marker("done") in x.get("body", "")
+                       for x in self.api.comments(n)):
+                self.api.comment(n, f"{marker('done')}\nFixed on `{d['branch']}` in {ref}. "
+                                    "It ships in the next release.")
+            self.api.close_issue(n)
 
     def _first_pr(self, pr: dict) -> bool:
         # author_association is not enough: under the bot's app token GitHub

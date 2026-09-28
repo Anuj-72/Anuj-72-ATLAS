@@ -184,10 +184,11 @@ stated as untested).
 | `staging` | Release candidate (`vX.Y.Z-rc.N`) | When a maintainer promotes `dev`. It stays at least 3 days. |
 | `main` | Released (`vX.Y.Z`, `:latest`) | When the candidate passes and the release owner approves |
 
-Your issue: `Closes #N` closes an issue only for pull requests into `main`,
-and yours goes into `dev`. After the merge, a maintainer sets the issue's
-Status to Done, which closes it. Its milestone shows the release that ships
-your change.
+Your issue: GitHub's `Closes #N` acts only on `main`, and your pull request
+goes into `dev`. So the bot closes the issue for you within a few hours of
+the merge, and the board marks it Done. Its milestone shows the release that
+ships your change. If the issue should stay open after your change lands
+(it still needs a check after a deploy), write `Refs #N` instead.
 
 Minor releases ship when `dev` is ready; there's no fixed calendar. Fixes
 and security releases can ship any time. [RELEASE.md](docs/RELEASE.md) has

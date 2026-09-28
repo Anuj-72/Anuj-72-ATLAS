@@ -37,3 +37,9 @@ areas:
   .github/: area/ci
   docs/: area/docs
   README.md: area/docs
+
+# A fix that lands on this branch closes the issues its commit or pull
+# request names with "Closes #N" (GitHub does that only on main).
+done:
+  branch: dev
+  lookback_days: 3          # how far back each sync looks

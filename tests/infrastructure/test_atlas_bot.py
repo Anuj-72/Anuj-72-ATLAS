@@ -35,10 +35,14 @@ class FakeAPI:
         self.pulls = []       # open PRs
         self.files = {}       # PR number -> [path]
         self.linked = {}      # issue number -> [PR author]
+        self.commits = []     # commits on dev: {sha, message}
+        self.merged = []      # PRs merged into dev: {number, body}
         self.assignable = True
         self.log = []
 
     def issue(self, n):
+        if n not in self.issues:
+            raise RuntimeError(f"GET /issues/{n}: HTTP 404")
         i = self.issues[n]
         return {"number": n, **i, "assignees": [{"login": x} for x in i["assignees"]]}
 
@@ -77,6 +81,18 @@ class FakeAPI:
 
     def pull_files(self, n):
         return self.files.get(n, [])
+
+    def branch_commits(self, branch, since):
+        assert branch == "dev"
+        return self.commits
+
+    def merged_pulls(self, branch, since_day):
+        assert branch == "dev"
+        return self.merged
+
+    def close_issue(self, n):
+        self.log.append(("close", n, None))
+        self.issues[n]["state"] = "closed"
 
     def linked_open_pr_authors(self, n):
         return self.linked.get(n, [])
@@ -377,3 +393,47 @@ def test_rfc_links_only_for_rfcs_and_features(api, cfg, kind):
                       "type": {"name": kind} if kind else None, "title": "Multi-GPU inference"}
     run(api, cfg).rfc_dedupe({"issue": {"number": 50}})
     assert api.said(50) == []
+
+
+# --- close issues whose fix reached dev --------------------------------------
+
+
+def closed(api):
+    return [n for (kind, n, *_rest) in api.log if kind == "close"]
+
+
+def test_a_commit_on_dev_closes_the_issue_it_names(api, cfg):
+    api.commits = [{"sha": "d834340abc", "message": "fix(proxy): x\n\nCloses #7"}]
+    run(api, cfg).sync()
+    assert closed(api) == [7]
+    assert "Fixed on `dev` in d834340" in api.said(7)[0]
+
+
+def test_a_merged_pull_request_closes_the_issue_it_names(api, cfg):
+    api.merged = [{"number": 246, "body": "Fixes #7\n\n## What changed"}]
+    run(api, cfg).sync()
+    assert closed(api) == [7] and "in #246" in api.said(7)[0]
+
+
+def test_closing_twice_is_one_comment_and_one_close(api, cfg):
+    api.commits = [{"sha": "aaaaaaa1", "message": "Closes #7"}, {"sha": "bbbbbbb2", "message": "resolves: #7"}]
+    run(api, cfg).sync()
+    run(api, cfg).sync()
+    assert closed(api) == [7] and len(api.said(7)) == 1
+
+
+@pytest.mark.parametrize("message", ["see (#7)", "refs #7", "Prefixes #7", "closes#7"])
+def test_only_closing_keywords_close(api, cfg, message):
+    api.commits = [{"sha": "ccccccc3", "message": message}]
+    run(api, cfg).sync()
+    assert closed(api) == []
+
+
+def test_pull_requests_closed_and_missing_issues_are_skipped(api, cfg):
+    api.issues[8] = {"state": "closed", "assignees": [], "labels": [], "type": None, "title": "t"}
+    api.issues[9] = {"state": "open", "assignees": [], "labels": [], "type": None, "title": "t",
+                     "pull_request": {}}
+    api.commits = [{"sha": "ddddddd4", "message": "Closes #8, closes #9, closes #999"}]
+    run(api, cfg).sync()
+    assert closed(api) == [] and api.said(8) == api.said(9) == []
+
