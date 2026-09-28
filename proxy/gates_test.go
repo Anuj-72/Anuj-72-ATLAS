@@ -1815,7 +1815,7 @@ func TestEchoedWritesAreRefused(t *testing.T) {
 		t.Error("fired on a prefix too short to be evidence")
 	}
 
-	msg := echoedWriteRejection("input.txt")
+	msg := echoedWriteRejection("input.txt", false)
 	for _, want := range []string{"input.txt", "already has", "read it at runtime", "replace_lines"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("rejection missing %q:\n%s", want, msg)

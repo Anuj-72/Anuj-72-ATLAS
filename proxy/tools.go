@@ -924,7 +924,7 @@ func writeFileTool() *ToolDef {
 				if echoesExistingFile(string(existing), input.Content) {
 					log.Printf("[write_file] refusing an echoed write of %s (%d bytes on disk, %d incoming)",
 						logPath(input.Path), len(existing), len(input.Content))
-					return refusedNoCheck(echoedWriteRejection(input.Path)), nil
+					return refusedNoCheck(echoedWriteRejection(input.Path, ctx.SessionWrites[input.Path])), nil
 				}
 			}
 

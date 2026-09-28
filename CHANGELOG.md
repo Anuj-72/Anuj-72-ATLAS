@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed: re-sending a file the session just wrote got a refusal meant for input data
+
+`write_file` refuses to rewrite a file with the contents it already has. The
+refusal was written for input or fixture files ("you do not need to reproduce
+a file"). In the smoke run on 2026-09-28 (add_function rep 2), the file was
+the session's own test file. The model re-sent it three times, never ran it,
+and passing work ended "stopped". For a file the session wrote, the refusal
+now says that the file is on disk with exactly this content, and that the
+next step is to run it or its tests.
+
 ### Fixed: the reliability runner counted working guards as service faults
 
 `scripts/e2e-reliability.py` detector H6 ("service fault") flagged every
