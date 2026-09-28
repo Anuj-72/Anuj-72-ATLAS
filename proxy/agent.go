@@ -4305,8 +4305,8 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 			// is X. Wait, I can't see the output. I'll just say X. Wait, I
 			// can't..." repeating) — the reasoning budget doesn't catch it
 			// (that's content, not reasoning_content), so it ran to max_tokens.
-			// Detect a verbatim repeating tail and cut. Checked periodically
-			// to keep it O(n) overall.
+			// Detect a repeating tail and cut (streamLooping). Checked
+			// periodically to keep it O(n) overall.
 			// Raw-emission sub-call: we asked for exactly one fenced block
 			// and nothing else, so a reply with no fence opener after a few
 			// hundred characters is prose that will run to max_tokens. At
@@ -4322,20 +4322,7 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 			}
 			if !contentLoopCut && contentBuf.Len() > 600 && contentBuf.Len()-lastLoopCheck > 200 {
 				lastLoopCheck = contentBuf.Len()
-				buffered := contentBuf.String()
-				threshold := 3
-				if strings.Contains(buffered, `"tool_call"`) || strings.Contains(buffered, "```") {
-					// Code is legitimately self-similar; only spiral-grade
-					// repetition is degeneration there. Covers both channels
-					// code streams through: tool_call JSON args, and the
-					// fenced block of the @fenced sub-call — without the
-					// fence case the prose threshold would re-cut healthy
-					// code in the channel built to avoid exactly that.
-					threshold = toolCallLoopThreshold
-				}
-				if loopingTailCount(buffered) >= threshold {
-					contentLoopCut = true
-				}
+				contentLoopCut = streamLooping(contentBuf.String())
 			}
 		}
 		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
@@ -5205,11 +5192,10 @@ func isLoopingTail(s string) bool {
 // stump landed, the model patched the cut line instead of rewriting, and
 // the patch drifted (a comma in the print, spaces lost from a join).
 func loopingTailCount(s string) int {
-	const probe = 48
-	if len(s) < probe*3 {
+	if len(s) < loopProbe*3 {
 		return 0
 	}
-	tail := s[len(s)-probe:]
+	tail := s[len(s)-loopProbe:]
 	if strings.TrimSpace(tail) == "" {
 		return 0
 	}
@@ -5221,6 +5207,65 @@ func loopingTailCount(s string) int {
 // of repeats — so demanding 10 keeps the guard while making 3-4 branch-
 // shaped repeats of healthy code invisible to it.
 const toolCallLoopThreshold = 10
+
+// loopProbe is the length of the tail a loop check looks for earlier in the
+// stream.
+const loopProbe = 48
+
+// streamLooping is the content-loop decision for what a stream has produced
+// so far.
+func streamLooping(buffered string) bool {
+	threshold := 3
+	if strings.Contains(buffered, `"tool_call"`) || strings.Contains(buffered, "```") {
+		// Code is legitimately self-similar; only spiral-grade
+		// repetition is degeneration there. Covers both channels
+		// code streams through: tool_call JSON args, and the
+		// fenced block of the @fenced sub-call — without the
+		// fence case the prose threshold would re-cut healthy
+		// code in the channel built to avoid exactly that.
+		threshold = toolCallLoopThreshold
+	}
+	return loopingTailCount(buffered) >= threshold || countedLoop(buffered)
+}
+
+// countedLoopThreshold is the repeat count, with numbers masked, at which a
+// prose reply counts as a loop.
+const countedLoopThreshold = 5
+
+// proseReplyRe matches the start of a text or done reply.
+var proseReplyRe = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"(text|done)"`)
+
+// digitRunRe matches one run of digits.
+var digitRunRe = regexp.MustCompile(`[0-9]+`)
+
+// countedLoop reports a prose reply that loops while it counts. Each repeat
+// carries a new number, so no tail repeats verbatim and loopingTailCount never
+// sees it: "29. I'll check planning.py's end. 30. I'll check planning.py's
+// end. ..." ran 328 s to the token cap in the fc8321d smoke run
+// (bugfind_tiebreak rep 1). With each run of digits masked, the repeats are
+// the same text.
+//
+// Only a text or done reply with no code block in it. A file body can count
+// legitimately (CSV rows, a numbered test table, a migration list), and it
+// streams in a tool call, a fenced sub-call, or a malformed call whose
+// "type" names the tool, none of which starts as a prose reply. The probe
+// must also hold words, so a numeric table in an answer is not a loop.
+func countedLoop(s string) bool {
+	if !proseReplyRe.MatchString(s) || strings.Contains(s, "```") {
+		return false
+	}
+	masked := digitRunRe.ReplaceAllString(s, "#")
+	if loopingTailCount(masked) < countedLoopThreshold {
+		return false
+	}
+	letters := 0
+	for _, b := range []byte(masked[len(masked)-loopProbe:]) {
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
+			letters++
+		}
+	}
+	return letters >= 16
+}
 
 // agentMaxTokens is the per-turn generation ceiling (ATLAS_MAX_TOKENS,
 // default 8192). Shared by the LLM request and conversationTokenBudget so the

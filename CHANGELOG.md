@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed: a reply that looped while it counted ran to the token cap
+
+The repetition cut compares the end of the stream with the text before it. A
+loop whose repeats carry a counting number ("29. I'll check planning.py's
+end. 30. I'll check ...") never repeats exactly, so it was never cut: one ran
+328 s in a smoke run. A text or done reply is now also compared with its
+numbers masked, and that loop is cut after about 50 s. File content in a tool
+call or a fenced block is not masked, because a file can count legitimately
+(CSV rows, numbered tests).
+
 ### Fixed: inline code that touched no changed file counted as verification
 
 `python -c "print(1)"` passed as verification: it cleared an earlier failed
