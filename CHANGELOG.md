@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Fixed: the run was told to stop a server that a planned step still needed
+
+Found by the smoke run on 2026-09-27 (flask_pause rep 1). The gate that asks
+the run to stop its own background jobs before finishing already waited
+while a verification was owed. It did not wait for the plan. The run
+stopped its server, the plan gate then asked for a probe of that server,
+the probe could no longer pass, and the run ended "stopped" on work the
+grader passed.
+
+- The background gate now also waits while the plan gate still owes a step
+  that runs a command, and only while that gate has bounces left, so a spent
+  plan gate cannot keep the job running.
+
 ### Fixed: an answer about code past a truncated read counted as evidence
 
 Found by the smoke run on 2026-09-27 (bugfind_tiebreak). The check that

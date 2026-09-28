@@ -856,10 +856,19 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// is weakened: once verification lands, this gate fires, and
 	// finalizeCompletion still refuses completion while a job of the run's own
 	// is live.
+	//
+	// A planned step that runs a command is owed the same way. Smoke run
+	// 2026-09-27 (flask_pause rep 1): the probe on the app's real port passed
+	// but did not match the planned one, this gate had the run stop the
+	// server, and the plan gate then demanded the probe, which could no longer
+	// pass. The run ended "stopped" with working code on disk. The yield lasts
+	// only while the plan gate has bounces left, so a spent plan gate cannot
+	// hold the job open.
 	contractDemand := decideVerificationDemand(ctx, ctx.TaskContract, s.expectedOutputs)
 	contractOwed := contractDemand.Required && !contractDemand.Met
 	verificationOwed := ((s.userWantsVerification || s.sawFailedVerification) && !s.verifiedThisLoop) || contractOwed
-	if live := settleBackgroundHazard(ctx); len(live) > 0 && !verificationOwed && s.chargeBounce("background_gate") {
+	planRunOwed := planOwesRun(ctx) && s.gateBounces["plan_gate"] < maxGateBounces
+	if live := settleBackgroundHazard(ctx); len(live) > 0 && !verificationOwed && !planRunOwed && s.chargeBounce("background_gate") {
 		log.Printf("[agent] background gate: %d job(s) still running at exit (bounce %d/%d)",
 			len(live), s.gateBounces["background_gate"], maxGateBounces)
 		return "background_gate", backgroundStopMessage(ctx, live)

@@ -3046,6 +3046,21 @@ func planIncompleteMessage(ctx *AgentContext) string {
 		countTrue(ctx.PlanStepsSatisfied), len(ctx.Plan.Steps), strings.Join(missing, "\n"))
 }
 
+// planOwesRun reports whether the plan gate would send this exit back for a
+// step that runs a command. Such a step may need a job the run started: a
+// probe of a server needs the server.
+func planOwesRun(ctx *AgentContext) bool {
+	if planIncompleteMessage(ctx) == "" {
+		return false
+	}
+	for i, step := range ctx.Plan.Steps {
+		if !ctx.PlanStepsSatisfied[i] && (step.Action == "run_command" || step.Action == "run_background") {
+			return true
+		}
+	}
+	return false
+}
+
 // reForegroundServer matches commands that serve until killed. Deliberately
 // narrow: only forms that cannot be anything else. `python app.py` is
 // excluded because it is just as likely to be a script that exits, and
