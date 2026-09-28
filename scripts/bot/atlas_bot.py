@@ -304,27 +304,33 @@ class Bot:
         n, c, links = issue["number"], self.cfg["claims"], self.cfg["links"]
         assignees = [a["login"] for a in issue.get("assignees") or []]
         if issue.get("state") != "open":
-            return self.api.comment(n, f"@{user} this issue is closed, so it can't be claimed.")
+            self.api.comment(n, f"@{user} this issue is closed, so it can't be claimed.")
+            return
         if user in assignees:
-            return self.api.comment(n, f"@{user} this issue is already yours.")
+            self.api.comment(n, f"@{user} this issue is already yours.")
+            return
         if assignees:
-            return self.api.comment(n, f"@{user} this issue is already claimed by "
-                                    f"@{assignees[0]}. Find another in [Start Here]({links['start_here']}).")
+            self.api.comment(n, f"@{user} this issue is already claimed by "
+                             f"@{assignees[0]}. Find another in [Start Here]({links['start_here']}).")
+            return
         item = self.api.item(self.cfg, n)
         if item is None or item["status"] != "Ready":
             where = f"its status is {item['status']}" if item and item["status"] else "it isn't on the board yet"
-            return self.api.comment(n, f"@{user} only issues marked Ready can be claimed, and {where}. "
-                                    f"Ready issues are in [Start Here]({links['start_here']}).")
+            self.api.comment(n, f"@{user} only issues marked Ready can be claimed, and {where}. "
+                             f"Ready issues are in [Start Here]({links['start_here']}).")
+            return
         if not maintainer:
             open_claims = self.api.search_count(f"is:issue is:open assignee:{user}")
             merged = self.api.search_count(f"is:pr is:merged author:{user}")
             limit = int(c["max_open"] if merged else c["max_open_first_timer"])
             if open_claims >= limit:
                 kind = "" if merged else " before your first merged pull request"
-                return self.api.comment(n, f"@{user} you can hold {limit} open claim{'s' if limit > 1 else ''}"
-                                        f"{kind}, and you have {open_claims}. Finish or `/unclaim` one first.")
+                self.api.comment(n, f"@{user} you can hold {limit} open claim{'s' if limit > 1 else ''}"
+                                 f"{kind}, and you have {open_claims}. Finish or `/unclaim` one first.")
+                return
         if not self.api.assign(n, user):
-            return self.api.comment(n, f"@{user} GitHub wouldn't assign this issue to you. A maintainer will look.")
+            self.api.comment(n, f"@{user} GitHub wouldn't assign this issue to you. A maintainer will look.")
+            return
         self.api.set_status(self.cfg, item["id"], "In Progress")
         shepherd = item["shepherd"].lstrip("@")
         who = f"Your shepherd is @{shepherd}: ask them anything. " if shepherd else ""
@@ -339,7 +345,8 @@ class Bot:
     def _unclaim(self, issue: dict, user: str) -> None:
         n = issue["number"]
         if user not in [a["login"] for a in issue.get("assignees") or []]:
-            return self.api.comment(n, f"@{user} you don't hold a claim on this issue.")
+            self.api.comment(n, f"@{user} you don't hold a claim on this issue.")
+            return
         self.api.unassign(n, user)
         item = self.api.item(self.cfg, n)
         if item and item["status"] == "In Progress":

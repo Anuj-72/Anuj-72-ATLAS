@@ -139,7 +139,8 @@ def test_config_reads_the_repo_settings(cfg):
 
 
 def test_every_area_label_is_one_the_label_script_creates(cfg):
-    script = open(os.path.join(ROOT, "scripts", "setup", "labels.sh"), encoding="utf-8").read()
+    with open(os.path.join(ROOT, "scripts", "setup", "labels.sh"), encoding="utf-8") as fh:
+        script = fh.read()
     for label in set(cfg["areas"].values()):
         assert f'"{label}|' in script, label
 
