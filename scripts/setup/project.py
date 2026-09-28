@@ -77,7 +77,7 @@ OTHER_FIELDS = {"Shepherd": "TEXT", "Start Date": "DATE", "Target Date": "DATE"}
 # release in progress; change it when that release ships.
 VIEWS = [
     ("Start Here", "TABLE_LAYOUT", "status:Ready contributor-level:Starter no:assignee"),
-    ("Help Wanted", "TABLE_LAYOUT", "status:Ready no:assignee"),
+    ("Help Wanted", "TABLE_LAYOUT", 'status:Ready no:assignee -contributor-level:"Maintainer-only"'),
     ("Current Release", "BOARD_LAYOUT", 'milestone:"v3.2.0"'),
     ("Critical Path", "TABLE_LAYOUT", "critical-path:Yes -status:Done"),
     ("Roadmap", "ROADMAP_LAYOUT", "type:Epic"),
