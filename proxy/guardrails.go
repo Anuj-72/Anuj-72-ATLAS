@@ -980,17 +980,65 @@ func sessionWriteHashes(ctx *AgentContext) map[string]string {
 // in what was verified — passed to an interpreter, a test runner, or a
 // grader as an argument. Substring matching is deliberately avoided:
 // "solve.py" must not match "solve.py.bak".
+//
+// Three common shapes named their files without a plain token, so a run that
+// verified them bound nothing: a subshell, `(cd app && python main.py)`, whose
+// token keeps the parenthesis; a glob, `javac *.java`; and a Java class run,
+// `java Main` or `java com.example.Main`, which names the class, not
+// Main.java. Shell punctuation is trimmed from tokens, a glob token matches
+// the files it would expand to, and after `java` a class name matches its
+// source file.
 func commandNamesPath(command, path string) bool {
 	base := filepath.Base(path)
+	class := ""
+	if strings.HasSuffix(base, ".java") {
+		class = strings.TrimSuffix(base, ".java")
+	}
 	for _, segment := range splitShellSegments(command) {
-		for _, tok := range strings.Fields(segment) {
-			tok = strings.Trim(tok, `"'`)
+		fields := strings.Fields(segment)
+		javaRun := false
+		for i, tok := range fields {
+			tok = strings.Trim(tok, "\"'()`{};")
+			if tok == "" {
+				continue
+			}
 			if tok == path || tok == base || strings.HasSuffix(tok, "/"+base) {
+				return true
+			}
+			if strings.ContainsAny(tok, "*?[") && globNamesPath(tok, path) {
+				return true
+			}
+			if i == 0 || (!javaRun && filepath.Base(tok) == "java") {
+				javaRun = filepath.Base(tok) == "java"
+				continue
+			}
+			if javaRun && class != "" && !strings.HasPrefix(tok, "-") &&
+				(tok == class || strings.HasSuffix(tok, "."+class)) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// globNamesPath reports whether a shell glob from a command line would expand
+// to path. A changed path is often absolute (the resolved form sits beside
+// the one the model sent), and a relative glob is relative to where the
+// command ran, so the glob is matched against as many trailing components of
+// the path as it has: `src/*.java` against `.../src/Util.java`.
+func globNamesPath(glob, path string) bool {
+	glob = strings.TrimPrefix(glob, "./")
+	if filepath.IsAbs(glob) {
+		ok, _ := filepath.Match(glob, path)
+		return ok
+	}
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	n := strings.Count(glob, "/") + 1
+	if n > len(parts) {
+		return false
+	}
+	ok, _ := filepath.Match(glob, strings.Join(parts[len(parts)-n:], "/"))
+	return ok
 }
 
 // coverageFromLiveServer credits a probe with the files whose code is actually

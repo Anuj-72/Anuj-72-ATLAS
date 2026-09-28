@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Fixed: a subshell, a glob or a Java class run verified nothing
+
+A green run counts as verification of the files it names. Three common ways
+to run a program named their files without a plain token, so the run bound
+nothing, and a work request verified that way ended "verification demanded,
+unmet":
+- a subshell, `(cd app && python main.py)`, whose token kept the parenthesis;
+- a glob, `javac *.java`;
+- a Java class run, `java Main` or `java com.example.Main`, which names the
+  class, not `Main.java`.
+
+Tokens now lose surrounding shell punctuation, a glob matches the files it
+would expand to, and after `java` a class name matches its source file.
+
 ### Fixed: re-sending a file the session just wrote got a refusal meant for input data
 
 `write_file` refuses to rewrite a file with the contents it already has. The
