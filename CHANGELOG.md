@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Fixed: the lens drift check never ran, because no bundle had a fingerprint
+
+The lens re-scores fixed reference texts at boot and fails `/ready` when an
+energy drifts, which is how a serving stack that no longer matches the
+artifacts (a changed `--pooling` flag, another model) shows up. Nothing
+wrote the fingerprint it compares against. `atlas lens build` now writes
+`drift_fingerprint.json` into every bundle. It is scored the way the service
+scores: through the lens's own embedding path, under the embedding contract
+the bundle declares, and against the llama-server the build reached. The
+file moves with its bundle on activation, is hashed into the provenance
+manifest, is kept by `atlas artifact` snapshot and rollback, and is shipped
+by `atlas lens publish`. When a reference cannot be scored, the bundle gets
+no fingerprint (the check enforces nothing) rather than a wrong one.
+
 ### Added: the reliability runner records container restarts and OOM kills
 
 `scripts/e2e-reliability.py` now snapshots each container of the compose

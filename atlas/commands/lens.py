@@ -630,11 +630,66 @@ _MANAGED_LENS_ARTIFACTS = (
     "gx_weights.json",
     "gx_thresholds.json",
     "provenance.json",
+    "drift_fingerprint.json",
     "model_identity.json",
     # Superseded formats must not shadow a freshly trained XGBoost bundle.
     "metric_tensor.pt",
     "gx_xgboost.pkl",
 )
+
+
+def _write_bundle_fingerprint(staging_dir: str, model, embed=None,
+                              llama_url: str = "") -> Optional[str]:
+    """Write the drift fingerprint for a freshly trained bundle (#230).
+
+    The lens re-scores these reference texts at boot and fails /ready when an
+    energy moves beyond tolerance, which is how a serving stack that drifted
+    from what the artifacts were fitted on shows up. So the expected energies
+    are scored the way the service scores them: its own embedding path
+    (geometric_lens.embedding_extractor.extract_embedding) and these weights.
+    That module's default URL is the compose service name, which the host
+    cannot resolve, so it is pointed at the llama-server this build reached.
+
+    Returns a warning when no fingerprint was written. A reference that
+    cannot be scored leaves the bundle without one (the check then enforces
+    nothing), never with one built from a failed measurement."""
+    set_url = bool(llama_url) and not os.environ.get("LLAMA_EMBED_URL")
+    if set_url:
+        os.environ["LLAMA_EMBED_URL"] = llama_url
+    ee, prior_contract = None, None
+    try:
+        import torch
+        from geometric_lens.drift import write_fingerprint
+        if embed is None:
+            from geometric_lens import embedding_extractor as ee
+            from geometric_lens.identity import load_model_identity
+            # Score under the contract the bundle declares: the service
+            # installs it from model_identity.json when it loads the bundle,
+            # and a normalized contract changes every vector.
+            try:
+                contract = load_model_identity(staging_dir).get("embedding_contract")
+            except (OSError, ValueError):
+                contract = None  # the service refuses such a bundle anyway
+            prior_contract = ee._EMBEDDING_CONTRACT
+            ee.set_embedding_contract(contract)
+            embed = ee.extract_embedding
+        model.eval()
+
+        def score(text: str) -> float:
+            x = torch.tensor(embed(text), dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                return float(model(x).item())
+
+        write_fingerprint(staging_dir, score, note="written by atlas lens build")
+        return None
+    except Exception as exc:  # noqa: BLE001 — a missing fingerprint is the old behaviour
+        return (f"drift fingerprint not written ({exc}); the lens drift check "
+                f"enforces nothing for this bundle")
+    finally:
+        if ee is not None:
+            ee.set_embedding_contract(prior_contract)
+        if set_url:
+            os.environ.pop("LLAMA_EMBED_URL", None)
 
 
 def _activate_lens_bundle(staging_dir: str, artifact_dir: str) -> None:
@@ -979,6 +1034,12 @@ def _emit_build(args: argparse.Namespace, color: bool) -> int:
         save_model_identity(
             staging_dir, model_identity, verdict.probe.embedding_dim,
             embedding_contract=embedding_contract)
+        # Drift fingerprint (#230): the reference energies the lens re-checks
+        # at boot. Before the provenance manifest, which hashes it.
+        warning = _write_bundle_fingerprint(staging_dir, result["model"],
+                                            llama_url=verdict.probe.url)
+        if warning:
+            _safe_print(f"  WARN: {warning}")
         # Per-bundle provenance manifest (SUPPORT_MATRIX §9.5): every
         # activated bundle is reproducible and auditable — `atlas artifact
         # verify/snapshot/rollback` consume this file. Best-effort: a
@@ -1226,7 +1287,8 @@ def _emit_publish(args: argparse.Namespace, color: bool) -> int:
     # registry consumer who only gets cost_field.pt would run with a
     # dormant (or wrong-dimension) G(x). (G(x) itself is XGBoost trees in
     # native JSON — already pickle-free; safetensors doesn't apply.)
-    for opt in ("gx_xgboost.json", "gx_weights.json", "gx_thresholds.json"):
+    for opt in ("gx_xgboost.json", "gx_weights.json", "gx_thresholds.json",
+                "drift_fingerprint.json"):
         if os.path.isfile(os.path.join(artifact_dir, opt)):
             files_to_upload.append(opt)
     if "gx_xgboost.json" not in files_to_upload:

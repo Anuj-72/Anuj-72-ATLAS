@@ -24,7 +24,7 @@ SNAPSHOT_DIR = ".previous-bundle"
 BUNDLE_FILES = [
     "cost_field.pt", "cost_field.safetensors", "cx_normalization.json",
     "gx_xgboost.json", "gx_weights.json", "gx_thresholds.json",
-    "model_identity.json",
+    "drift_fingerprint.json", "model_identity.json",
 ]
 
 

@@ -26,6 +26,7 @@ BUNDLE_FILES = [
     "gx_xgboost.json",
     "gx_weights.json",
     "gx_thresholds.json",
+    "drift_fingerprint.json",
     "model_identity.json",
 ]
 

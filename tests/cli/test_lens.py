@@ -11,6 +11,8 @@ Coverage strategy:
 """
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -743,3 +745,192 @@ def test_publish_opens_pr_via_github_api(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     # API path failed -> the PR body is printed for manual paste.
     assert "Add Lens artifacts" in out
+
+
+# ---------------------------------------------------------------------------
+# Drift fingerprint (#230): every built bundle carries one
+# ---------------------------------------------------------------------------
+#
+# The lens re-scores fixed reference texts at boot and fails /ready when an
+# energy drifts, but nothing wrote the fingerprint it compares against.
+
+_REPO = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def lens_drift(monkeypatch):
+    """geometric_lens, importable the way the build imports it on a host."""
+    monkeypatch.syspath_prepend(str(_REPO / "geometric-lens"))
+    import geometric_lens.drift as drift
+    return drift
+
+
+def _tiny_cost_field(torch):
+    torch.manual_seed(0)
+    return torch.nn.Sequential(torch.nn.Linear(4, 1))
+
+
+def _fake_embed(text):
+    return [len(text) / 100.0, text.count("\n") / 10.0, 0.5, float("def" in text)]
+
+
+def test_a_built_bundle_carries_a_fingerprint_scored_the_service_way(lens_drift, tmp_path):
+    torch = pytest.importorskip("torch")
+    model = _tiny_cost_field(torch)
+    assert lens._write_bundle_fingerprint(str(tmp_path), model, embed=_fake_embed) is None
+
+    def score(text):
+        return float(model(torch.tensor(_fake_embed(text)).unsqueeze(0)).item())
+
+    fp = lens_drift.load_fingerprint(str(tmp_path))
+    assert [r["text"] for r in fp["references"]] == lens_drift.REFERENCE_TEXTS
+    for ref in fp["references"]:
+        assert abs(ref["expected_energy"] - score(ref["text"])) < 1e-6
+    # The boot check accepts the same stack and reports a drifted one.
+    assert lens_drift.check_fingerprint(str(tmp_path), score) == (True, True, "")
+    present, ok, detail = lens_drift.check_fingerprint(str(tmp_path), lambda t: score(t) * 3 + 50)
+    assert present and not ok and "drift" in detail
+
+
+def test_a_reference_that_cannot_be_scored_leaves_no_fingerprint(lens_drift, tmp_path):
+    torch = pytest.importorskip("torch")
+
+    def unreachable(_text):
+        raise ConnectionError("llama-server is not answering")
+
+    warning = lens._write_bundle_fingerprint(str(tmp_path), _tiny_cost_field(torch),
+                                             embed=unreachable)
+    assert warning and "not written" in warning
+    assert not (tmp_path / "drift_fingerprint.json").exists()
+    # With no fingerprint the boot check enforces nothing: never a drift verdict.
+    assert lens_drift.check_fingerprint(str(tmp_path), lambda t: 1.0) == (False, True, "")
+
+
+def test_the_build_points_the_service_embedder_at_the_server_it_reached(
+        lens_drift, tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import geometric_lens.embedding_extractor as ee
+    seen = []
+
+    def fake_extract(text):
+        seen.append(ee._get_embed_url())
+        return _fake_embed(text)
+
+    monkeypatch.setattr(ee, "extract_embedding", fake_extract)
+    monkeypatch.delenv("LLAMA_EMBED_URL", raising=False)
+    monkeypatch.delenv("LLAMA_URL", raising=False)
+    assert lens._write_bundle_fingerprint(str(tmp_path), _tiny_cost_field(torch),
+                                          llama_url="http://localhost:8080") is None
+    # Not the compose service name, which a host cannot resolve.
+    assert seen and set(seen) == {"http://localhost:8080"}
+    assert "LLAMA_EMBED_URL" not in os.environ
+
+
+def test_the_fingerprint_moves_with_its_bundle(tmp_path):
+    live, staging = tmp_path / "live", tmp_path / "staging"
+    live.mkdir()
+    staging.mkdir()
+    (live / "cost_field.pt").write_bytes(b"old-cost")
+    (live / "drift_fingerprint.json").write_text("old")
+    (staging / "cost_field.pt").write_bytes(b"new-cost")
+    _write_complete_runtime_artifacts(staging)
+    (staging / "drift_fingerprint.json").write_text("new")
+
+    lens._activate_lens_bundle(str(staging), str(live))
+
+    assert (live / "drift_fingerprint.json").read_text() == "new"
+
+
+def test_a_bundle_without_a_fingerprint_does_not_keep_the_old_one(tmp_path):
+    # An old fingerprint describes the old weights: kept, it would read as drift.
+    live, staging = tmp_path / "live", tmp_path / "staging"
+    live.mkdir()
+    staging.mkdir()
+    (live / "cost_field.pt").write_bytes(b"old-cost")
+    (live / "drift_fingerprint.json").write_text("old")
+    (staging / "cost_field.pt").write_bytes(b"new-cost")
+    _write_complete_runtime_artifacts(staging)
+
+    lens._activate_lens_bundle(str(staging), str(live))
+
+    assert not (live / "drift_fingerprint.json").exists()
+
+
+def test_lens_build_activates_a_bundle_that_carries_its_fingerprint(
+        lens_drift, tmp_path, monkeypatch):
+    """`atlas lens build`, end to end with C(x) trained for real: the
+    activated bundle has a fingerprint, and the provenance manifest hashes
+    it. G(x) training (XGBoost + scikit-learn) and the model server are
+    stand-ins."""
+    torch = pytest.importorskip("torch")
+    import geometric_lens.embedding_extractor as ee
+    import geometric_lens.training as training
+
+    samples = ([{"text": f"def ok_{i}(): return {i}", "label": 1} for i in range(30)]
+               + [{"text": f"def bad_{i}(: return {i}", "label": 0} for i in range(30)])
+    samples_path = tmp_path / "samples.json"
+    samples_path.write_text(json.dumps(samples))
+
+    def fake_extract(samples, llama_url, color, cache_path=None, expect_dim=0):
+        return {"embeddings": [[0.1, 0.2, 0.1, 0.2] if s["label"] else [0.9, 0.8, 0.9, 0.8]
+                               for s in samples],
+                "labels": [int(s["label"]) for s in samples]}
+
+    def fake_save_gx(_result, save_dir=None):
+        (Path(save_dir) / "gx_xgboost.json").write_text("{}")
+        (Path(save_dir) / "gx_weights.json").write_text("{}")
+        (Path(save_dir) / "gx_thresholds.json").write_text(
+            json.dumps({"severe": 0.1, "off_rails": 0.2, "low": 0.3}))
+
+    monkeypatch.setattr(lens, "probe_llama", lambda *a, **kw: _probe(embedding_dim=4))
+    monkeypatch.setattr(lens, "_extract_training_embeddings", fake_extract)
+    monkeypatch.setattr(training, "train_gx", lambda data: {"cv_auc_mean": 0.9})
+    monkeypatch.setattr(training, "save_gx", fake_save_gx)
+    monkeypatch.setattr(ee, "observe_embedding_convention", lambda: None)
+    monkeypatch.setattr(ee, "extract_embedding", lambda text: [0.1, 0.2, 0.3, 0.4])
+
+    live = tmp_path / "live"
+    rc = lens.main(["build", "--samples", str(samples_path), "--artifact-dir", str(live),
+                    "--force", "--epochs", "3", "--no-color"])
+    assert rc == 0
+    fp = lens_drift.load_fingerprint(str(live))
+    assert fp is not None and len(fp["references"]) == len(lens_drift.REFERENCE_TEXTS)
+    manifest = (live / "provenance.json").read_text()
+    assert "drift_fingerprint.json" in manifest
+
+
+def test_publish_ships_the_drift_fingerprint(monkeypatch, tmp_path, capsys):
+    """A registry consumer gets the fingerprint with the weights, so the
+    drift check runs on their stack too."""
+    torch = pytest.importorskip("torch")
+    torch.save({"net.0.weight": torch.zeros(512, 4096), "net.0.bias": torch.zeros(512)},
+               tmp_path / "cost_field.pt")
+    _write_complete_runtime_artifacts(tmp_path, "Qwen3.5-9B-Q6_K")
+    (tmp_path / "drift_fingerprint.json").write_text(json.dumps({
+        "tolerance_pct": 15, "references": [{"text": "x", "expected_energy": 1.0}]}))
+    monkeypatch.setenv("ATLAS_LENS_MODELS", str(tmp_path))
+    assert lens.main(["publish", "Qwen3.5-9B-Q6_K", "--dry-run", "--no-color"]) == 0
+    assert "drift_fingerprint.json" in capsys.readouterr().out
+
+
+def test_the_fingerprint_is_scored_under_the_bundles_embedding_contract(
+        lens_drift, tmp_path, monkeypatch):
+    """The service installs the bundle's embedding contract when it loads it,
+    and a normalized contract changes every vector: the fingerprint must be
+    scored the same way, or a fresh bundle reads as drifted at boot."""
+    torch = pytest.importorskip("torch")
+    import geometric_lens.embedding_extractor as ee
+    from geometric_lens.identity import save_model_identity
+    monkeypatch.setattr(ee, "_post_embedding",
+                        lambda text, **kw: {"embedding": [3.0, 4.0, 0.0, 0.0]})
+    save_model_identity(str(tmp_path), "test-model", 4, embedding_contract={
+        "pooling": "mean", "response_shape": "flat", "normalized": True,
+        "norm_tolerance": 0.05})
+    model = _tiny_cost_field(torch)
+    assert lens._write_bundle_fingerprint(str(tmp_path), model,
+                                          llama_url="http://localhost:8080") is None
+    # The service's vector: [3, 4, 0, 0] L2-normalized.
+    want = float(model(torch.tensor([0.6, 0.8, 0.0, 0.0]).unsqueeze(0)).item())
+    for ref in lens_drift.load_fingerprint(str(tmp_path))["references"]:
+        assert abs(ref["expected_energy"] - want) < 1e-5
+    assert ee._EMBEDDING_CONTRACT is None
