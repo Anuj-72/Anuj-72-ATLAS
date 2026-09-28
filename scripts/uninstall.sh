@@ -93,8 +93,9 @@ remove_atlas_services() {
 
     if [[ "$REMOVE_DATA" == true ]]; then
         log_info "Removing persistent volume claims..."
-        # lens-state is only left by installs from before the pattern cache
-        # and its state store were removed.
+        # lens-state and lens-projects are only left by installs from before
+        # the pattern cache, its state store and the unused projects volume
+        # were removed.
         kubectl delete pvc -n "$ATLAS_NAMESPACE" lens-state 2>/dev/null || true
         kubectl delete pvc -n "$ATLAS_NAMESPACE" lens-projects 2>/dev/null || true
     fi

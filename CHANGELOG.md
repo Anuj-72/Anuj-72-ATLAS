@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Removed: the unused lens-projects volume on Kubernetes
+
+The geometric-lens deployment created and mounted a `lens-projects`
+PersistentVolumeClaim (sized by `ATLAS_PVC_PROJECTS_SIZE`), but nothing in
+the lens has read it since the project indexer was removed. The template no
+longer creates or mounts it, and `ATLAS_PVC_PROJECTS_SIZE` is gone from
+`atlas.conf.example` (an old value is ignored). `uninstall.sh --data` still
+deletes a `lens-projects` claim that an older install left behind.
+
 ### Added: each fenced fetch attempt is recorded in a `fenced_fetch` event
 
 A file body sent through the fenced channel is fetched in up to two

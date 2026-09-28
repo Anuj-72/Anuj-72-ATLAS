@@ -69,11 +69,6 @@ ATLAS_PROJECTS_DIR="/opt/atlas/data/projects"
 ATLAS_DATA_DIR="/opt/atlas/data"
 
 #-------------------------------------------
-# Persistent Volume Sizes
-#-------------------------------------------
-ATLAS_PVC_PROJECTS_SIZE="20Gi"     # backs lens-projects PVC in the lens deployment
-
-#-------------------------------------------
 # Model Configuration
 #-------------------------------------------
 # Main model filename (required; must exist in ATLAS_MODELS_DIR).

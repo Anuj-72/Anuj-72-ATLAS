@@ -612,13 +612,7 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 | `ATLAS_PROJECTS_DIR` | `/opt/atlas/data/projects` | User project workspace. Bind-mounted at `/workspace` in BOTH atlas-proxy and sandbox pods (`hostPath` with `DirectoryOrCreate`) so the agent sees the same files in both. |
 | `ATLAS_DATA_DIR` | `/opt/atlas/data` | Parent of `ATLAS_PROJECTS_DIR`. Printed at install time; `uninstall.sh` does `rm -rf "$ATLAS_DATA_DIR"` when `--data` is set. Not mounted as a volume itself. |
 
-### 8.3 Persistent Volume sizes
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_PVC_PROJECTS_SIZE` | `20Gi` | Size of the `lens-projects` PVC. The geometric-lens pod still mounts it (`PROJECT_DATA_DIR`), but nothing in the lens has read it since the project indexer was removed in 2026-07; it is a leftover to remove |
-
-### 8.4 Model & Inference
+### 8.3 Model & Inference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -627,7 +621,7 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 | `ATLAS_CONTEXT_LENGTH` | `16384` | Context window in tokens, TOTAL across all slots (llama-server divides it by `ATLAS_PARALLEL_SLOTS`; at the default `1` slot, total = per-slot). V3's `--parallel 1` budget is sized around 16K; raise if you have GPU headroom and want longer turns. |
 | `ATLAS_PARALLEL_SLOTS` | `1` | Concurrent KV slots. V3 self-embeddings push VRAM tight on 16 GB cards, so `1` is the safe default. |
 
-### 8.5 Resource limits (Kubernetes pod spec)
+### 8.4 Resource limits (Kubernetes pod spec)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -642,20 +636,20 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 
 > GPU is requested as a count (`nvidia.com/gpu: 1`), not a memory budget — there is no `ATLAS_LLAMA_GPU_MEMORY` knob.
 
-### 8.6 Feature flags
+### 8.5 Feature flags
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_ENABLE_SPECULATIVE` | `false` | **Speculative decoding is deliberately off, and the knob is deliberately not wired.** No entrypoint passes llama.cpp's draft flags (`-md` / `--model-draft`): on the reference serving host, speculative decoding measured *slower* than plain decoding for ATLAS's workload, whose generations are long and low-entropy enough that draft rejection dominates. The variable is kept so the decision stays visible rather than getting rediscovered and "fixed". If you want to revisit it, A/B it on your own hardware first — do not wire it up on principle. |
 
-### 8.7 Timeouts (seconds)
+### 8.6 Timeouts (seconds)
 
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `ATLAS_LLM_TIMEOUT` | `120` | `scripts/verify-install.sh` for the smoke-test `curl` against llama-server |
 | `ATLAS_HEALTH_CHECK_TIMEOUT` | `10` | `scripts/verify-install.sh` `--max-time` for `curl` against each `/health` endpoint during post-install verification. (The healthchecks defined inside the K3s templates use hardcoded timeouts, not this var.) |
 
-### 8.8 V3 ablation knobs (benchmark-only)
+### 8.7 V3 ablation knobs (benchmark-only)
 
 Consumed by `atlas/bench/v3_runner.py:_load_v3_config` for ablation studies. The production `v3-service` reads its own constants from the `v3-service/stages/*.py` config dataclasses and does NOT pick these up at runtime.
 
@@ -664,7 +658,7 @@ Consumed by `atlas/bench/v3_runner.py:_load_v3_config` for ablation studies. The
 | `ATLAS_V3_BUDGET_FORCING_DEFAULT_TIER` | `"standard"` | Default Budget Forcing tier when difficulty estimation is unavailable |
 | `ATLAS_V3_PLAN_SEARCH_NUM_PLANS` | `3` | Plans generated per problem (overrides `PlanSearchConfig.num_plans`) |
 
-### 8.9 Advanced
+### 8.8 Advanced
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -679,6 +673,6 @@ The install scripts also honor three runtime-only env vars (not in `atlas.conf` 
 | `ATLAS_AUTO_CONFIRM` | `false` | Set to `true` in the environment to skip the interactive install prompts in `scripts/install.sh` |
 | `ATLAS_MODEL_URL` | (unset) | Direct GGUF URL for an unregistered model. `scripts/download-models.sh` passes it to `atlas model install --url`, bypassing the registry lookup. |
 
-### 8.10 Removed variables
+### 8.9 Removed variables
 
-Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_V3_EWC_LAMBDA`, `ATLAS_V3_REPLAY_BUFFER_MAX_SIZE`, `ATLAS_V3_REPLAY_BUFFER_REPLAY_RATIO`, `ATLAS_V3_LENS_FEEDBACK_ENABLED` and `ATLAS_V3_LENS_FEEDBACK_RETRAIN_INTERVAL` (bench-runner knobs for the online lens retrain, removed with the lens retrain endpoint; the runner applied only the retrain interval), `ATLAS_LENS_TRAINING_DIR` (the hostPath of the lens training corpus the proxy no longer collects), `ATLAS_PVC_LENS_STATE_SIZE` (sized the `lens-state` PVC, removed with the pattern cache and its SQLite store), `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is host-side `atlas lens build`).
+Vars removed in earlier trims are ignored if left in an `atlas.conf`; see CHANGELOG. Most recently removed: `ATLAS_PVC_PROJECTS_SIZE` (sized the `lens-projects` PVC, which the lens mounted and nothing read after the project indexer was removed), `ATLAS_V3_EWC_LAMBDA`, `ATLAS_V3_REPLAY_BUFFER_MAX_SIZE`, `ATLAS_V3_REPLAY_BUFFER_REPLAY_RATIO`, `ATLAS_V3_LENS_FEEDBACK_ENABLED` and `ATLAS_V3_LENS_FEEDBACK_RETRAIN_INTERVAL` (bench-runner knobs for the online lens retrain, removed with the lens retrain endpoint; the runner applied only the retrain interval), `ATLAS_LENS_TRAINING_DIR` (the hostPath of the lens training corpus the proxy no longer collects), `ATLAS_PVC_LENS_STATE_SIZE` (sized the `lens-state` PVC, removed with the pattern cache and its SQLite store), `ATLAS_JWT_SECRET` (generated a secret into `.jwt_secret` and a Kubernetes Secret that no pod ever mounted), `ATLAS_LORA_DIR` and `ATLAS_TRAINING_DIR` (directories `install.sh` created and `uninstall.sh` deleted, that nothing wrote to and no template mounted), and `ATLAS_ENABLE_TRAINING` (was reserved with no reader — the nightly-retrain CronJob it anticipated was never built; lens retraining is host-side `atlas lens build`).

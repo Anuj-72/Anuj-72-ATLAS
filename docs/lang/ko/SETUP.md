@@ -567,7 +567,6 @@ cd geometric-lens
 LLAMA_URL=http://localhost:8080 \
 LLAMA_EMBED_URL=http://localhost:8080 \
 GEOMETRIC_LENS_ENABLED=true \
-PROJECT_DATA_DIR=/tmp/atlas-projects \
 python -m uvicorn main:app --host 0.0.0.0 --port 8099
 
 # Terminal 3: V3 Pipeline
@@ -674,7 +673,7 @@ K3s는 설정에 `.env`가 아닌 `atlas.conf`를 사용합니다. HTTP 계약�
 | 서비스 노출 | 호스트 포트 (`8090`, `8080`, `8099`, `8070`, `30820`) | NodePorts (`30080`, `32735`, `31144`, `30070`, `30820`) |
 | 프로젝트 워크스페이스 | 바인드 마운트 (`ATLAS_PROJECT_DIR` → `/workspace`) | `hostPath` (`ATLAS_PROJECTS_DIR` → 필요한 모든 Pod의 `/workspace`) |
 | 모델 파일 | 바인드 마운트 (`ATLAS_MODELS_DIR` → `/models:ro`) | GPU 노드의 `hostPath` (`ATLAS_MODELS_DIR`, `Directory`, 읽기 전용) |
-| 상태 저장 스토리지 | 명명된 볼륨 (`v3-telemetry`) | PVC (`lens-projects`는 `ATLAS_PVC_PROJECTS_SIZE`로 크기 지정. 마운트되지만 프로젝트 인덱서 제거 이후 사용되지 않음) |
+| 상태 저장 스토리지 | 명명된 볼륨 (`v3-telemetry`) | 없음 |
 | GPU 할당 | `deploy.resources.reservations.devices` (nvidia) | `resources.limits.nvidia.com/gpu: 1` (GPU Operator 또는 디바이스 플러그인 필요) |
 | 샌드박스 툴체인 캐시 | 언어별 `tmpfs` 마운트 | 언어별 `sizeLimit` 지정 `emptyDir` (공통 패턴, 동일 세트) |
 
