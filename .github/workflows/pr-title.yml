@@ -23,10 +23,16 @@ jobs:
       - name: Check the title
         env:
           TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           types='feat|fix|docs|chore|refactor|perf|test|build|ci|revert|style'
-          if [[ "$TITLE" =~ ^($types)\([a-z0-9][a-z0-9._/-]*\)!?:\ [^[:space:]].{0,99}$ ]]; then
+          # Dependabot writes its own titles, and a group title can pass 100
+          # characters after a rebase (#180). Check its format, not its length.
+          len='{0,99}'
+          if [[ "$AUTHOR" == "dependabot[bot]" ]]; then len='*'; fi
+          re="^($types)\\([a-z0-9][a-z0-9._/-]*\\)!?:\\ [^[:space:]].${len}\$"
+          if [[ "$TITLE" =~ $re ]]; then
             echo "ok: $TITLE"
             exit 0
           fi
