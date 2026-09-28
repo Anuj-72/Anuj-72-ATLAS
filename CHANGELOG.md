@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed: structural_edit could break a file that parsed
+
+edit_file, insert_after and replace_lines refuse an edit that leaves a file
+that parsed unable to parse. structural_edit did not: its splice landed with
+a warning. In a smoke run a splice broke a Go file, and the edits after it
+landed on the broken file. structural_edit now refuses such a splice like
+the other tools: the file is not changed, and the refusal gives the parse
+error and the lines around it. A file that already fails stays editable, and
+the rule does not block when the check cannot run.
+
 ### Fixed: a reply that looped while it counted ran to the token cap
 
 The repetition cut compares the end of the stream with the text before it. A

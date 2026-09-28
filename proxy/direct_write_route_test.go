@@ -509,8 +509,9 @@ func TestDirectWriteActiveDebugNearMiss(t *testing.T) {
 //	                                          baseline they restore is written
 //	V3 terminal guard   final bytes           re-observes only if some branch
 //	                                          changed the bytes without saying so
-//	edit gate           proposal + baseline   shared by edit_file, insert_after
-//	                                          and replace_lines, once each
+//	edit gate           proposal + baseline   shared by edit_file,
+//	                                          structural_edit, insert_after and
+//	                                          replace_lines, once each
 //
 // None is in the final direct-write block. Growth beyond this means a route
 // recomputed an observation it already held.
@@ -538,15 +539,15 @@ func TestWriteRoutesDoNotRecomputeTheirObservation(t *testing.T) {
 		}
 		return true
 	})
-	// 18 since structural_edit began observing the bytes it splices. Every
-	// site is beside the bytes it describes; a site that re-derived an
-	// observation a route already holds would be the recomputation this
-	// counts against. structural_edit held none: it recorded not_run for its
-	// own output, which is why a file it edited carried mutation debt that
-	// nothing could discharge. Asking once, about bytes no one had asked
-	// about, is the opposite of recomputation.
-	if structured != 18 {
-		t.Errorf("fallbackSyntaxOutcomeFor call sites = %d, want 18; a new one on a "+
+	// 17 since structural_edit moved onto the shared edit gate (#214). It
+	// had one site of its own, after the write, to observe the bytes it
+	// spliced (before that it recorded not_run, and a file it edited carried
+	// mutation debt nothing could discharge). The gate now observes the
+	// proposed bytes before the write, and that observation is the verdict
+	// it keeps: asking again after the write would be the recomputation this
+	// counts against. Every site is beside the bytes it describes.
+	if structured != 17 {
+		t.Errorf("fallbackSyntaxOutcomeFor call sites = %d, want 17; a new one on a "+
 			"route that already holds an observation is a recomputation", structured)
 	}
 	// The migration is complete: no route calls the legacy wrapper any more.

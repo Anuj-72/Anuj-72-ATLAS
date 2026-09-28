@@ -3365,6 +3365,26 @@ func structuralEditTool() *ToolDef {
 				v3Out = route.Meta
 			}
 
+			// The healthy->broken rule the other three edit tools share
+			// (#214). The splice service only shows it could re-parse its
+			// own output, and a splice still left a file unparseable
+			// (go_offbyone in the 8b95baa smoke run). A file that already
+			// failed stays editable, which is what makes repair-in-progress
+			// possible, and the check fails open when it cannot run.
+			observed, refusal := editSyntaxObservation(ctx, "structural_edit", input.Path, input.Path,
+				source, finalContent, func(detail string) string {
+					if msg, isEmbedded := embeddedScriptRejectionFor(detail); isEmbedded {
+						return msg
+					}
+					return fmt.Sprintf(
+						"structural_edit result for %s does not parse (%s). The file was NOT modified.%s\n"+
+							"Check that the replacement for `%s` is complete and re-issue the edit.",
+						input.Path, truncateStr(detail, 200), offendingLineNote(finalContent, detail), input.Selector)
+				})
+			if refusal != nil {
+				return refusal, nil
+			}
+
 			// Structural gate (#147): the structural splice guarantees the result
 			// parses, but not that its calls resolve — the observed failure
 			// was a structural_edit that introduced a render_template call with only
@@ -3432,11 +3452,11 @@ func structuralEditTool() *ToolDef {
 			// ended `unresolved_mutation_debt`, told that chunk.py "was never
 			// written in a state this run could check". It had been.
 			//
-			// The bytes still land either way; this tool has never refused
-			// after the rename and does not start now. What changes is that
-			// the verdict is real, so a clean splice settles and a broken one
-			// is recorded as broken instead of as unknown.
-			spliceCheck := fallbackSyntaxOutcomeFor(ctx, input.Path, finalContent).aggregate()
+			// The verdict is real, so a clean splice settles and a broken one
+			// is recorded as broken instead of as unknown. It is the check the
+			// healthy->broken rule already ran on exactly these bytes: a splice
+			// that lands failing was a repair of a file that already failed.
+			spliceCheck := observed
 			if spliceCheck.Status == ValidationFailed {
 				log.Printf("[structural_edit] %s landed but does not parse (%s)",
 					logPath(input.Path), safeDiagnosticSummary(spliceCheck.Detail))

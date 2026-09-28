@@ -99,6 +99,9 @@ type editLoopOptions struct {
 	// v3LensUnavailable makes /v3/generate report that the lens could not
 	// score, with this reason.
 	v3LensUnavailable string
+	// syntaxDown makes the sandbox's syntax check answer 503, so no parse
+	// verdict is available.
+	syntaxDown bool
 }
 
 func requirePython3(t *testing.T) {
@@ -154,6 +157,9 @@ func editLoopFixture(t *testing.T, seed map[string]string, contract, prompt stri
 			json.NewEncoder(w).Encode(map[string]interface{}{"functions": []interface{}{}})
 			return
 		case strings.HasPrefix(req.URL.Path, "/v3/"), strings.HasPrefix(req.URL.Path, "/internal/"):
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		case strings.HasSuffix(req.URL.Path, "/syntax-check") && opt.syntaxDown:
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		case strings.HasSuffix(req.URL.Path, "/syntax-check"):
