@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### Changed: a file the session leaves unparseable must be fixed before it finishes
+
+A file the session leaves unparseable (a new file written with a parse
+error, or a broken file an edit left broken) is now an open repair until it
+parses again, or it is deleted or moved:
+- every tool result names the file, its parse error and the lines around it;
+- the session cannot finish while the file does not parse, and is sent back
+  up to three times;
+- other files can still be written.
+
+If the session ends with the file still broken, it is never reported
+completed. The final message lists what was tried and the error each
+attempt left, the error that remains, and why the session ended, and asks
+you to take a look at the file. The done event names such files in
+`repair_open`, and `repair` events record each step.
+
 ### Fixed: structural_edit could break a file that parsed
 
 edit_file, insert_after and replace_lines refuse an edit that leaves a file

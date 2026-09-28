@@ -316,6 +316,11 @@ type ToolResult struct {
 	// check passed, or one they approved themselves, and the model does not
 	// get to argue with the answer.
 	DeliveryProvenance string `json:"delivery_provenance,omitempty"`
+
+	// OpenRepair names the files this session left unparseable, with each
+	// one's parse error and the lines around it (repairNote). The agent loop
+	// sets it on every result while a repair is open; no tool does.
+	OpenRepair string `json:"-"`
 }
 
 // modelFacingResult is the shape a tool result has in the MODEL's context.
@@ -341,6 +346,10 @@ type modelFacingResult struct {
 	WinningScore         float64                  `json:"winning_score,omitempty"`
 	PhaseSolved          string                   `json:"phase_solved,omitempty"`
 	VerificationEvidence []V3VerificationEvidence `json:"verification_evidence,omitempty"`
+
+	// OpenRepair is present only while a file this session wrote does not
+	// parse (#214): every result says so until it is fixed.
+	OpenRepair string `json:"open_repair,omitempty"`
 }
 
 // ModelFacing projects a result down to what the model sees. It is the ONLY
@@ -355,6 +364,7 @@ func (r *ToolResult) ModelFacing() modelFacingResult {
 		WinningScore:         r.WinningScore,
 		PhaseSolved:          r.PhaseSolved,
 		VerificationEvidence: r.VerificationEvidence,
+		OpenRepair:           r.OpenRepair,
 	}
 }
 

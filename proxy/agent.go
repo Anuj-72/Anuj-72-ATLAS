@@ -278,6 +278,11 @@ type runState struct {
 	// rewriting an already-valid file took that gate at turn 1. Go through
 	// markWarnedRun and the value is never anything but true.
 	pendingWarnedRun map[string]bool
+	// repairs are the files this session left unparseable, keyed by
+	// ledgerKey, with what was tried on each (repair.go). repairOrder keeps
+	// the order they opened in, for stable messages.
+	repairs     map[string]*repairState
+	repairOrder []string
 	// contentLoopRecoveries counts the times this run has answered a
 	// repetition cut with a corrective instead of ending. Bounded, so a
 	// model that will not stop repeating still terminates.
@@ -449,13 +454,33 @@ func (s *runState) bounce(ctx *AgentContext, toolName, rejection string) {
 		"turn":   s.turn,
 		"reason": truncateStr(rejection, 200),
 	})
+	// A refusal is a tool result too, so it names what is still unparseable.
+	// The repair gate's own message already does.
+	note := s.repairNote()
+	if toolName == "repair_gate" {
+		note = ""
+	}
 	ctx.Messages = append(ctx.Messages, AgentMessage{Role: "assistant", Content: s.response})
 	ctx.Messages = append(ctx.Messages, AgentMessage{
 		Role:       "tool",
-		Content:    fmt.Sprintf(`{"success":false,"error":%q}`, rejection),
+		Content:    bounceContent(rejection, note),
 		ToolCallID: fmt.Sprintf("call_%d", s.turn),
 		ToolName:   toolName,
 	})
+}
+
+// bounceContent is a refusal's tool message: the legacy two-key shape, and
+// open_repair while a file this session wrote does not parse (#214).
+func bounceContent(rejection, openRepair string) string {
+	if openRepair == "" {
+		return fmt.Sprintf(`{"success":false,"error":%q}`, rejection)
+	}
+	b, _ := json.Marshal(struct {
+		Success    bool   `json:"success"`
+		Error      string `json:"error"`
+		OpenRepair string `json:"open_repair"`
+	}{false, rejection, openRepair})
+	return string(b)
 }
 
 // bounceToolCall is bounce for a rejection that lands AFTER the tool_call
@@ -708,6 +733,21 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	if ctx != nil && ctx.ShellEffectsUnobserved {
 		s.gateUnresolved("shell_observation", "the workspace was too large to observe every file the shell commands changed")
 	}
+	// A file this session left unparseable is an open repair, and the work is
+	// not finished while one is open (repair.go). First, because it is the
+	// most concrete fact there is about the work. Bounded like every exit
+	// gate: past the bounces, finalizeCompletion ends the run
+	// repair_unfinished and the final message hands the file to the user
+	// with what was tried.
+	s.refreshRepairs(ctx, s.turn, "")
+	if open := s.openRepairs(); len(open) > 0 {
+		if s.continuationFits(ctx) && s.chargeBounce("repair_gate") {
+			log.Printf("[agent] repair gate: %s does not parse (bounce %d/%d)",
+				repairNames(open), s.gateBounces["repair_gate"], maxGateBounces)
+			return "repair_gate", repairGateMessage(open)
+		}
+		s.gateUnresolved("repair_gate", repairNames(open)+" does not parse")
+	}
 	if promisesMoreContent(claimText) {
 		if s.continuationFits(ctx) && s.chargeBounce("intent_gate") {
 			log.Printf("[agent] intent gate: bouncing a reply that promised content it did not deliver (bounce %d/%d)",
@@ -812,6 +852,10 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// finding: warned state must be a terminal integrity condition, not a
 	// rewrite throttle).
 	for p := range s.pendingWarnedRun {
+		if s.repairOpenFor(ctx, p) {
+			// The repair gate owns a file that still does not parse.
+			continue
+		}
 		if s.chargeBounce("run_first_gate") {
 			log.Printf("[agent] run-first gate at exit: %s warned and never executed (bounce %d/%d)",
 				p, s.gateBounces["run_first_gate"], maxGateBounces)
@@ -2861,6 +2905,12 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					st.observeVerification(ctx, userMessage, turn, rc.Command, result)
 				}
 			}
+
+			// Repairs in progress: this call opens, extends or closes one on
+			// its own verdict, and the result the model reads names every
+			// file still open (repair.go).
+			st.observeRepair(ctx, turn, parsed.Name, parsed.Args, result)
+			result.OpenRepair = st.repairNote()
 
 			// Plan-adherence accounting. Records whether this tool
 			// call satisfied an unsatisfied step on ctx.Plan (if any),
@@ -7593,6 +7643,16 @@ func emitTerminal(ctx *AgentContext, st *runState, status TerminalStatus, reason
 		// deliver the thing it was bounced to write. This is the emission
 		// itself, and it happens once.
 		retireAuthorizationGrants(ctx, grantTerminal)
+		// No run that leaves a file it wrote unparseable is reported
+		// completed, whichever path reached here (repair.go).
+		if st != nil {
+			st.refreshRepairs(ctx, st.turn, "")
+			if open := st.openRepairs(); len(open) > 0 && status.Completed() {
+				log.Printf("[agent] terminal %s/%s with %s unparseable — reporting repair_unfinished",
+					status, reason, repairNames(open))
+				status, reason = TerminalIncomplete, "repair_unfinished"
+			}
+		}
 		ctx.TerminalStatus = status
 		ctx.TerminalReason = reason
 		ctx.TerminalUnresolved = unresolvedGateNames(st)
@@ -7622,6 +7682,17 @@ func emitTerminal(ctx *AgentContext, st *runState, status TerminalStatus, reason
 		// tell a clean completion from one with caveats.
 		if ctx.TerminalUnresolved != "" {
 			done["unresolved"] = ctx.TerminalUnresolved
+		}
+		// Additive: the files still unparseable at the end, whatever the
+		// reason, so a consumer can find every hand-off without reading
+		// the summary.
+		if open := st.openRepairs(); len(open) > 0 {
+			names := make([]string, 0, len(open))
+			for _, r := range open {
+				names = append(names, r.Rel)
+			}
+			done["repair_open"] = strings.Join(names, ",")
+			st.emitRepairHandoff(ctx, reason)
 		}
 		ctx.Stream("done", done)
 	})
@@ -8176,6 +8247,16 @@ func honestTerminalSummary(ctx *AgentContext, st *runState, status TerminalStatu
 		log.Printf("[agent] terminal (%s/%s) carried the completion claim %q — replacing the summary",
 			status, reason, claim)
 		out = ""
+	}
+	// A file still unparseable is handed to the user with what was tried
+	// (repairHandoff). For repair_unfinished that is the whole account;
+	// after any other ending it follows the ending's own summary.
+	if handoff := repairHandoff(st, reason); handoff != "" {
+		if reason == "repair_unfinished" || out == "" {
+			out = handoff
+		} else {
+			out += "\n\n" + handoff
+		}
 	}
 	if out == "" {
 		out = serverTerminalFallback(ctx, st, status, reason)
@@ -9172,6 +9253,14 @@ func finalizeCompletion(ctx *AgentContext, st *runState, userMessage, completedR
 	// Settle what can be settled FIRST, so the evidence the rest of this
 	// function reads is about a workspace nothing is still writing to.
 	liveJobs := settleBackgroundHazard(ctx)
+
+	// A file this session left unparseable outranks every other reason: it
+	// is the most specific thing the user needs to know, and the final
+	// message says what was tried on it (repairHandoff).
+	st.refreshRepairs(ctx, st.turn, "")
+	if len(st.openRepairs()) > 0 {
+		return TerminalIncomplete, "repair_unfinished"
+	}
 
 	ok, why := terminalCompletionAllowed(ctx, st.expectedOutputs)
 	if !ok {

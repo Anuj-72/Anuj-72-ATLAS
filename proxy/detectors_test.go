@@ -2191,7 +2191,10 @@ func TestSuccessfulCompletionsAreUnchanged(t *testing.T) {
 		}
 	})
 
-	t.Run("deliverables_not_demonstrated still wins when it applies", func(t *testing.T) {
+	// An unparseable file the session wrote is an open repair, and the most
+	// specific reason there is (#214): it outranks deliverables_not_demonstrated
+	// like that reason outranks the demand reasons.
+	t.Run("a broken artifact ends repair_unfinished", func(t *testing.T) {
 		dir := t.TempDir()
 		const broken = "def solve():\n    return [1, 2]]\n"
 		ctx, _, _, terminal := termFixture(t, dir,
@@ -2213,6 +2216,36 @@ func TestSuccessfulCompletionsAreUnchanged(t *testing.T) {
 		t.Logf("broken-artifact: status=%q reason=%q", terminal["status"], terminal["reason"])
 		if terminal["status"] == string(TerminalCompleted) {
 			t.Fatal("invalid bytes completed")
+		}
+		if terminal["reason"] != "repair_unfinished" {
+			t.Errorf("reason = %q — a more specific existing failure was replaced",
+				terminal["reason"])
+		}
+	})
+
+	// With nothing to repair, deliverables_not_demonstrated still wins: a
+	// deliverable no check applies to cannot be shown valid.
+	t.Run("deliverables_not_demonstrated still wins when it applies", func(t *testing.T) {
+		dir := t.TempDir()
+		const request = "Create solve.dat that holds the list."
+		ctx, _, _, terminal := termFixture(t, dir, request, termCeiling,
+			func(i int, _ string) map[string]interface{} {
+				if i == 0 {
+					return map[string]interface{}{"type": "tool_call", "name": "write_file",
+						"args": map[string]string{"path": "solve.dat", "content": "1 2\n"}}
+				}
+				if i == 1 {
+					return map[string]interface{}{"type": "tool_call", "name": "run_command",
+						"args": map[string]string{"command": "echo checked"}}
+				}
+				return map[string]interface{}{"type": "done", "summary": "done"}
+			})
+		if err := runAgentLoop(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("uncheckable-artifact: status=%q reason=%q", terminal["status"], terminal["reason"])
+		if terminal["status"] == string(TerminalCompleted) {
+			t.Fatal("an uncheckable deliverable completed")
 		}
 		if terminal["reason"] != "deliverables_not_demonstrated" {
 			t.Errorf("reason = %q — a more specific existing failure was replaced",

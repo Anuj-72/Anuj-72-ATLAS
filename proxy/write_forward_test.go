@@ -210,7 +210,9 @@ func TestExecutionAttemptDischarge(t *testing.T) {
 // gate is key-only. The fix is to give the map one meaning.
 
 // warnedRunFixture drives the real loop with a genuine Python syntax check and
-// reports every run_first_gate the session emitted.
+// reports every exit gate the session emitted over a warned file:
+// run_first_gate, or repair_gate, which owns a warned file that still does
+// not parse (#214).
 func warnedRunFixture(t *testing.T, plan func(i int) map[string]interface{}) (
 	*AgentContext, string, map[string]int, map[string]string, []string) {
 	t.Helper()
@@ -303,7 +305,7 @@ func warnedRunFixtureIn(t *testing.T, plan func(i int) map[string]interface{}, s
 		census[et]++
 		if et == "gate" {
 			var g struct{ Gate, Reason string }
-			if json.Unmarshal(b, &g) == nil && g.Gate == "run_first_gate" {
+			if json.Unmarshal(b, &g) == nil && (g.Gate == "run_first_gate" || g.Gate == "repair_gate") {
 				gates = append(gates, g.Reason)
 			}
 		}
@@ -411,13 +413,13 @@ func TestPendingWarnedRunIsASetOfActiveWarnings(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, dir, census, terminal, gates := warnedRunFixture(t, c.plan)
 			got, _ := os.ReadFile(filepath.Join(dir, "solve.py"))
-			t.Logf("%s: run_first_gates=%d status=%q reason=%q",
+			t.Logf("%s: warned-file exit gates=%d status=%q reason=%q",
 				c.name, len(gates), terminal["status"], terminal["reason"])
 			for _, g := range gates {
 				t.Logf("   GATE[%d] %s", len(g), g)
 			}
 			if (len(gates) > 0) != c.wantGates {
-				t.Errorf("%d run_first_gate events, want any=%v", len(gates), c.wantGates)
+				t.Errorf("%d warned-file exit gate events, want any=%v", len(gates), c.wantGates)
 			}
 			if string(got) != c.wantDisk {
 				t.Errorf("solve.py on disk is not what the sequence wrote: %q", got)

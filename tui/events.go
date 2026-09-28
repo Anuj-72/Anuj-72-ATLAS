@@ -293,6 +293,48 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 			})
 		}
 
+	case "repair":
+		// A file the session left unparseable (#214): shown when it opens,
+		// when an attempt changes it and it still fails, when it is fixed,
+		// and when it is handed back. A refused attempt changed nothing and
+		// is not shown.
+		var p struct {
+			Event    string `json:"event"`
+			Path     string `json:"path"`
+			Tool     string `json:"tool"`
+			Landed   bool   `json:"landed"`
+			Error    string `json:"error"`
+			How      string `json:"how"`
+			Attempts int    `json:"attempts"`
+		}
+		if json.Unmarshal(ev.Data, &p) != nil {
+			break
+		}
+		attempts := fmt.Sprintf("%d attempts", p.Attempts)
+		if p.Attempts == 1 {
+			attempts = "1 attempt"
+		}
+		var body string
+		switch {
+		case p.Event == "opened":
+			body = fmt.Sprintf("%s does not parse: %s", p.Path, p.Error)
+		case p.Event == "attempt" && p.Landed:
+			body = fmt.Sprintf("%s still does not parse after %s: %s", p.Path, p.Tool, p.Error)
+		case p.Event == "closed" && p.How == "parses":
+			body = fmt.Sprintf("%s parses again (%s)", p.Path, attempts)
+		case p.Event == "closed" && p.How == "removed":
+			body = fmt.Sprintf("%s was removed", p.Path)
+		case p.Event == "closed":
+			body = fmt.Sprintf("%s changed; no parse check could run", p.Path)
+		case p.Event == "handoff":
+			body = fmt.Sprintf("%s still does not parse after %s: handed back to you", p.Path, attempts)
+		}
+		if body != "" {
+			m.chat = append(m.chat, chatMessage{
+				Role: roleSystem, Meta: "repair", Body: body, Echo: true,
+			})
+		}
+
 	case "permission_request":
 		var p struct {
 			ToolName    string          `json:"tool_name"`

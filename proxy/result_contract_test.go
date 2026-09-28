@@ -626,9 +626,10 @@ func TestEveryModelFacingSerializationSiteIsInventoried(t *testing.T) {
 	approvedContent := map[string]bool{
 		// The one path that serialises a ToolResult, now via ModelFacing.
 		"result.MarshalText()": true,
-		// Two bounces that never build a ToolResult at all: they emit the
-		// legacy two-key shape directly.
-		"fmt.Sprintf(`{\"success\":false,\"error\":%q}`, rejection)":    true,
+		// Two bounces that never build a ToolResult at all: the legacy
+		// two-key shape, which bounceContent extends with open_repair while
+		// a file the session wrote does not parse (#214).
+		"bounceContent(rejection, note)":                                true,
 		"`{\"success\":false,\"error\":\"permission denied by user\"}`": true,
 	}
 	resultish := regexp.MustCompile(`^&?\*?(result|res|toolResult|tr)$`)
