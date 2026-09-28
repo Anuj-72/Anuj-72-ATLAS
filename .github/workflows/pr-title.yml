@@ -31,6 +31,6 @@ jobs:
             exit 0
           fi
           echo "::error::PR title must look like 'type(scope): summary', e.g. 'fix(proxy): stop the retry loop'."
-          echo "::error::type is one of: ${types//|/, }. scope is the component (proxy, tui, cli, v3, lens, sandbox, inference, install, ci, docs, …). Keep it under 100 characters."
+          echo "::error::type is one of: ${types//|/, }. scope is the component in lowercase (proxy, tui, cli, v3, lens, sandbox, inference, install, ci, docs, zh-cn, …). Keep it under 100 characters."
           echo "got: $TITLE"
           exit 1
