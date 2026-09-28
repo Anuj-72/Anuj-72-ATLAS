@@ -185,6 +185,16 @@ func isFencedSentinel(content string) bool {
 	return rest == "" || strings.HasPrefix(rest, "\n") || strings.HasPrefix(rest, "\r\n")
 }
 
+// fenceGrammarRoot is how every grammar fenceBlockGrammar builds begins, so
+// the stream reader can tell a fenced sub-call from an ordinary turn by its
+// grammar (isFenceBlockGrammar).
+const fenceGrammarRoot = "root ::= \"````"
+
+// isFenceBlockGrammar reports whether grammar is one fenceBlockGrammar built.
+func isFenceBlockGrammar(grammar string) bool {
+	return strings.HasPrefix(grammar, fenceGrammarRoot)
+}
+
 // fenceBlockGrammar restricts a reply to exactly what the sub-call asks for:
 // an opening fence with the requested tag, any number of lines that cannot
 // close the fence early, and the closing fence. It is a GBNF grammar, the
@@ -199,16 +209,6 @@ func isFencedSentinel(content string) bool {
 // now start with up to three backticks; parseFencedReply matches the closer
 // by width, so they stay inside the file. A file that itself has a column-0
 // ```` line is sent without the grammar (fencedGrammarFits).
-// fenceGrammarRoot is how every grammar fenceBlockGrammar builds begins, so
-// the stream reader can tell a fenced sub-call from an ordinary turn by its
-// grammar (isFenceBlockGrammar).
-const fenceGrammarRoot = "root ::= \"````"
-
-// isFenceBlockGrammar reports whether grammar is one fenceBlockGrammar built.
-func isFenceBlockGrammar(grammar string) bool {
-	return strings.HasPrefix(grammar, fenceGrammarRoot)
-}
-
 //
 // For a code file the block may also end on a line of exactly three
 // backticks, the way the model closes a block. Ending there is allowed, never
