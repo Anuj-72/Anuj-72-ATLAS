@@ -209,6 +209,15 @@ func isFenceBlockGrammar(grammar string) bool {
 	return strings.HasPrefix(grammar, fenceGrammarRoot)
 }
 
+//
+// For a code file the block may also end on a line of exactly three
+// backticks, the way the model closes a block. Ending there is allowed, never
+// forced: such a line may still be a body line, and the model decides. Without
+// it the model's closer was a body line, the grammar refused to end, and the
+// attempt ran on (writing its next tool calls into the file) until the idle
+// watchdog cut it: in the smoke run on 4403ae8 (2026-09-28), 14 of 29 fenced
+// writes waited that way, median 53 s. Markdown and untyped files keep the
+// four-backtick closer, because a column-0 ``` line can be their content.
 func fenceBlockGrammar(tag string) string {
 	safe := make([]rune, 0, len(tag))
 	for _, r := range tag {
@@ -217,10 +226,54 @@ func fenceBlockGrammar(tag string) string {
 			safe = append(safe, r)
 		}
 	}
-	return fmt.Sprintf(fenceGrammarRoot+"%s\\n\" line* \"````\"\n"+
+	closer := "\"````\""
+	if fenceShortCloserAllowed(string(safe)) {
+		closer = "( \"````\" | \"```\" \"\\n\"? )"
+	}
+	return fmt.Sprintf(fenceGrammarRoot+"%s\\n\" line* %s\n"+
 		"line ::= ( [^`\\n] [^\\n]* | \"`\" ( [^`\\n] [^\\n]* )? | \"``\" ( [^`\\n] [^\\n]* )? | "+
 		"\"```\" ( [^`\\n] [^\\n]* )? )? \"\\n\"\n",
-		string(safe))
+		string(safe), closer)
+}
+
+// fenceShortCloserAllowed reports whether a fenced block for this language tag
+// may end on three backticks: a known code tag. Markdown and the bare fence
+// (an untyped file) may hold a column-0 ``` line as content.
+func fenceShortCloserAllowed(tag string) bool {
+	return tag != "" && tag != "markdown"
+}
+
+// closeShortFence makes the three-backtick closer the grammar accepted into
+// the four-backtick one parseFencedReply matches the opener with. It changes
+// only a reply whose opener is four backticks, that has no line closing it,
+// and whose last non-blank line is exactly three backticks; any other reply
+// comes back as it was. Interior ``` lines stay in the body.
+func closeShortFence(reply string) string {
+	lines := strings.Split(reply, "\n")
+	open, width := -1, 0
+	for i, l := range lines {
+		if m := fenceOpenRe.FindStringSubmatch(l); m != nil {
+			open, width = i, len(m[1])
+			break
+		}
+	}
+	if open < 0 || width < 4 {
+		return reply
+	}
+	last := len(lines) - 1
+	for last > open && strings.TrimSpace(lines[last]) == "" {
+		last--
+	}
+	for i := open + 1; i <= last; i++ {
+		if m := fenceCloseRe.FindStringSubmatch(lines[i]); m != nil && len(m[1]) >= width {
+			return reply
+		}
+	}
+	if last <= open || strings.TrimRight(lines[last], " \t\r") != "```" {
+		return reply
+	}
+	lines[last] = strings.Repeat("`", width)
+	return strings.Join(lines, "\n")
 }
 
 // fencedGrammarFits reports whether a file's current text can be carried

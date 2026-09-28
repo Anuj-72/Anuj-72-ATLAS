@@ -25,6 +25,12 @@ import (
 // model does (three backticks), then holds the stream open with frames that
 // carry no content: what the smoke run's streams showed for five minutes.
 func serveStuckFence(w http.ResponseWriter, r *http.Request, stop <-chan struct{}) {
+	serveStuckStream(w, r, stop, "````python\n", "print(1)\n", "```\n")
+}
+
+// serveStuckStream streams parts, then holds the stream open with frames that
+// carry no content until the client gives up.
+func serveStuckStream(w http.ResponseWriter, r *http.Request, stop <-chan struct{}, parts ...string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	fl, _ := w.(http.Flusher)
 	frame := func(delta map[string]string) {
@@ -36,7 +42,7 @@ func serveStuckFence(w http.ResponseWriter, r *http.Request, stop <-chan struct{
 			fl.Flush()
 		}
 	}
-	for _, part := range []string{"````python\n", "print(1)\n", "```\n"} {
+	for _, part := range parts {
 		frame(map[string]string{"content": part})
 	}
 	deadline := time.After(30 * time.Second)
@@ -91,8 +97,9 @@ func TestAGrammarConstrainedFencedAttemptIsWatched(t *testing.T) {
 	}
 }
 
-// End to end: the grammar attempt is cut, the cut is not a stall (the model was
-// writing), and the retry without the grammar lands the file.
+// End to end: the grammar attempt is cut before the block closes, the cut is
+// not a stall (the model was writing), and the retry without the grammar
+// lands the file.
 func TestAnUnclosedFenceIsRetriedWithoutTheGrammar(t *testing.T) {
 	t.Setenv("ATLAS_FENCED_FIRST_CONTENT_SEC", "5")
 	t.Setenv("ATLAS_FENCED_IDLE_SEC", "1")
@@ -112,7 +119,7 @@ func TestAnUnclosedFenceIsRetriedWithoutTheGrammar(t *testing.T) {
 		grammarUsed = append(grammarUsed, withGrammar)
 		mu.Unlock()
 		if withGrammar {
-			serveStuckFence(w, r, stop)
+			serveStuckStream(w, r, stop, "````python\n", "print(1)\n")
 			return
 		}
 		serveFencedBlock(w, "````python\nprint(1)\n````")

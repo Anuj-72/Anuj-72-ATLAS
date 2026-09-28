@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### Fixed: a fenced write still waited about 50 seconds for the watchdog
+
+The first attempt to fetch a fenced file is constrained by a grammar that
+closes the block with four backticks. The model closes with three, which the
+grammar reads as a line of the file, so the model could not stop. It wrote
+more lines (in one stream, its next tool calls), then went silent, and the
+attempt ended only when the idle watchdog cut it. In the smoke run on 4403ae8
+(2026-09-28), 14 of 29 fenced writes waited that way (median 53 s, maximum
+185 s) before a retry without the grammar.
+
+- For a code file, the grammar now also lets the block end on a line of
+  exactly three backticks. Ending there is allowed, not forced: the line can
+  still be part of the file, and the model decides.
+- Markdown and files of unknown type keep the four-backtick closer, because
+  a ``` line can be their content.
+
 ### Security: TUI dependencies with public advisories
 
 - The TUI now uses goldmark 1.7.17 (GO-2026-5320), golang.org/x/net 0.56.0

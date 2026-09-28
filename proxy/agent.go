@@ -6092,6 +6092,11 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 		ctx.TotalTokens += tokens
 		ctx.FencedCalls++
 		ctx.FencedTokens += tokens
+		// Under the fence grammar a code file may end on three backticks
+		// (fenceBlockGrammar); that line is the closer the grammar accepted.
+		if isFenceBlockGrammar(grammar) && fenceShortCloserAllowed(tag) {
+			reply = closeShortFence(reply)
+		}
 		// The same framing decision the inline path makes, so a reply the
 		// parent would refuse inline cannot be accepted here instead.
 		framing, content := classifyFencedPayload(reply)
