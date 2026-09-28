@@ -299,36 +299,16 @@ that.
 - `scripts/e2e-reliability.py` and `scripts/novel-atlas.py` lose their V3-off
   arm. A measurement without V3 takes a research build.
 
-### Fixed: commands ran without approval, and credential files reached the model
+### Fixed: the parts of the command-approval fix that 3.1.4 did not ship
 
-- `run_background` started any command without the approval prompt in the
-  default and accept-edits modes, and was checked against a narrower
-  deny-list than `run_command` (`env rm -rf /` and `(rm -rf /)` passed it).
-  Outside yolo, every tool that runs a command now asks, and one command
-  policy covers both. It looks where a command can start: behind `env`,
-  `nohup`, `nice`, `time`, `timeout` or `exec`, in a subshell and in a
-  command substitution. `grep mkfs notes.txt` is no longer refused.
-- `search_files` returned the contents of credential files that
-  `read_file` refuses (`.env`, keys, cloud credentials) and followed
-  symlinks out of the workspace. It now skips both and reports how many
-  credential files it skipped. `move_file` refuses to move a credential
-  file to another name, and `insert_after` and `replace_lines` get the write
-  deny-list. The rules now follow what a tool does, so a new tool cannot
-  fall outside them. Shell commands are not covered, and the docs now say
-  so.
-- Approval prompts cut a command at 100 characters, so the end of a chain
-  was never shown. The proxy sends the whole command, and `stop_background`
-  names its job.
-- In the TUI and the VS Code extension, one "allow for session" answer on a
-  deletion approved every later deletion without showing which file. Each
-  deletion is now asked about on its own, and a new TUI session starts with
-  no approvals. Both show the whole command: the TUI prompt wraps it (one
-  too long for the screen keeps its first and last lines in view and says
-  how many are not shown), and the VS Code card no longer cuts it at 117
-  characters.
-- The TUI's chat stream, events stream and raw demo lane never sent the
-  service token, so on an install with one every message failed with 401.
-  Every request to the proxy now sends it, ahead of an api-keys token.
+3.1.4 shipped the rest of this fix; see its "Security" section. On dev only:
+
+- `replace_lines`, which 3.1.x does not have, gets the write deny-list. The
+  rules follow what each tool does, so a new tool cannot fall outside them.
+- In the VS Code extension, one "allow for session" answer on a deletion
+  approved every later deletion without showing which file. Each deletion
+  is now asked about on its own, and the approval card shows the whole
+  command; it used to cut it at 117 characters.
 
 ### Added: a gated deploy that covers all five services
 
