@@ -24,6 +24,17 @@ timed out without ever running their code.
   the model is told that. It used to be told "no fenced block followed",
   which was false.
 
+### Fixed: the plan's verify step demanded the planner's exact command
+
+The planner names its verify command by guess. It planned
+`curl http://127.0.0.1:5000`; the app served on 5001; the model's passing
+`curl -sf http://127.0.0.1:5001/` did not count; and the plan gate then
+demanded the literal step after the server had been stopped, so a finished
+and verified task ended "stopped". The verify step is now satisfied by a
+passing verification (a probe or a run, as the command-evidence rules
+judge it) of the same program, whatever its arguments. Other plan steps
+keep the literal rule.
+
 ### Measured: gemma steering does not change its tool choice
 
 An A/B on 2026-09-27 compared the shipped gemma vector, no vector, and a

@@ -1562,6 +1562,58 @@ func matchPlanStep(plan *Plan, satisfied []bool, toolName string, args json.RawM
 	return -1
 }
 
+// verifyStepSatisfiedBy returns the index of the plan's unsatisfied verify
+// step when command verifies (it probes a service or runs the program, as
+// classifyCommandEvidence judges it) and runs the same program as the step's
+// planned command; -1 otherwise.
+func verifyStepSatisfiedBy(plan *Plan, satisfied []bool, command string) int {
+	if plan == nil || plan.VerifyStep == "" || len(satisfied) != len(plan.Steps) {
+		return -1
+	}
+	if !classifyCommandEvidence(command).Kind.verifies() {
+		return -1
+	}
+	for i, step := range plan.Steps {
+		if step.ID != plan.VerifyStep || satisfied[i] || !actionMatchesTool(step.Action, "run_command") {
+			continue
+		}
+		if p := commandProgram(step.Target); p != "" && p == commandProgram(command) {
+			return i
+		}
+	}
+	return -1
+}
+
+// setupCommands start a line without being what it runs.
+var setupCommands = map[string]bool{"cd": true, "export": true, "source": true, ".": true,
+	"set": true, "pushd": true}
+
+// commandProgram is the program a command line exists to run: the first
+// segment that is not setup (`cd x &&`), past assignments and prefix words,
+// as a base name, with an interpreter's version dropped (python3.12 is
+// python) and `python -m X` read as X.
+func commandProgram(command string) string {
+	for _, seg := range commandSegments(command) {
+		fields := strings.Fields(seg)
+		i := commandPosition(fields)
+		if i >= len(fields) {
+			continue
+		}
+		head := filepath.Base(fields[i])
+		if setupCommands[head] {
+			continue
+		}
+		if strings.HasPrefix(head, "python") {
+			head = "python"
+			if i+2 < len(fields) && fields[i+1] == "-m" {
+				return fields[i+2]
+			}
+		}
+		return head
+	}
+	return ""
+}
+
 // actionMatchesTool reports whether step.Action describes the same
 // operation as a tool call named toolName. We check both directions
 // (action→tool and tool→action) and normalize underscores so plans
@@ -1724,6 +1776,16 @@ func recordPlanAdherence(ctx *AgentContext, toolName string, args json.RawMessag
 				ctx.Plan.Steps[idx].ID, logPath(path))
 			success = false
 		}
+	}
+	// The plan's verify step is satisfied by a passing verification of the
+	// same program, whatever its arguments. The planner names that command by
+	// guess: the smoke run of 2026-09-27 planned `curl http://127.0.0.1:5000`,
+	// the app served on 5001, and the model's passing `curl -sf
+	// http://127.0.0.1:5001/` did not count. The plan gate then demanded the
+	// literal step after the server had been stopped, and a finished, verified
+	// task ended "stopped".
+	if idx < 0 && success && toolName == "run_command" {
+		idx = verifyStepSatisfiedBy(ctx.Plan, ctx.PlanStepsSatisfied, extractToolTarget(toolName, args))
 	}
 	// Only successful tool calls count toward step satisfaction.
 	// A failed run_command shouldn't tick off the verify_step.
