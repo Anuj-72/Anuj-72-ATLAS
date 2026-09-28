@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Changed: torch 2.14.0 in the lens image
+
+- The lens pins torch 2.14.0 (was 2.13.0) in `geometric-lens/requirements.txt`
+  and in the Dockerfile's CPU-only pre-install. Dependabot leaves torch
+  alone, because it can bump only one of the two pins.
+- CI's lens test job pre-installed torch 2.12.1 while the requirements pinned
+  2.13.0, so every run replaced the CPU wheel with PyPI's build. It now
+  pre-installs the pinned version, and a contract test keeps the two equal.
+
 ### Fixed: the run was told to stop a server that a planned step still needed
 
 Found by the smoke run on 2026-09-27 (flask_pause rep 1). The gate that asks

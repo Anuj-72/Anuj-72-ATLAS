@@ -13,7 +13,7 @@ COPY requirements.txt .
 # here MUST match requirements.txt's torch pin (contract-tested): a mismatch
 # makes the second pip "upgrade" torch from PyPI, silently dragging the ~8 GB
 # nvidia/cu* dependency stack into a CPU-only image.
-RUN pip install --no-cache-dir torch==2.13.0 \
+RUN pip install --no-cache-dir torch==2.14.0 \
         --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 

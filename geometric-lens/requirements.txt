@@ -16,4 +16,4 @@ gguf==0.19.0
 # Dockerfile installs this pinned version from PyTorch's CPU-only index before
 # resolving the rest of this file. Keeping the requirement here documents the
 # runtime contract and lets pip verify the preinstalled wheel satisfies it.
-torch==2.13.0
+torch==2.14.0
