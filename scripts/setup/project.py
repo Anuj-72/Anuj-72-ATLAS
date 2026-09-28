@@ -84,6 +84,7 @@ VIEWS = [
     ("RFCs", "TABLE_LAYOUT", "type:RFC is:open"),
     ("Triage", "TABLE_LAYOUT", "status:Triage"),
     ("Blocked", "TABLE_LAYOUT", "status:Blocked"),
+    ("All work", "BOARD_LAYOUT", "-type:Epic"),
 ]
 VISIBLE = ["Title", "Status", "Priority", "Size", "Contributor Level",
            "Hardware Needed", "Assignees", "Labels"]
