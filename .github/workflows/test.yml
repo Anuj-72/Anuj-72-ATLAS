@@ -85,15 +85,17 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             **/requirements*.txt
+            .github/requirements/ci.txt
 
       - name: install
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          # pyyaml: tests/contracts/test_openapi_contract.py importorskips
-          # yaml — without the install the whole route-parity contract
-          # silently skips instead of gating.
-          pip install pytest pyyaml
+          # The CLI is stdlib-only, so --no-deps installs everything it needs.
+          # pytest and pyyaml come from the hashed tool lock (ci.in lists
+          # them; scripts/ci-lock.sh regenerates it). pyyaml:
+          # tests/contracts/test_openapi_contract.py importorskips yaml —
+          # without it the whole route-parity contract silently skips.
+          pip install --require-hashes -r .github/requirements/ci.txt
+          pip install --no-deps -e .
           # tree-sitter + grammars for the call-graph/structural_edit tests
           # under tests/v3-service/, at the exact pins the image ships —
           # an unpinned install once pulled a newer tree-sitter whose API
@@ -181,12 +183,12 @@ jobs:
         # referenced before assignment) stay on. Tighten later by removing
         # entries from --ignore as the codebase gets cleaner.
         run: |
-          pip install ruff
+          pip install --require-hashes -r .github/requirements/ci.txt
           python scripts/production-readiness.py --only ruff
 
       - name: mypy (typed modules)
         run: |
-          pip install mypy
+          pip install --require-hashes -r .github/requirements/ci.txt
           python scripts/production-readiness.py --only mypy-typed
 
   shellcheck:
@@ -231,7 +233,7 @@ jobs:
 
       - name: yamllint
         run: |
-          pip install yamllint
+          pip install --require-hashes -r .github/requirements/ci.txt
           python scripts/production-readiness.py --only workflow-yaml
 
   e2e-acceptance:
@@ -263,15 +265,15 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             **/requirements*.txt
+            .github/requirements/ci.txt
 
       - name: build proxy
         run: cd proxy && go build -o /tmp/test-atlas-proxy .
 
       - name: install
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest
+          pip install --require-hashes -r .github/requirements/ci.txt
+          pip install --no-deps -e .
           pip install -r sandbox/requirements-runtime.txt
 
       - name: e2e acceptance test
@@ -410,9 +412,11 @@ jobs:
           # hand-escaped copies of these two curls in the first place.
           body="$(python3 -c 'import json,os; print(json.dumps({"code": os.environ["CODE"], "language": os.environ["LANGUAGE"]}))')"
           for endpoint in execute syntax-check; do
+            # Save the reply, then check it: nothing downloaded is piped
+            # into an interpreter.
             curl -sf -X POST "http://localhost:8020/$endpoint" \
-              -H 'Content-Type: application/json' -d "$body" \
-              | ENDPOINT="$endpoint" python3 -c "import sys,json,os; e=os.environ['ENDPOINT']; d=json.load(sys.stdin); k='success' if e=='execute' else 'valid'; assert d[k], d; print(f'PASS: /{e}')"
+              -H 'Content-Type: application/json' -d "$body" -o reply.json
+            ENDPOINT="$endpoint" python3 -c "import json,os; e=os.environ['ENDPOINT']; d=json.load(open('reply.json')); k='success' if e=='execute' else 'valid'; assert d[k], d; print(f'PASS: /{e}')"
           done
       - name: cleanup
         if: always()

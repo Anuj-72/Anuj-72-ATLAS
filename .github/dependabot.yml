@@ -12,7 +12,10 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: pip
-    directory: /
+    # /.github/requirements holds CI's hashed tool lock (ci.txt); its ruff
+    # and mypy must move with sandbox/requirements-verify.txt, so both sit
+    # in the same group PR.
+    directories: ["/", "/.github/requirements"]
     target-branch: dev
     schedule:
       interval: weekly
