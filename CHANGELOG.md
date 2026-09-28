@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### Fixed: an answer about code past a truncated read counted as evidence
+
+Found by the smoke run on 2026-09-27 (bugfind_tiebreak). The check that
+sends back an answer about a file the session never read worked per file:
+any read of a file counted as seeing all of it. Both reads in that session
+were cut near line 190, the answer named a function it said lay "past the
+provided snippet", and the run ended "completed".
+
+- `read_file` now records which lines it showed. A write or an edit counts
+  as showing the whole file, because the old line numbers no longer hold.
+- An answer that names code (in backticks) whose definition sits only in
+  lines no read showed goes back once, with the file, the line and what the
+  reads showed, so the model reads it before it answers.
+
 ### Fixed: a file written through the fenced channel stalled for five minutes
 
 Found by the smoke run on the deployed build (2026-09-27). When the model

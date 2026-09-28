@@ -771,6 +771,16 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		}
 		s.gateUnresolved("evidence_gate", "the reply cites "+strings.Join(cited, ", ")+", which this run never read")
 	}
+	// The same claim one level down: the file was opened, but a truncated or
+	// ranged read never showed the code the reply describes.
+	if gaps := unshownSymbolCitations(ctx, claimText); len(gaps) > 0 {
+		if s.chargeBounce("evidence_gate") {
+			log.Printf("[agent] evidence gate: bouncing exit at turn %d — reply describes %s, which no read showed (bounce %d/%d)",
+				s.turn, symbolNames(gaps), s.gateBounces["evidence_gate"], maxGateBounces)
+			return "evidence_gate", unshownSymbolMessage(gaps)
+		}
+		s.gateUnresolved("evidence_gate", "the reply describes "+symbolNames(gaps)+", whose code this run never showed")
+	}
 	// An investigation that answers for less than it opened. Only for a
 	// read-only run whose request named several files (investigationScopeUnmet),
 	// and only after the reply has been judged by the gates above, so a
@@ -8474,7 +8484,12 @@ func steerRecovery(ctx *AgentContext, st *runState, relPath, resolvedPath string
 			}
 		}
 		ctx.RecordFileRead(resolvedPath, shown)
-		ctx.RecordBodySeen(resolvedPath)
+		if truncated {
+			// Only the head was shown; the file runs past it.
+			ctx.RecordBodyRead(resolvedPath, 1, fencedRecoveryMaxLines, fencedRecoveryMaxLines+1)
+		} else {
+			ctx.RecordBodySeen(resolvedPath)
+		}
 		log.Printf("[agent] steering recovery for %s: showed the file (truncated=%v)", relPath, truncated)
 	} else {
 		fmt.Fprintf(&sb, "You have already read %s, and write_file will keep refusing it — "+

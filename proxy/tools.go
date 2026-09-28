@@ -426,7 +426,7 @@ func readFileTool() *ToolDef {
 				recorded = strings.Join(lines[start:shownEnd], "\n")
 			}
 			ctx.RecordFileRead(path, recorded)
-			ctx.RecordBodySeen(path)
+			ctx.RecordBodyRead(path, start+1, shownEnd, totalLines)
 
 			// Call-graph footer (issue #39). The model reads a
 			// file far more often than it outlines one, so attach the
