@@ -522,6 +522,15 @@ func (s *runState) observeVerification(ctx *AgentContext, userMessage string, tu
 			turn, truncateStr(command, 60))
 	case !result.Success:
 		s.observeFailedCheck(ctx, turn, command, ev, result)
+	case ev.Kind.verifies() && !declared && inlineCodeTouchesNothing(ctx, ev):
+		// Inline code that neither names nor imports a file this session
+		// changed ran nothing the work is made of, so it neither verifies nor
+		// clears a failure. `python -c "print(1)"` passed the fix-intent gate
+		// and cleared an earlier red run of the real program.
+		s.uncountedCheck = uncountedNote(command,
+			"the inline code it ran touches no file this session changed. Run the program or its tests.")
+		log.Printf("[agent] inline code touched no changed file, not verification: %q",
+			truncateStr(command, 60))
 	case ev.Kind.verifies() && silentRunWhenOutputPromised(ctx, userMessage, command, result.Data):
 		// Exit 0 with empty stdout is not verification of a task whose
 		// prompt demands printed output. Measured: a generation drifted into

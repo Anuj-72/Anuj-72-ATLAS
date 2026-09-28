@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Fixed: inline code that touched no changed file counted as verification
+
+`python -c "print(1)"` passed as verification: it cleared an earlier failed
+run of the real program and let the session finish. A passing run of inline
+code (`python -c`, `node -e`, `ruby -e`, `perl -e`, `php -r`) now counts
+only when the code names or imports a file the session changed. Otherwise
+it neither verifies nor clears a failure, and the session is told to run
+the program or its tests.
+
 ### Fixed: a subshell, a glob or a Java class run verified nothing
 
 A green run counts as verification of the files it names. Three common ways
