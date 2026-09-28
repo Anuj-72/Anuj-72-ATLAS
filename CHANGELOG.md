@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Fixed: replace_lines called correct-looking numbers "stale" when nothing had changed
+
+When the expected first or last line did not match, `replace_lines` always said
+"The numbers you used are stale". In the smoke run on 2026-09-27
+(smallrung_toml), the file had not changed since the model read it: the model
+had used line 169 for text that is only on lines 1418-1548.
+
+- The refusal now names a cause only when the evidence shows it: the session
+  wrote the file or it changed after the last read (stale), or it still equals
+  what the first full read showed (the numbers never matched). Otherwise it
+  says only that the numbers do not match the file.
+- It also says where the expected text is: not in the file, on one line, or
+  on several lines to choose from.
+- What the tool applies is unchanged.
+
 ### Fixed: a fenced write still waited about 50 seconds for the watchdog
 
 The first attempt to fetch a fenced file is constrained by a grammar that

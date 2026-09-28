@@ -4100,9 +4100,13 @@ func relocateStaleRange(fileLines []string, limit int,
 // one line and unreliably reproduces its indentation, and indentation is not
 // what the assertion is for. It exists to catch a wrong line NUMBER.
 //
-// The error carries a numbered window around the range, because the model's
-// numbers are stale exactly when this fires and the fix is to re-read them.
-func lineAssertionMismatch(expected, actual string, lineNum int, path string, fileLines []string) string {
+// The error carries a numbered window around the range, and says where the
+// expected text really is. history is what is known about why the numbers are
+// wrong (lineNumberHistory); without it the error claims no cause. It used to
+// say "The numbers you used are stale" every time. Smoke run 2026-09-27
+// (smallrung_toml): the file had not changed since the model read it; the
+// model had used line 169 for text that is only on lines 1418-1548.
+func lineAssertionMismatch(expected, actual string, lineNum int, path string, fileLines []string, history string) string {
 	if strings.TrimSpace(expected) == strings.TrimSpace(actual) {
 		return ""
 	}
@@ -4125,11 +4129,64 @@ func lineAssertionMismatch(expected, actual string, lineNum int, path string, fi
 		}
 		window.WriteString(fmt.Sprintf("%s %d\t%s\n", marker, i, fileLines[i-1]))
 	}
+	if history == "" {
+		history = "Those line numbers do not match the file."
+	}
 	return fmt.Sprintf("replace_lines: line %d of %s is not what you expected, so the range is wrong and was NOT applied.\n"+
-		"  you said: %s\n  actually: %s\nThe numbers you used are stale. Current lines around %d:\n%s"+
+		"  you said: %s\n  actually: %s\n%s %s Current lines around %d:\n%s"+
 		"Re-read the file if you need more context, then send the range that matches.",
 		lineNum, path, truncateStr(strings.TrimSpace(expected), 120), truncateStr(strings.TrimSpace(actual), 120),
-		lineNum, window.String())
+		history, whereTextIs(fileLines, expected), lineNum, window.String())
+}
+
+// whereTextIs says which lines hold want, whitespace-insensitively: none, one,
+// or several to choose from.
+func whereTextIs(fileLines []string, want string) string {
+	want = strings.TrimSpace(want)
+	var at []string
+	for i, l := range fileLines {
+		if strings.TrimSpace(l) == want {
+			at = append(at, strconv.Itoa(i+1))
+		}
+	}
+	switch {
+	case len(at) == 0:
+		return "That text is not in the file."
+	case len(at) == 1:
+		return "That text is at line " + at[0] + "."
+	case len(at) <= 8:
+		return "That text is on lines " + strings.Join(at, ", ") + ": send the one you mean."
+	default:
+		return fmt.Sprintf("That text is on %d lines (%s, ...): send the one you mean.",
+			len(at), strings.Join(at[:8], ", "))
+	}
+}
+
+// lineNumberHistory says why the model's line numbers are wrong, but only when
+// the evidence shows it: the session wrote the file, or it changed after the
+// last read (stale); or it still equals what the first full read showed (the
+// numbers never matched). Otherwise it returns "", and no cause is claimed.
+func lineNumberHistory(ctx *AgentContext, path, relPath, current string) string {
+	if ctx == nil {
+		return ""
+	}
+	ctx.mu.Lock()
+	wrote := ctx.SessionWrites[relPath]
+	lastRead, read := ctx.FileReadTimes[path]
+	original, seen := ctx.OriginalContent[path]
+	ctx.mu.Unlock()
+	if wrote {
+		return "The file changed since you read it (your own edits move line numbers), so the numbers you used are stale."
+	}
+	if read {
+		if info, err := os.Stat(path); err == nil && info.ModTime().After(lastRead) {
+			return "The file changed since you last read it, so the numbers you used are stale."
+		}
+	}
+	if seen && original == current {
+		return "The file has not changed since you read it, so these numbers never matched this text."
+	}
+	return ""
 }
 
 // replaceLinesTool is insert_after's rationale extended to REPLACEMENT.
@@ -4212,10 +4269,11 @@ func replaceLinesTool() *ToolDef {
 				}
 			}
 			// The anchors did not match, so no replacement was ever formed.
-			if msg := lineAssertionMismatch(in.ExpectedFirstLine, fileLines[in.StartLine-1], in.StartLine, in.Path, fileLines); msg != "" {
+			history := lineNumberHistory(ctx, path, in.Path, original)
+			if msg := lineAssertionMismatch(in.ExpectedFirstLine, fileLines[in.StartLine-1], in.StartLine, in.Path, fileLines, history); msg != "" {
 				return noMutation(msg), nil
 			}
-			if msg := lineAssertionMismatch(in.ExpectedLastLine, fileLines[in.EndLine-1], in.EndLine, in.Path, fileLines); msg != "" {
+			if msg := lineAssertionMismatch(in.ExpectedLastLine, fileLines[in.EndLine-1], in.EndLine, in.Path, fileLines, history); msg != "" {
 				return noMutation(msg), nil
 			}
 
