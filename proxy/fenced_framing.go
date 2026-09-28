@@ -199,6 +199,16 @@ func isFencedSentinel(content string) bool {
 // now start with up to three backticks; parseFencedReply matches the closer
 // by width, so they stay inside the file. A file that itself has a column-0
 // ```` line is sent without the grammar (fencedGrammarFits).
+// fenceGrammarRoot is how every grammar fenceBlockGrammar builds begins, so
+// the stream reader can tell a fenced sub-call from an ordinary turn by its
+// grammar (isFenceBlockGrammar).
+const fenceGrammarRoot = "root ::= \"````"
+
+// isFenceBlockGrammar reports whether grammar is one fenceBlockGrammar built.
+func isFenceBlockGrammar(grammar string) bool {
+	return strings.HasPrefix(grammar, fenceGrammarRoot)
+}
+
 func fenceBlockGrammar(tag string) string {
 	safe := make([]rune, 0, len(tag))
 	for _, r := range tag {
@@ -207,7 +217,7 @@ func fenceBlockGrammar(tag string) string {
 			safe = append(safe, r)
 		}
 	}
-	return fmt.Sprintf("root ::= \"````%s\\n\" line* \"````\"\n"+
+	return fmt.Sprintf(fenceGrammarRoot+"%s\\n\" line* \"````\"\n"+
 		"line ::= ( [^`\\n] [^\\n]* | \"`\" ( [^`\\n] [^\\n]* )? | \"``\" ( [^`\\n] [^\\n]* )? | "+
 		"\"```\" ( [^`\\n] [^\\n]* )? )? \"\\n\"\n",
 		string(safe))

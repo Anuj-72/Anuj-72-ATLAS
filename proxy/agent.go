@@ -2092,7 +2092,24 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 							if ferr != nil {
 								log.Printf("[agent] fenced-content fetch failed for %s: %v", wfInput.Path, ferr)
 								fencedBounce := "You wrote \"content\": \"@fenced\" but no fenced block followed. Either reply with the complete file in one fenced code block when asked, or re-issue write_file with the full content inline."
-								if fencedChannelDisabledForSession(ctx) {
+								if ctx.Ctx != nil && ctx.Ctx.Err() != nil {
+									// The session stopped while the file was being
+									// fetched: its time ran out, or it was cancelled.
+									// The model sent nothing wrong, and "no fenced
+									// block followed" was false (smoke run
+									// 2026-09-27: the block had arrived).
+									why := "the session was cancelled"
+									if errors.Is(ctx.Ctx.Err(), context.DeadlineExceeded) {
+										why = "the session ran out of time"
+									}
+									fencedBounce = fmt.Sprintf("write_file for %s was not applied: %s while its content was being fetched. Nothing was written.",
+										wfInput.Path, why)
+								} else if !fencedFitsRemainingBudget(ctx) {
+									// Refused before any fetch: too little session
+									// time is left to fetch the file and check it.
+									fencedBounce = fmt.Sprintf("write_file for %s was not applied: too little session time is left to fetch its content and check it. Nothing was written. Send the complete file inline, or make a smaller change with edit_file or structural_edit.",
+										wfInput.Path)
+								} else if fencedChannelDisabledForSession(ctx) {
 									// The channel is off for the rest of the run;
 									// telling the model to try fenced again would
 									// only stall. Steer it to inline, the safe path.
@@ -4022,7 +4039,13 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 	// The fenced sub-call is the one path with a progress watchdog and wire
 	// diagnostics; naming the condition keeps the four places that ask in
 	// agreement.
-	fencedSubCall := grammar == rawEmissionSentinel
+	//
+	// Both kinds of fenced attempt: the free-text one and attempt 0, which is
+	// constrained by the fence grammar. Keyed on the sentinel alone, attempt 0
+	// ran with no watchdog at all: the grammar reserves four backticks for the
+	// closer, the model closes with three, and the attempt generated to the
+	// token ceiling (8192 tokens, ~306s) before the retry that then took ~10s.
+	fencedSubCall := grammar == rawEmissionSentinel || isFenceBlockGrammar(grammar)
 	progress := func() {}
 	armStalled := func() {}
 	if fencedSubCall {
@@ -6079,7 +6102,16 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 				"total_tokens":     ctx.TotalTokens,
 			},
 		})
-		if err != nil {
+		// A cut that came after the model had written content is not a stall:
+		// the channel works, and the block was not closed (under the fence
+		// grammar the model's three-backtick closer is a body line, so the
+		// attempt runs until the watchdog cuts it). It is answered like any
+		// reply without a usable block, below, and the retry without the
+		// grammar follows. Counting it as a stall turned the channel off for
+		// the session and skipped that retry.
+		cutWithContent := err != nil && strings.TrimSpace(reply) != "" &&
+			(ctx.Ctx == nil || ctx.Ctx.Err() == nil)
+		if err != nil && !cutWithContent {
 			// Every way this attempt can end WITHOUT a fenced block charges
 			// the session: watchdog cancellation, transport error, HTTP
 			// failure. Not charging here is how the black-box loop issued one
@@ -6099,6 +6131,9 @@ func fetchFencedContent(ctx *AgentContext, rawCall, path string) (string, error)
 			ctx.FencedStalls++
 			lastErr = err
 			continue
+		}
+		if cutWithContent {
+			lastErr = err // a closed block is still used below; an open one is retried
 		}
 		if got {
 			// A successful resolution clears the consecutive-failure state:

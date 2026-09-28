@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Fixed: a file written through the fenced channel stalled for five minutes
+
+Found by the smoke run on the deployed build (2026-09-27). When the model
+writes a file as `@fenced`, the proxy asks for the file in a fenced block.
+The first attempt is constrained by a grammar that reserves four backticks
+for the closer; the model closes with three, which the grammar takes as a
+line of the file, so the attempt could not end. It also ran with no
+progress watchdog (the watchdog was keyed on the free-text attempt only),
+so it generated to the token ceiling: 8192 tokens, about 306 s, on every
+such write, before a grammar-free retry that took about 10 s. Two tasks
+timed out without ever running their code.
+
+- The watchdog now covers the grammar-constrained attempt, and a cut after
+  the model had written content is not counted as a channel stall, so the
+  grammar-free retry still runs.
+- When the fetch fails because the session was cancelled or ran out of
+  time, or because too little time is left to fetch and check the file,
+  the model is told that. It used to be told "no fenced block followed",
+  which was false.
+
 ### Measured: gemma steering does not change its tool choice
 
 An A/B on 2026-09-27 compared the shipped gemma vector, no vector, and a
