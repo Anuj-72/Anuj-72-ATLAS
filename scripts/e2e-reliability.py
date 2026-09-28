@@ -1351,12 +1351,38 @@ def _recovered_after(s: Session, idx: int) -> bool:
     return worked and finished
 
 
+def model_output_guards(s: Session) -> list[str]:
+    """The categories of the proxy's model-output guards in a session.
+
+    A guard is the proxy catching the model's own malformed output and telling
+    it: a parse failure, content swallowed by an unescaped quote, or content
+    whose intended bytes were ambiguous. Every such error event carries a
+    "category". The plumbing worked, so these are counted for the summary and
+    never as a harness defect (h6_service_fault).
+    """
+    return [str((ev.get("data") or {}).get("category"))
+            for ev in s.of_type("error") if (ev.get("data") or {}).get("category")]
+
+
+def _ended_on_work_deadline(s: Session) -> bool:
+    for ev in reversed(s.of_type("done")):
+        d = ev.get("data") or {}
+        return d.get("reason") == "work_deadline" or d.get("status") == "timed_out"
+    return False
+
+
 def h6_service_fault(s: Session) -> list[str]:
     out = []
     for idx, ev in enumerate(s.events):
         if ev.get("type") != "error":
             continue
         d = ev.get("data") or {}
+        # A model-output guard is not a service fault, recovered or not: see
+        # model_output_guards. Smoke run 2026-09-27 (smallrung_toml): the
+        # swallowed_content guard caught a tool call cut by an unescaped quote,
+        # told the model, and the run still showed "1 harness defect" for it.
+        if d.get("category"):
+            continue
         # The proxy's error events carry "error" (see the TUI's own case);
         # "message" is what this harness uses for a stream-level failure it
         # synthesises. Reading only one of them reported every real error as
@@ -1367,6 +1393,12 @@ def h6_service_fault(s: Session) -> list[str]:
         # to the proxy a second time — h1_protocol already reports it as the
         # timeout it is.
         if "harness cap:" in str(detail):
+            continue
+        # The session's own work deadline cut an LLM stream in flight. The
+        # terminal status already reports that (timed_out, work_deadline); no
+        # dependency failed. Smoke run 2026-09-28 (multifile_cli rep 2).
+        if ("context deadline exceeded" in str(detail)
+                or "context canceled" in str(detail)) and _ended_on_work_deadline(s):
             continue
         # A parse failure the session recovered from is the proxy doing its
         # job, not a service outage. Measured 2026-08-03 on flask_pause rep2:
@@ -1878,6 +1910,16 @@ def report(sessions: list[Session], known: set[str]) -> None:
             print(f"  {cnt:3d}  {cls}")
     else:
         print("\nNo harness defects detected.")
+    guards = [model_output_guards(s) for s in sessions]
+    if any(guards):
+        kinds: dict[str, int] = {}
+        for g in guards:
+            for k in g:
+                kinds[k] = kinds.get(k, 0) + 1
+        print(f"Model-output guards (the proxy caught malformed model output; "
+              f"not harness defects): {sum(len(g) for g in guards)} in "
+              f"{sum(1 for g in guards if g)} session(s): "
+              + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
 
     print("\nPer task:")
     for name in sorted({s.task for s in sessions}):

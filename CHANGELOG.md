@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Fixed: the reliability runner counted working guards as service faults
+
+`scripts/e2e-reliability.py` detector H6 ("service fault") flagged every
+`error` event, so Harness Integrity counted two things that were not
+faults:
+- The proxy's model-output guards: a parse failure, content swallowed by an
+  unescaped quote, or content whose bytes were ambiguous. These are the
+  plumbing working (smallrung_toml, 2026-09-27). Any event with a category is
+  now counted on its own summary line ("Model-output guards ... not harness
+  defects"), never as H6.
+- An LLM stream cut by the session's own work deadline (multifile_cli rep 2,
+  2026-09-28). The terminal status already reports it as timed out.
+- A real service fault, such as a refused connection or a 5xx from a
+  service, still counts.
+
 ### Fixed: replace_lines called correct-looking numbers "stale" when nothing had changed
 
 When the expected first or last line did not match, `replace_lines` always said

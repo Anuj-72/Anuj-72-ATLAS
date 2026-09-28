@@ -444,6 +444,36 @@ def test_h6_still_reports_a_parse_failure_the_session_died_on(rel, tmp_path):
     assert any("parse model response" in d for d in rel.h6_service_fault(s))
 
 
+def test_h6_does_not_count_a_model_output_guard(rel, tmp_path):
+    """Smoke run 2026-09-27 (smallrung_toml): the only error event was the
+    swallowed_content guard, which caught a tool call cut by an unescaped
+    quote and told the model. The run still showed "1 harness defect". A
+    guard that worked is not a service fault, even when the session later
+    fails; it is counted for the summary instead."""
+    guard = {"type": "error", "data": {
+        "category": "swallowed_content",
+        "error": "tool call content was truncated by an unescaped quote"}}
+    s = _session(rel, [_call("read_file", path="x.py"), _ok(), guard,
+                       {"type": "done", "data": {"status": "incomplete",
+                                                 "reason": "text_instead_of_work"}}],
+                 tmp_path)
+    assert rel.h6_service_fault(s) == []
+    assert rel.model_output_guards(s) == ["swallowed_content"]
+
+
+def test_h6_does_not_charge_the_work_deadline_to_a_service(rel, tmp_path):
+    """Smoke run 2026-09-28 (multifile_cli rep 2): the session's own work
+    deadline cut an LLM stream; the terminal status already says timed_out."""
+    cut = {"type": "error",
+           "data": {"error": "read LLM stream: context deadline exceeded"}}
+    done = {"type": "done", "data": {"status": "timed_out", "reason": "work_deadline"}}
+    s = _session(rel, [_call("read_file", path="x.py"), _ok(), cut, done], tmp_path)
+    assert rel.h6_service_fault(s) == []
+    # The same cut in a session that did not end on its deadline still counts.
+    s = _session(rel, [cut], tmp_path, stream_ok=False)
+    assert any("context deadline exceeded" in d for d in rel.h6_service_fault(s))
+
+
 # --- V3 is always on -------------------------------------------------------
 #
 # The runners measure the shipped system. No request field turns V3 off: the
