@@ -79,3 +79,12 @@ from outside the org, then reviews within 5 business days.
 - **RFCs view:** ask a maintainer to decide on any RFC past its 7-day
   comment period.
 - **Start Here:** keep enough Starter issues in it.
+
+## Every month
+
+Run `python scripts/setup/flow_review.py` and paste its output into a
+comment on the Project operations epic. It lists the Triage queue, outside
+pull requests and how long each waited for a first response, claims with
+no pull request, the Start Here stock, open alerts, and the OpenSSF
+Scorecard. It exits with 1 when an outside pull request has waited more
+than 5 business days, the time CONTRIBUTING promises.
