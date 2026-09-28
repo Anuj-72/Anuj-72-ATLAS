@@ -53,11 +53,16 @@ Face account and write token. The walkthrough is in
 model: the quality gate, the unit tests, and the end-to-end tests, which use
 a scripted fake llama-server. You need Python 3.9 or newer, Go 1.26 and git.
 
+Fork the repo first. The fork page copies only `main` unless you untick
+**Copy the `main` branch only**. Either way works: the commands below take
+`dev` from this repository.
+
 ```bash
 git clone https://github.com/<you>/ATLAS.git
 cd ATLAS
 git remote add upstream https://github.com/inferstep/ATLAS.git
-git checkout dev
+git fetch upstream
+git checkout -b dev upstream/dev
 python -m venv .venv && . .venv/bin/activate
 pip install -e . pytest pyyaml
 python scripts/production-readiness.py
@@ -149,6 +154,9 @@ It links you to the issue, lets your Shepherd help early, and keeps your
 claim. Fill in the template: what changed, why, how you verified it, and
 the hardware you ran it on (or "untested on hardware").
 
+GitHub sets **base** to `main` on a new pull request. Change it to `dev`
+before you click **Create pull request**.
+
 CI for a pull request from outside the org waits until a maintainer
 approves the run. CI on a fork never gets the repository's secrets.
 
@@ -175,6 +183,11 @@ stated as untested).
 | `dev` | Integration | At merge. `:dev` images and an immutable `:sha-<commit>` image are built. |
 | `staging` | Release candidate (`vX.Y.Z-rc.N`) | When a maintainer promotes `dev`. It stays at least 3 days. |
 | `main` | Released (`vX.Y.Z`, `:latest`) | When the candidate passes and the release owner approves |
+
+Your issue: `Closes #N` closes an issue only for pull requests into `main`,
+and yours goes into `dev`. After the merge, a maintainer sets the issue's
+Status to Done, which closes it. Its milestone shows the release that ships
+your change.
 
 Minor releases ship when `dev` is ready; there's no fixed calendar. Fixes
 and security releases can ship any time. [RELEASE.md](docs/RELEASE.md) has
