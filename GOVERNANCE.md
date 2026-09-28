@@ -31,7 +31,9 @@ The rules are enforced by repository rulesets, created by
 - **`dev`, `staging` and `main`**
   - Nobody can force-push or delete them, including admins.
   - History must be linear.
-  - The required checks must pass on an up-to-date branch.
+  - The required checks must pass. On `staging` and `main` the branch
+    must also be up to date. On `dev` it need not be, because `dev` moves
+    often and CI runs again on `dev` after every merge.
   - A pull request needs a code-owner approval. New commits dismiss old
     approvals, the last push needs someone else's approval, and all
     conversations must be resolved. Only maintainers can dismiss a

@@ -167,7 +167,7 @@ approves the run. CI on a fork never gets the repository's secrets.
   - an approval from a code owner ([CODEOWNERS](.github/CODEOWNERS))
   - all required checks green
   - every conversation resolved
-  - the branch up to date with `dev` (use **Update branch**)
+  - no conflict with `dev` (a maintainer may ask you to click **Update branch**)
 - New commits dismiss earlier approvals, so the last push gets reviewed.
 - Maintainers merge with **squash** (your title becomes the commit) or
   **rebase**. History on `dev` stays linear.

@@ -5,9 +5,12 @@
 #   1. team access: maintainers = maintain, reviewers = write, triagers = triage
 #   2. merge settings: squash or rebase only (linear history), delete merged
 #      branches, offer "update branch"
-#   3. five rulesets, created or updated by name:
+#   3. six rulesets, created or updated by name:
 #      - Release branches: no force-push or deletion   (dev, staging, main; no bypass)
-#      - Release branches: checks, history and review  (dev, staging, main; admins bypass)
+#      - Integration branch: checks, history and review (dev; admins bypass).
+#        Same as the next one, except a pull request need not be up to date
+#        with dev: dev moves often, and CI runs again on dev after a merge.
+#      - Release branches: checks, history and review  (staging, main; admins bypass)
 #      - Branches: only maintainers create or push     (all branches except
 #        star-history; admins, maintainers and Dependabot bypass)
 #      - Release tags: only maintainers create          (v*)
@@ -77,25 +80,20 @@ checks_json() {
 }
 
 RELEASE_BRANCHES='"refs/heads/dev","refs/heads/staging","refs/heads/main"'
+PROMOTED_BRANCHES='"refs/heads/staging","refs/heads/main"'
 ADMINS='{"actor_id":1,"actor_type":"OrganizationAdmin","bypass_mode":"always"},
         {"actor_id":'"$ADMIN_ROLE_ID"',"actor_type":"RepositoryRole","bypass_mode":"always"}'
 MAINTAINERS='{"actor_id":'"$MAINTAINERS_ID"',"actor_type":"Team","bypass_mode":"always"}'
 DEPENDABOT='{"actor_id":'"$DEPENDABOT_APP_ID"',"actor_type":"Integration","bypass_mode":"always"}'
 
-write_rulesets() {
-    cat > "$OUT/1-release-branches-lock.json" <<EOF
-{"name":"Release branches: no force-push or deletion","target":"branch","enforcement":"active",
- "conditions":{"ref_name":{"include":[$RELEASE_BRANCHES],"exclude":[]}},
- "rules":[{"type":"non_fast_forward"},{"type":"deletion"}],
- "bypass_actors":[]}
-EOF
-    cat > "$OUT/2-release-branches-gates.json" <<EOF
-{"name":"Release branches: checks, history and review","target":"branch","enforcement":"active",
- "conditions":{"ref_name":{"include":[$RELEASE_BRANCHES],"exclude":[]}},
+gates_json() {  # name, branch list, strict (true: the branch must be up to date)
+    cat <<EOF
+{"name":"$1","target":"branch","enforcement":"active",
+ "conditions":{"ref_name":{"include":[$2],"exclude":[]}},
  "rules":[
    {"type":"required_linear_history"},
    {"type":"required_status_checks","parameters":{
-      "strict_required_status_checks_policy":true,"do_not_enforce_on_create":false,
+      "strict_required_status_checks_policy":$3,"do_not_enforce_on_create":false,
       "required_status_checks":$(checks_json)}},
    {"type":"pull_request","parameters":{
       "required_approving_review_count":1,"require_code_owner_review":true,
@@ -104,6 +102,21 @@ EOF
       "dismissal_restriction":{"enabled":true,"allowed_actors":[{"id":$MAINTAINERS_ID,"type":"Team"}]}}}],
  "bypass_actors":[$ADMINS]}
 EOF
+}
+
+write_rulesets() {
+    cat > "$OUT/1-release-branches-lock.json" <<EOF
+{"name":"Release branches: no force-push or deletion","target":"branch","enforcement":"active",
+ "conditions":{"ref_name":{"include":[$RELEASE_BRANCHES],"exclude":[]}},
+ "rules":[{"type":"non_fast_forward"},{"type":"deletion"}],
+ "bypass_actors":[]}
+EOF
+    # dev's gates come first (1b sorts before 2), so dev keeps its checks
+    # while the release gates narrow to staging and main.
+    gates_json "Integration branch: checks, history and review" '"refs/heads/dev"' false \
+        > "$OUT/1b-integration-branch-gates.json"
+    gates_json "Release branches: checks, history and review" "$PROMOTED_BRANCHES" true \
+        > "$OUT/2-release-branches-gates.json"
     cat > "$OUT/3-branches-maintainers-only.json" <<EOF
 {"name":"Branches: only maintainers create or push","target":"branch","enforcement":"active",
  "conditions":{"ref_name":{"include":["~ALL"],"exclude":["refs/heads/star-history"]}},
@@ -188,7 +201,7 @@ step_rulesets() {
         [[ -n "$id" ]] && [[ "$(gh api "repos/$REPO/rulesets/$id" --jq .enforcement)" == active ]] \
             || { echo "error: '$name' did not read back as active; not removing the old protection" >&2; exit 1; }
     done
-    echo "  all five read back as active"
+    echo "  all six read back as active"
 }
 
 step_remove_replaced() {
