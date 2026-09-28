@@ -314,6 +314,23 @@ def test_first_pull_requests_are_welcomed_once(api, cfg):
     assert api.said(42) == []
 
 
+@pytest.mark.parametrize("assoc,prs,user_type,welcomed", [
+    ("NONE", 1, "User", True),          # first PR, association not reported as first-time
+    ("CONTRIBUTOR", 1, "User", False),  # has contributed before
+    ("NONE", 3, "User", False),         # returning author
+    ("MEMBER", 1, "User", False),
+    ("COLLABORATOR", 1, "User", False),
+    ("NONE", 1, "Bot", False),          # Dependabot and other apps
+])
+def test_first_pr_is_found_by_counting_the_authors_prs(api, cfg, assoc, prs, user_type, welcomed):
+    api.cards.clear()
+    api.pulls = [{"number": 43, "labels": [], "author_association": assoc,
+                  "created_at": stamp(1), "user": {"login": "newbie", "type": user_type}}]
+    api.counts["is:pr author:newbie"] = prs
+    run(api, cfg).sync()
+    assert bool(api.said(43)) is welcomed
+
+
 # --- welcome and RFC links --------------------------------------------------
 
 

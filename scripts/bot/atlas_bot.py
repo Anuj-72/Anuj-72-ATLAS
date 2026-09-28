@@ -404,10 +404,24 @@ class Bot:
             have = {x["name"] for x in pr.get("labels") or []}
             if want - have:
                 self.api.add_labels(n, sorted(want - have))
-            if pr.get("author_association") in FIRST_PR and self._recent(pr["created_at"], days=7):
+            if self._first_pr(pr):
                 if not any(self._mine(x) and marker("welcome") in x.get("body", "")
                            for x in self.api.comments(n)):
                     self.api.comment(n, self._welcome_pr(pr["user"]["login"]))
+
+    def _first_pr(self, pr: dict) -> bool:
+        # author_association is not enough: under the bot's app token GitHub
+        # reported a first-time contributor's PR (#246) as something else, so
+        # also count the author's pull requests, as the issue welcome does.
+        user = pr.get("user") or {}
+        if user.get("type") == "Bot" or not self._recent(pr["created_at"], days=7):
+            return False
+        assoc = pr.get("author_association")
+        if assoc in FIRST_PR:
+            return True
+        if assoc != "NONE":  # CONTRIBUTOR, COLLABORATOR, MEMBER, OWNER: not new
+            return False
+        return self.api.search_count(f"is:pr author:{user.get('login')}") <= 1
 
     def _recent(self, stamp: str, days: int) -> bool:
         return (self.now - parse_time(stamp)).days < days
