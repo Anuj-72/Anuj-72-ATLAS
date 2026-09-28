@@ -232,6 +232,10 @@ Unified memory is shared with the OS. Realistic GPU budget on Apple Silicon is ~
 - 32 GB Mac: 9B-Q6 (~7.5 GB) or 14B-Q5 (~10 GB) fits comfortably
 - 64 GB+ Mac: 32B-Q5 (~22 GB) or larger
 
+Only a model with its own Lens bundle runs agent work out of the box;
+`atlas model list` shows which ones have one. For any other model, build
+a bundle first: `atlas bench`, then `atlas lens build --from-results`.
+
 Run `atlas tier` to see the recommendation for your hardware.
 
 ### `atlas` says `atlas-tui binary not found and Go is not available to build it`

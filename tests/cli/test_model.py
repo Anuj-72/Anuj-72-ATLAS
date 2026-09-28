@@ -172,8 +172,8 @@ def test_install_unknown_name_returns_1(capsys):
 
 def test_install_no_artifacts_refused_without_no_lens_flag(tmp_path, capsys):
     """Safety gate: refuse to install a model with no Lens artifacts
-    unless the user explicitly passes --no-lens to acknowledge G(x)
-    will silently no-op."""
+    unless the user passes --no-lens: ATLAS stops agent work on such a
+    model until it has its own Lens bundle."""
     rc = model.main(["install", "Qwen3.5-14B-Q5_K_M", "--dry-run",
                      "--models-dir", str(tmp_path), "--no-color"])
     assert rc == 1

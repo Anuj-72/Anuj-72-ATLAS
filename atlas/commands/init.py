@@ -262,7 +262,7 @@ def _step_select_model(profile: tier.TierProfile,
                         color: bool) -> Optional[model_registry.Model]:
     """Pick a model for the user. Tier default if `supported`, otherwise
     surface the supported-fallback so wizard never recommends a model
-    where G(x) silently no-ops.
+    that the lens cannot score (ATLAS stops agent work on such a model).
 
     PC-054 audit fix: refuse on cpu tier — the user has no GPU and
     `docker compose up -d` would fail at llama-server load. Better to
@@ -388,7 +388,8 @@ def _step_select_model(profile: tier.TierProfile,
     # Tier default is missing or no-artifacts — fall back.
     if tier_default and tier_default.lens_status != "supported":
         _safe_print(f"  Tier default ({tier_default.name}) has lens_status="
-                    f"{tier_default.lens_status} — G(x) verification would no-op.")
+                    f"{tier_default.lens_status}: the lens could not score it, and "
+                    f"ATLAS would stop agent work on it.")
     if fallback is None:
         _safe_print(f"  {RED if color else ''}No Lens-supported model in registry; "
                     f"cannot recommend.{RESET if color else ''}")

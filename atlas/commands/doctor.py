@@ -844,7 +844,8 @@ def check_tier_match() -> CheckResult:
         # PC-056.1: even on exact tier match, cross-check that the
         # claimed Lens artifacts actually exist on disk. Registry can
         # say "supported" while the .pt files are missing — config
-        # drift that would otherwise hide G(x) silently no-opping.
+        # drift that leaves the lens unable to score, which stops agent
+        # work at run time.
         try:
             from atlas.commands import model_registry
             atlas_root = _find_atlas_root()
@@ -857,8 +858,9 @@ def check_tier_match() -> CheckResult:
                     f"file(s) missing: "
                     f"{', '.join(artifact_state['missing_files'])}",
                     f"Expected in {artifact_state['expected_dir']}. "
-                    f"Without these files G(x) will silently no-op even "
-                    f"though the registry says it should work. Either "
+                    f"Without these files the lens cannot score, and ATLAS "
+                    f"stops agent work, although the registry says it "
+                    f"should work. Either "
                     f"download the artifacts (see "
                     f"geometric-lens/geometric_lens/models/README.md) "
                     f"or set ATLAS_LENS_MODELS to point at a dir that "
@@ -906,11 +908,11 @@ def check_tier_match() -> CheckResult:
                 actual_model_record.lens_status != "supported":
             return CheckResult("tier_match", "warn",
                 f"configured model `{actual_model}` has Lens status "
-                f"`{actual_model_record.lens_status}` — G(x) will silently "
-                f"no-op",
-                "ATLAS will run llama-server but C(x)/G(x) verification is "
-                "missing. See PC-058 roadmap. To switch: "
-                "`atlas model recommend` for a Lens-supported alternative.")
+                f"`{actual_model_record.lens_status}`: the lens cannot score "
+                f"it, so ATLAS stops agent work on it",
+                "Build a Lens bundle for it (`atlas bench`, then "
+                "`atlas lens build --from-results`), or run "
+                "`atlas model recommend` for a model that has one.")
         # PC-056.1: model claims supported — verify artifact files actually
         # exist where the registry says they should.
         if actual_model_record is not None and \
@@ -925,8 +927,9 @@ def check_tier_match() -> CheckResult:
                     f"file(s) missing: "
                     f"{', '.join(artifact_state['missing_files'])}",
                     f"Expected in {artifact_state['expected_dir']}. "
-                    f"Without these files G(x) will silently no-op even "
-                    f"though the registry says it should work. Either "
+                    f"Without these files the lens cannot score, and ATLAS "
+                    f"stops agent work, although the registry says it "
+                    f"should work. Either "
                     f"download the artifacts (see "
                     f"geometric-lens/geometric_lens/models/README.md) "
                     f"or set ATLAS_LENS_MODELS to point at a dir that "

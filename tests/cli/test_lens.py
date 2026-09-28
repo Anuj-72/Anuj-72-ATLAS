@@ -199,6 +199,22 @@ def test_check_rejects_artifacts_for_same_dim_different_model(monkeypatch,
     assert "other-model" in verdict.reason
 
 
+def test_check_rejects_the_q6k_bundle_for_another_quant(monkeypatch, tmp_path):
+    """#247: a quant of the same model has the same embedding size, but a
+    bundle built for Q6_K does not load for Q4_K_M. `atlas lens check`
+    must say so, as the registry notes now do."""
+    torch = pytest.importorskip("torch")
+    torch.save({"net.0.weight": torch.zeros(512, 4096)},
+               tmp_path / "cost_field.pt")
+    _write_complete_runtime_artifacts(tmp_path, "Qwen3.5-9B-Q6_K")
+    monkeypatch.setenv("ATLAS_LENS_MODELS", str(tmp_path))
+    monkeypatch.setattr(lens, "probe_llama", lambda *a, **kw: _probe(
+        model_name="Qwen3.5-9B-Q4_K_M.gguf"))
+    verdict = lens._check_model(None, str(tmp_path))
+    assert verdict.verdict == "needs-build"
+    assert "Qwen3.5-9B-Q6_K" in verdict.reason
+
+
 def test_check_compat_warns_when_pc202_patch_missing(monkeypatch, tmp_path):
     """Compat verdict but no PC-202 patch -> reason mentions G(x) limitation."""
     torch = pytest.importorskip("torch")

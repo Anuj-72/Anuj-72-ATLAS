@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### Fixed: the model registry said two quants reuse the Q6_K lens, and the lens rejects them
+
+The registry marked Qwen3.5-9B Q4_K_M and Q8_0 `unverified` and said they use
+the Q6_K lens files. The lens loads a bundle only for the model it was built
+for (same model name and embedding size), so those files never load for them.
+With the lens required, a user who picked one of these quants would be
+stopped after the registry said the lens works. Found while answering
+Discussion #20.
+
+- Both quants are now `no-artifacts`, and their notes say how to build a
+  bundle: install with `--no-lens`, then `atlas bench` and
+  `atlas lens build --from-results`. Their steering vector stays `unverified`
+  (shared with Q6_K).
+- `atlas model`, `atlas doctor`, `atlas init` and the registry notes no
+  longer say that a model without a lens bundle runs with G(x) "silently"
+  switched off. With the lens required, ATLAS stops agent work on such a
+  model, and the messages now say that and name the way out.
+- SUPPORT_MATRIX.md and the macOS guide say the same.
+
 ### Changed: torch 2.14.0 in the lens image
 
 - The lens pins torch 2.14.0 (was 2.13.0) in `geometric-lens/requirements.txt`
