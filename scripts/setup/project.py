@@ -76,8 +76,8 @@ OTHER_FIELDS = {"Shepherd": "TEXT", "Start Date": "DATE", "Target Date": "DATE"}
 # Milestones have no @current keyword, so "Current Release" names the
 # release in progress; change it when that release ships.
 VIEWS = [
-    ("Start Here", "TABLE_LAYOUT", "status:Ready contributor-level:Starter no:assignee"),
-    ("Help Wanted", "TABLE_LAYOUT", 'status:Ready no:assignee -contributor-level:"Maintainer-only"'),
+    ("Start Here", "TABLE_LAYOUT", "status:Ready contributor-level:Starter no:assignee -type:Epic"),
+    ("Help Wanted", "TABLE_LAYOUT", 'status:Ready no:assignee -contributor-level:"Maintainer-only" -type:Epic'),
     ("Current Release", "BOARD_LAYOUT", 'milestone:"v3.2.0"'),
     ("Critical Path", "TABLE_LAYOUT", "critical-path:Yes -status:Done"),
     ("Roadmap", "ROADMAP_LAYOUT", "type:Epic"),
