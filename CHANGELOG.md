@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Security: TUI dependencies with public advisories
+
+- The TUI now uses goldmark 1.7.17 (GO-2026-5320), golang.org/x/net 0.56.0
+  (GO-2026-5942) and golang.org/x/text 0.39.0 (GO-2026-5970).
+- `tui/go.mod` now requires Go 1.26.6. That release also fixes the
+  standard-library advisories that govulncheck reports for older Go 1.26
+  releases. The installer's default Go (`ATLAS_GO_VERSION`) is now 1.26.6.
+- CI sets up Go 1.26.6. setup-go pins `GOTOOLCHAIN=local`, so CI cannot
+  fetch a newer toolchain itself.
+- govulncheck on the TUI: no vulnerabilities found. The proxy image is built
+  with Go 1.27.1, which none of these advisories affect.
+
 ### Fixed: the model registry said two quants reuse the Q6_K lens, and the lens rejects them
 
 The registry marked Qwen3.5-9B Q4_K_M and Q8_0 `unverified` and said they use

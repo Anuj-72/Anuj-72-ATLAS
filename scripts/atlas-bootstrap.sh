@@ -44,7 +44,7 @@
 #   ATLAS_BOOTSTRAP_NO_SUDO=1         fail instead of attempting sudo
 #   ATLAS_REPO_URL=...                clone source if no local repo (default: GitHub)
 #   ATLAS_INSTALL_DIR=...             where to clone/install (default: /opt/atlas)
-#   ATLAS_GO_VERSION=...              Go toolchain to install for the TUI build (default: 1.26.2)
+#   ATLAS_GO_VERSION=...              Go toolchain to install for the TUI build (default: 1.26.6)
 #
 # Exit codes:
 #   0   success
@@ -1101,7 +1101,7 @@ install_go() {
     # toolchain when building tui. We pick 1.24 as the install target
     # since it's the proven floor and the smallest stable download.
     local need_version="1.24"
-    local install_version="${ATLAS_GO_VERSION:-1.26.2}"
+    local install_version="${ATLAS_GO_VERSION:-1.26.6}"
 
     # Already have new-enough Go? A previous bootstrap may have installed it
     # under /usr/local/go while this non-login process still lacks that PATH.
