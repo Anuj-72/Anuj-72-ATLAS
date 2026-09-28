@@ -40,6 +40,7 @@ FIRST_PR = ("FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER")
 STATUS_LABELS = {"Ready": "status/ready", "Blocked": "status/blocked"}
 # GitHub's closing keywords. They act only on the default branch (main), and
 # work merges into dev, so sync closes the issues itself.
+ISSUE_REF = re.compile(r"(?<![\w/#])#(\d+)\b")
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.IGNORECASE)
 STOPWORDS = set("""about after again against also allow allows because before being
 between could does doing during each from have into just like make more most need
@@ -375,6 +376,14 @@ class Bot:
     # daily
     def stale(self) -> None:
         c = self.cfg["claims"]
+        # GitHub links a pull request to an issue ("Closes #N") only when the
+        # pull request targets main, and ours target dev. So an open pull
+        # request by the claimant that names the issue also keeps the claim.
+        mentions: dict = {}
+        for pr in self.api.open_pulls():
+            text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+            for num in set(ISSUE_REF.findall(text)):
+                mentions.setdefault(int(num), set()).add((pr.get("user") or {}).get("login"))
         for it in self.api.items(self.cfg):
             if it["state"] != "open" or it["status"] != "In Progress" or not it["assignees"]:
                 continue
@@ -385,7 +394,7 @@ class Bot:
                 if not claims:
                     continue  # assigned by hand, not by /claim: not the bot's to release
                 since = parse_time(claims[-1]["created_at"])
-                if login in self.api.linked_open_pr_authors(n):
+                if login in mentions.get(n, ()) or login in self.api.linked_open_pr_authors(n):
                     continue
                 days = (self.now - since).days
                 if days >= int(c["release_after_days"]):

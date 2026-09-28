@@ -282,6 +282,22 @@ def test_a_linked_pull_request_keeps_the_claim(api, cfg):
     assert api.log == []
 
 
+@pytest.mark.parametrize("author,text,kept", [
+    ("alice", "Closes #7", True),              # PR into dev: GitHub makes no link, the mention counts
+    ("alice", "docs: resync (issue #7)", True),
+    ("bob", "Closes #7", False),               # someone else's PR does not keep alice's claim
+    ("alice", "Closes #70", False),            # another issue
+    ("alice", "see inferstep/ATLAS#7", False),  # a qualified ref is not taken for this repo's #7
+])
+def test_an_open_pull_request_that_names_the_issue_keeps_the_claim(api, cfg, author, text, kept):
+    claimed(api, 30)
+    api.pulls = [{"number": 246, "title": "docs(zh-cn): resync", "body": text, "labels": [],
+                  "author_association": "CONTRIBUTOR", "created_at": stamp(2),
+                  "user": {"login": author, "type": "User"}}]
+    run(api, cfg).stale()
+    assert (("unassign", 7, "alice") in api.log) is (not kept)
+
+
 def test_hand_assignments_are_not_released(api, cfg):
     api.issues[7]["assignees"] = ["alice"]
     api.cards[7]["status"] = "In Progress"
