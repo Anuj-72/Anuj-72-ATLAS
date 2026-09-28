@@ -205,6 +205,9 @@ without approval. Each promotion leaves a timestamped deployment record.
    publishes `:X.Y.Z`, `:vX.Y.Z` and `:X.Y`, and `verify-tags` checks the
    signature.
 6. **Announce** the release (GitHub release, Discussions Announcements).
+   Publishing the GitHub release runs `release-files.yml`, which attaches
+   `atlas-X.Y.Z-images.txt` (every image digest of the release) and its
+   keyless cosign bundle `atlas-X.Y.Z-images.txt.sigstore.json`.
 
 **Rolling back images.** The `alias` option of `build-images` (run it
 manually from `main`; it also needs `production` approval) repoints every
@@ -266,9 +269,17 @@ git config gpg.ssh.allowedSignersFile .github/allowed_signers
 git verify-tag v1.2.0
 ```
 
-**Status:** the signing key, git config, release script, CI verification,
-and allowed-signers file are in place and produce a verified signed tag
-today. The remaining step to get GitHub's green **Verified** badge is
-registering the public key on the maintainer's GitHub account (the
-`gh ssh-key add --type signing` line above) — an account action left to
-the maintainer.
+Verify a release's image list (from 3.2.0; download both files from the
+release page), then check any image against it:
+
+```bash
+cosign verify-blob --bundle atlas-3.2.0-images.txt.sigstore.json \
+  --certificate-identity https://github.com/inferstep/ATLAS/.github/workflows/release-files.yml@refs/tags/v3.2.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  atlas-3.2.0-images.txt
+```
+
+**Status:** the signing key, git config, release script, CI verification
+and allowed-signers file are in place, and the key is registered on the
+maintainer's GitHub account, so GitHub shows release tags as **Verified**
+(v3.1.4 onward).
