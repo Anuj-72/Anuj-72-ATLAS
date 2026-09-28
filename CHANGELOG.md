@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added: the reliability runner records container restarts and OOM kills
+
+`scripts/e2e-reliability.py` now snapshots each container of the compose
+project (`--compose-project`, default `atlas`) before and after every
+session: its restart count, whether it was OOM-killed, and when it last
+started. A container that restarted, was OOM-killed, was recreated, or went
+away during the session is named in the session's `stack_changes` field, in
+the run log, and in a summary line. The outcome of such a session was
+measured over an unstable stack. When docker cannot be asked, nothing is
+claimed.
+
 ### Removed: the unused lens-projects volume on Kubernetes
 
 The geometric-lens deployment created and mounted a `lens-projects`

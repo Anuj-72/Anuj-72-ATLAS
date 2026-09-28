@@ -637,3 +637,76 @@ def test_stack_identity_records_what_the_proxy_reports(rel):
     # Unreachable: recorded as such, never a crash.
     down = rel.stack_identity("http://127.0.0.1:9")
     assert down["grammar_mode"] is None and set(down["errors"]) == {"version", "calibration"}
+
+
+# --- stack stability (#240) ---------------------------------------------------
+#
+# A restart or an OOM kill during a session changes its outcome, and the
+# result did not say so. The runner now snapshots each container of the
+# compose project before and after every session.
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout, self.returncode = stdout, returncode
+
+
+def _fake_docker(states):
+    """A stand-in for subprocess.run: `docker ps` lists the containers, and
+    `docker inspect` reports each one's (restarts, oom_killed, started_at)."""
+    def run(argv, **kw):
+        if argv[:2] == ["docker", "ps"]:
+            return _Proc("\n".join(states) + "\n")
+        if argv[:2] == ["docker", "inspect"]:
+            return _Proc("".join(f"/{n} {r} {'true' if o else 'false'} {t}\n"
+                                 for n, (r, o, t) in states.items()))
+        raise AssertionError(f"unexpected command {argv}")
+    return run
+
+
+def _states(rel, **containers):
+    return rel.container_states("atlas", run=_fake_docker(containers))
+
+
+def test_a_restart_during_the_session_is_in_its_result(rel, tmp_path):
+    before = _states(rel, lens=(0, False, "T1"), proxy=(0, False, "T1"))
+    after = _states(rel, lens=(1, False, "T2"), proxy=(0, False, "T1"))
+    s = _session(rel, [], tmp_path)
+    s.stack_changes = rel.stack_changes(before, after)
+    assert s.stack_changes == ["lens restarted 1 time"]
+    assert rel.result_row(s, {}, {})["stack_changes"] == ["lens restarted 1 time"]
+
+
+def test_an_oom_kill_is_named(rel):
+    before = _states(rel, llama=(0, False, "T1"))
+    after = _states(rel, llama=(2, True, "T3"))
+    assert rel.stack_changes(before, after) == ["llama restarted 2 times", "llama was OOM-killed"]
+
+
+def test_a_manual_restart_or_recreate_is_named(rel):
+    # `docker restart` and a compose recreate leave the restart count alone.
+    before = _states(rel, sandbox=(0, False, "T1"))
+    after = _states(rel, sandbox=(0, False, "T2"))
+    assert rel.stack_changes(before, after) == ["sandbox was restarted or recreated"]
+
+
+def test_a_container_that_went_away_or_appeared_is_named(rel):
+    before = _states(rel, lens=(0, False, "T1"), v3=(0, False, "T1"))
+    after = _states(rel, lens=(0, False, "T1"), extra=(0, False, "T2"))
+    assert rel.stack_changes(before, after) == ["extra appeared", "v3 is gone"]
+
+
+def test_a_stable_stack_records_nothing(rel):
+    before = _states(rel, lens=(3, True, "T1"))
+    after = _states(rel, lens=(3, True, "T1"))
+    assert rel.stack_changes(before, after) == []
+
+
+def test_docker_that_cannot_be_asked_is_not_read_as_stable_mid_session(rel):
+    def broken(argv, **kw):
+        raise OSError("docker not found")
+    assert rel.container_states("atlas", run=broken) is None
+    # Unavailable throughout: nothing to compare, nothing claimed.
+    assert rel.stack_changes(None, None) == []
+    snap = _states(rel, lens=(0, False, "T1"))
+    assert rel.stack_changes(snap, None) == [
+        "container state could not be read at the end of the session"]
