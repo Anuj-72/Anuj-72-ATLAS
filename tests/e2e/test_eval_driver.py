@@ -305,6 +305,13 @@ def test_the_arms_are_compared_with_an_interval():
 
 # --- the driver ------------------------------------------------------------------
 
+def test_the_reliability_runner_loads():
+    """stack_identity reaches the #241 checks through this loader; the other
+    driver tests replace stack_identity, so none of them load the module."""
+    rel = driver._reliability_runner()
+    assert callable(rel.deployed_identity) and callable(rel.stack_identity)
+
+
 def test_the_development_stack_is_never_measured(tmp_path):
     args = driver.parse_args(["run", str(tmp_path), "--arm", "atlas", "--out", "o",
                               "--image", "i", "--compose-project", "atlas",

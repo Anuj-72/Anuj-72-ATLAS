@@ -148,6 +148,9 @@ def _reliability_runner():
     spec = importlib.util.spec_from_file_location("atlas_reliability",
                                                   REPO / "scripts" / "e2e-reliability.py")
     mod = importlib.util.module_from_spec(spec)
+    # Registered first: its dataclasses resolve their (postponed) annotations
+    # through sys.modules, and without the entry the import fails.
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
