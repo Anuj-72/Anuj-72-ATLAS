@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [3.1.5] - 2026-09-29 — Maia
+
+A security release. It changes nothing else.
+
+### Security: an argument name in another letter case skipped the workspace check
+
+- Tool arguments were checked by their exact names (`path`, `command`), but
+  the tools accepted the same names in any letter case. A call that spelled
+  a name another way, such as `"PATH"`, skipped the workspace check, and in
+  3.1.4 also the command deny-list. Argument names must now be the tools'
+  exact lowercase names; any other spelling is refused before the tool runs.
+- `insert_after`'s path is checked against the workspace when the call is
+  dispatched, like every other write.
+
 ## [3.1.4] - 2026-09-27 — Maia
 
 The first release from ATLAS's new home, **inferstep/ATLAS**. It carries the
