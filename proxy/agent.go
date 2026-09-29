@@ -3286,26 +3286,10 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				}
 			}
 
-			// Exploration budget: after 4 consecutive read-only calls,
-			// inject nudge. After 5, escalate the nudge. The read above
-			// already executed and its result is in context — the nudge
-			// steers the NEXT turn toward a write.
-			// FUTURE (L6 reliability): Compact models can over-explore when adding
-			// features to existing projects (~67% pass rate). Better prompting,
-			// larger model, or V3-guided exploration would improve this.
-			if consecutiveReads == 4 {
-				ctx.Messages = append(ctx.Messages, AgentMessage{
-					Role:    "user",
-					Content: "You have full project context in the system prompt. Do not read more files. Emit a write_file or edit_file tool call now.",
-				})
-				log.Printf("[agent] exploration budget: warning at turn %d", turn)
-			} else if consecutiveReads >= 5 {
-				ctx.Messages = append(ctx.Messages, AgentMessage{
-					Role:    "user",
-					Content: "You already have this information in context — reading more files will not help. Write your changes now. Use write_file or edit_file.",
-				})
-				consecutiveReads = 2 // Keep at warning level, don't reset
-				log.Printf("[agent] exploration budget: escalated nudge at turn %d", turn)
+			// Exploration budget: after a run of read-only calls, steer the next
+			// turn toward a write, or toward the answer (explorationNudge).
+			if note := explorationNudge(&consecutiveReads, turn, !answerOnlyRequest(ctx)); note != "" {
+				ctx.Messages = append(ctx.Messages, AgentMessage{Role: "user", Content: note})
 			}
 
 		default:
@@ -4966,6 +4950,13 @@ func shadowCompareSets(contract, legacy []string, failed bool) string {
 	default:
 		return shadowOutputsPartial
 	}
+}
+
+// answerOnlyRequest reports a request whose deliverable is an answer: the
+// client declared a question, or the user forbade any change. Steers read it;
+// the exit gates keep deciding the action demand (decideActionDemand).
+func answerOnlyRequest(ctx *AgentContext) bool {
+	return mutationForbidden(ctx) || (ctx.TaskContract != nil && ctx.TaskContract.TaskMode == TaskModeQuestion)
 }
 
 // observeActionDemand records one live action-demand decision and returns it

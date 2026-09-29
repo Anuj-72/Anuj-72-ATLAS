@@ -31,6 +31,19 @@ five image ids and whether the identity was verified. A stack with no deploy
 record, such as one on a contributor's machine, runs, but is marked
 unverified.
 
+### Fixed: a question was told to stop reading and write a file
+
+After four read-only calls in a row, the agent loop told the model "Do not read
+more files. Emit a write_file or edit_file tool call now", whatever the request
+was. On a question, that asked for what the request did not want, and it
+stopped the reading the answer needed. In smoke runs, a bug-finding question
+stopped one function short, replied that it could not go on, and the reply was
+reported completed (2 of 84 sessions).
+
+Now a request whose deliverable is an answer (a declared question, or "do not
+change any code") is told to answer when it has what it needs, or to read only
+the part still missing. Work requests keep the write notes.
+
 ### Fixed: an edit_file old_str that stopped matching its file ran on to the token cap
 
 An old_str is text copied from the target file, so it can be checked while it
