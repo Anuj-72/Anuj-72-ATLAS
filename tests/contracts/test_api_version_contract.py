@@ -114,7 +114,10 @@ def test_owned_python_senders_are_inventoried():
     # Auth probes: deliberately malformed bodies rejected at 401 before the
     # handler ever decodes them. Adding a contract would change what they test.
     auth_probes = {"tests/e2e/test_service_auth.py"}
-    known = declares_contract | auth_probes
+    # Sends each held-out task's own mode, which the suite loader defaults to
+    # work and limits to work or question (scripts/eval/suite.py).
+    declares_task_mode = {"scripts/eval/atlas_arm.py"}
+    known = declares_contract | auth_probes | declares_task_mode
     unknown = [f for f in files if f not in known]
     assert not unknown, (
         f"unclassified owned agent senders: {unknown}. Every owned sender must "
@@ -125,6 +128,11 @@ def test_owned_python_senders_are_inventoried():
         assert "task_contract" in text, f"{f} posts agent requests without a task contract"
         assert '"task_mode": "work"' in text or "'task_mode': 'work'" in text, (
             f"{f} does not default to work"
+        )
+    for f in sorted(declares_task_mode):
+        text = (REPO / f).read_text()
+        assert '"task_contract": {"task_mode": task.mode}' in text, (
+            f"{f} does not send the task's mode"
         )
 
 
