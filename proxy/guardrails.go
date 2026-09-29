@@ -759,9 +759,9 @@ func replyDefersWork(text string) bool {
 			if len(window) > 60 {
 				window = window[:60]
 			}
+			window = trimReplyLeadIns(window) // "i will try to read" defers as "i will read" does
 			for _, v := range verbs {
-				if strings.HasPrefix(strings.TrimPrefix(strings.TrimPrefix(window, "now "), "first "), v) ||
-					strings.HasPrefix(window, "now "+v) || strings.HasPrefix(window, "next "+v) {
+				if strings.HasPrefix(window, v) {
 					return true
 				}
 			}
