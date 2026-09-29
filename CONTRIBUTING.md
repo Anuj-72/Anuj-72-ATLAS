@@ -219,6 +219,9 @@ minimum time, a nomination, and hard technical limits. See the
 
 ## Code style
 
+How code should read (size, structure, abstractions, comments) is in
+[CODE_STYLE.md](docs/CODE_STYLE.md). The rules per language:
+
 **Python.** PEP 8, type hints on function signatures, docstrings on public
 functions, lines up to 100 characters. `ruff` runs in the gate.
 
