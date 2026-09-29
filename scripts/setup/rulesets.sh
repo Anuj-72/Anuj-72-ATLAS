@@ -66,7 +66,7 @@ CHECKS=(
     "pytest (tests/v3-service)" "pytest (tests/contracts)" "pytest (tests/infrastructure)"
     "pytest (geometric-lens/tests)" "llama.cpp patches apply to pinned SHA"
     "e2e acceptance (proxy + sandbox + fake llama)" "bootstrap via sudo for a regular user"
-    "dependency review" "pr title"
+    "dependency review" "pr title" "code health (size)"
 )
 checks_json() {
     local first=1 c
