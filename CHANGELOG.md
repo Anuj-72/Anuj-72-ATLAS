@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Added: a driver for the held-out evaluation, with a bare-model baseline
+
+`scripts/eval/` runs a frozen suite through two arms, grades each finished
+workspace, and reports aggregates. `atlas` sends each task through
+`/v1/agent` as the TUI does. `baseline` runs the same model through a
+minimal read, write and run loop, with ATLAS's sampling and limits and none
+of its layers.
+- Graders run on a copy of the workspace, in a container with no network.
+- A suite whose files changed after the freeze is refused, and so is a grader
+  whose pass and fail controls do not separate.
+- A run refuses the development stack and a stack it cannot tie to one
+  commit.
+
+The contract is in `docs/EVAL_INTERFACE.md`.
+
 ### Added: the reliability runner measures only the stack deployed for its commit
 
 A result is evidence only for the stack that produced it. Before its first
