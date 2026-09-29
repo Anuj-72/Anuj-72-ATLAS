@@ -1330,6 +1330,108 @@ def orphaned_new_symbols(previous_text: str, source_text: str) -> list:
     return orphans
 
 
+def _python_top_level_bindings(text: str):
+    """What a Python module binds at its top level, and how.
+
+    {name: "def" | "class" | "assign" | "import:<module>"}, read from the
+    statements directly in the module body. A name bound inside an `if`,
+    `try` or `with` is not read, so neither is the `if __name__ ==
+    "__main__":` block: its names exist only when the file runs as a script.
+    None when the text does not parse.
+    """
+    import ast as _ast
+    try:
+        tree = _ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    out = {}
+    for node in tree.body:
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            out[node.name] = "def"
+        elif isinstance(node, _ast.ClassDef):
+            out[node.name] = "class"
+        elif isinstance(node, _ast.Assign) or (
+                isinstance(node, _ast.AnnAssign) and node.value is not None):
+            targets = node.targets if isinstance(node, _ast.Assign) else [node.target]
+            for target in targets:
+                for n in _ast.walk(target):
+                    if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Store):
+                        out[n.id] = "assign"
+        elif isinstance(node, _ast.ImportFrom):
+            module = "." * node.level + (node.module or "")
+            for alias in node.names:
+                if alias.name != "*":
+                    out[alias.asname or alias.name] = "import:" + module
+        elif isinstance(node, _ast.Import):
+            for alias in node.names:
+                # `import pkg.util` binds `pkg`, and what it imports is
+                # pkg.util: the module is what says where the name comes from.
+                out[alias.asname or alias.name.split(".")[0]] = "import:" + alias.name
+    return out
+
+
+def _project_module_names(project_files) -> set:
+    """The import names the project's own Python files answer to.
+
+    `pkg/util.py` answers to `pkg.util` and, for a relative or path-rooted
+    import, to `util`.
+    """
+    names = set()
+    for path in project_files or ():
+        p = str(path).replace("\\", "/").lstrip("./")
+        if not p.endswith(".py"):
+            continue
+        dotted = p[:-3].replace("/", ".")
+        if dotted.endswith(".__init__"):
+            dotted = dotted[:-len(".__init__")]
+        names.add(dotted)
+        names.add(dotted.rsplit(".", 1)[-1])
+    return names
+
+
+def dropped_top_level_names(incumbent_text: str, candidate_text: str,
+                            path: str, project_files=()) -> list:
+    """The file's top-level names a replacement no longer binds.
+
+    The role check (#259). A file's top-level names are how the rest of the
+    project uses it: other files import them, a test runner collects them, a
+    caller reads its constants. A replacement that drops one has changed what
+    the file is, whatever else it gets right. Observed: V3's winner for
+    test_stats.py was a module of median() implementations, test_mean and
+    test_median were gone, and running the file tested nothing; another
+    winner renamed store.py's FILE_PATH.
+
+    A name the file imports from ANOTHER PROJECT FILE is part of that role
+    too -- it is how a test or a script uses the code it exists for -- so it
+    must still be imported from the same module. Defining it locally instead
+    is the replacement no longer using that file. Names imported from outside
+    the project (the standard library, a package) may come and go.
+
+    Returns ["test_mean", "mean (imported from stats)", ...], sorted. Empty
+    when either side does not parse (the syntax check owns that) or the file
+    is not Python: this reads Python modules only.
+    """
+    if not str(path or "").lower().endswith((".py", ".pyw", ".pyi")):
+        return []
+    before = _python_top_level_bindings(incumbent_text or "")
+    after = _python_top_level_bindings(candidate_text or "")
+    if before is None or after is None:
+        return []
+    project = _project_module_names(project_files)
+    dropped = []
+    for name, kind in before.items():
+        if kind.startswith("import:"):
+            module = kind[len("import:"):]
+            bare = module.lstrip(".")
+            if bare not in project and bare.rsplit(".", 1)[-1] not in project:
+                continue
+            if after.get(name) != kind:
+                dropped.append(f"{name} (imported from {module})")
+        elif name not in after:
+            dropped.append(name)
+    return sorted(dropped)
+
+
 def _replacement_dwarfs_node(source_text: str, target, content: str, selector: str) -> str:
     """A refusal when `content` is many times the size of the node it replaces,
     or "" when the replacement is node-sized.

@@ -516,36 +516,6 @@ class _PoolCapture:
             "schema": CAPTURE_SCHEMA,
         })
 
-    def note_incumbent(self, *, code: str, record, adapter: str,
-                       evaluation: str = "evaluated") -> None:
-        """The artifact V3 was asked to improve on, measured the same way.
-
-        It lives in a SHADOW pool of its own. The live pool, the lens
-        choice, the contract selection, the returned code, the envelope and
-        Go's authorization never see it: this exists to answer "was the
-        selected candidate better than the thing it would replace", which
-        selection cannot answer today because the incumbent has never
-        carried a record.
-        """
-        if not self.enabled or not code:
-            return
-        raw = code.encode("utf-8")
-        self.write({
-            "type": "incumbent_observation",
-            **self._identity(),
-            "candidate_instance_id": self.instance_id("incumbent_baseline", 0),
-            "session_id": self._session_id,
-            "role": "incumbent_baseline",
-            "pool": "shadow_comparison",
-            "code_b64": base64.b64encode(raw).decode("ascii"),
-            "code_sha256": hashlib.sha256(raw).hexdigest(),
-            "code_bytes": len(raw),
-            "adapter_id": adapter,
-            "contract_record": record,
-            "evaluation": evaluation,
-            "influences_live_selection": False,
-        })
-
     def note_pool(self, *, phase: str, pool, lens_index=None,
                   evidence_index=None, verified_index=None,
                   status: str = "", reason: str = "", tied: int = 0,
@@ -734,7 +704,8 @@ def _capture_pool_member(capture: "_PoolCapture", candidate, probe_code: str) ->
     diagnostic exists to make.
     """
     capture.note_candidate(
-        role=("candidate_zero" if probe_code and candidate.get("index") == 0
+        role=("incumbent" if candidate.get("incumbent")
+              else "candidate_zero" if probe_code and candidate.get("index") == 0
               else "generated"),
         index=candidate.get("index"), code=candidate.get("code") or "",
         accepted=bool(candidate.get("passed")),
@@ -934,12 +905,12 @@ _CANDIDATE_FILE = "candidate.py"
 
 # --- diagnostic candidate allocation -----------------------------------------
 #
-# `k` is the TOTAL V3 pool: the phase-zero probe takes one slot and
-# `remaining_k = k - len(candidates)` fills the rest with generated
-# alternatives. The incumbent is not in it -- it lives in the shadow
-# comparison pool. Consensus needs at least two generated alternatives to
-# mean anything, and the allocator's budget cap can drive k to 1, so a
-# measurement run needs a way to raise it.
+# `k` is the number of GENERATED candidates: the phase-zero probe takes one
+# slot and `remaining_k = k - len(candidates)` fills the rest with generated
+# alternatives. The incumbent is in the selectable pool but was not generated,
+# so it takes no slot (`candidates` holds generated ones only). Consensus needs
+# at least two generated alternatives to mean anything, and the allocator's
+# budget cap can drive k to 1, so a measurement run needs a way to raise it.
 #
 # It raises and never lowers, it is capped small, it is an in-process
 # argument the HTTP handler never supplies, and it reads no environment. No
@@ -1262,11 +1233,54 @@ def _make_output_probe(code: str, tc, task_input_file: str = ""):
 
 def _failed_a_project_check(candidate) -> bool:
     """The candidate failed a check the generated cases did not write: the
-    project's own build command, or importing where the submitted baseline
-    imports. Candidates agreeing with each other does not outweigh that."""
-    return any(ev.get("verifier") in ("build_command", "python_import_comparison")
+    project's own build command, importing where the submitted baseline
+    imports, or keeping the top-level names the submitted file binds.
+    Candidates agreeing with each other does not outweigh that."""
+    return any(ev.get("verifier") in ("build_command", "python_import_comparison",
+                                      "incumbent_role")
                and ev.get("status") == "failed"
                for ev in candidate.get("verification_evidence") or [])
+
+
+# The pool index of the incumbent: the caller's own bytes. Every generated
+# candidate is numbered from 0 (the phase-zero probe) up; the incumbent was not
+# generated, so it takes no generation slot and no generated number.
+INCUMBENT_INDEX = -1
+
+
+def _who(candidate) -> str:
+    """How an event names a pool member."""
+    if candidate.get("incumbent"):
+        return "The submitted file"
+    return f"Candidate {candidate.get('index')}"
+
+
+def _whitespace_free(text: str) -> str:
+    return "".join((text or "").split())
+
+
+def _without_retypings(passing, emit=None):
+    """The submitted bytes, never a copy of them (#259).
+
+    A candidate that equals the passing incumbent once whitespace is ignored
+    is the incumbent re-typed: the same program plus whatever drift the
+    re-typing added, observed as a leading space inside a printed message. It
+    leaves the pool, and the exact bytes stand for both. A copy of an
+    incumbent that did NOT pass stays: re-typing is how an indentation slip
+    gets repaired.
+    """
+    incumbent = next((c for c in passing if c.get("incumbent")), None)
+    if incumbent is None:
+        return passing
+    bare = _whitespace_free(incumbent.get("code"))
+    kept = [c for c in passing
+            if c is incumbent or _whitespace_free(c.get("code")) != bare]
+    if emit is not None and len(kept) < len(passing):
+        dropped = [c.get("index") for c in passing if c not in kept]
+        emit("retyping_dropped",
+             f"{len(dropped)} candidate(s) only re-typed the submitted file; "
+             f"its exact bytes stand for them", indices=dropped)
+    return kept
 
 
 def _consensus_winners(candidates, test_cases, sandbox, emit,
@@ -1371,9 +1385,11 @@ class V3PipelineService:
                 ephemeral candidate overlay after syntax/self-tests pass.
             working_dir: Container workspace root used by the sandbox overlay.
             baseline_code: The incumbent's EXACT bytes, as the request sent
-                them, before prompt construction. Kept outside the generated
-                pool. Interactive Python replacements are compared against
-                its observed import viability in the sandbox.
+                them, before prompt construction. A real candidate (#259):
+                it faces the same checks as a generated one, the lens ranks
+                it with them, and every replacement must keep its top-level
+                names. Interactive Python replacements are also compared
+                against its observed import viability in the sandbox.
             budget_ms: The wall-clock cap the caller applies to this call.
                 Every budget check plans against it when it is positive;
                 otherwise ATLAS_V3_TIMEOUT applies, as for a bench caller.
@@ -1659,8 +1675,29 @@ class V3PipelineService:
 
         def verified_sandbox(code, extra_test=""):
             """Sandbox + verification. Algorithmic tasks: execution, with the
-            I/O self-tests recorded as diagnostics; interactive: compile smoke."""
+            I/O self-tests recorded as diagnostics; interactive: compile smoke.
+
+            A replacement for a file the caller already wrote must first keep
+            that file's role: every top-level name it binds (#259). It runs
+            here, ahead of the sandbox, so every path that can hand back code
+            -- phase one, PR-CoT, refinement, the budget boundary -- is held
+            to it, and the reason reaches repair as the error to fix."""
             verification_evidence: List[Dict[str, Any]] = []
+
+            if baseline_code and code != baseline_code:
+                dropped = symbols.dropped_top_level_names(
+                    baseline_code, code, file_path, files)
+                if dropped:
+                    shown = ", ".join(dropped[:6]) + (" and more" if len(dropped) > 6 else "")
+                    reason = (f"role check: this candidate drops {shown}, which "
+                              f"{Path(file_path).name if file_path else 'the file'} "
+                              f"has now. A replacement must keep every top-level "
+                              f"name the file binds.")
+                    emit("role_check", reason, dropped=dropped)
+                    verification_evidence.append({
+                        "verifier": "incumbent_role", "status": "failed",
+                        "dropped": dropped, "stderr": reason})
+                    return False, "", reason, verification_evidence
 
             def verify_build_if_requested(out="", err=""):
                 if import_comparison is not None:
@@ -1815,25 +1852,54 @@ class V3PipelineService:
         # The adapter is chosen from the artifact alone. The self-test cases
         # play no part in it: they are diagnostics (see verified_sandbox).
         _task = _task_identity(file_path, problem)
-        # The incumbent, measured the same way and kept apart. Only when the
-        # diagnostic sink is on: with capture off this is not built, not
-        # executed and not written, so default behaviour is unchanged. It
-        # enters no live list and no live decision.
-        if capture.enabled and baseline_code:
-            try:
-                _inc = _evaluate_candidate(
-                    file_path, baseline_code,
-                    scoring.smoke_compile_check(
-                        baseline_code, sandbox, language=smoke_language, filename=file_path)[0],
-                    emit, task=_task)
-                capture.note_incumbent(code=baseline_code, record=_inc,
-                                       adapter=_inc["adapter_id"])
-            except Exception as _exc:                  # noqa: BLE001
-                # An incumbent that cannot be evaluated is recorded as
-                # exactly that. Never synthesise a result for it.
-                capture.note_incumbent(
-                    code=baseline_code, record=None, adapter="",
-                    evaluation=f"unevaluated: {str(_exc)[:120]}")
+
+        # ===== THE INCUMBENT =====
+        # The caller's own bytes are a real candidate (#259). They face the
+        # checks every generated candidate faces -- the lens, the sandbox
+        # verification, the contract record, and in phase one the vetoes --
+        # and the lens ranks them with the rest, so a candidate replaces them
+        # only by beating them. They are the EXACT bytes the request carried:
+        # nothing re-types them, and a copy that differs only in whitespace
+        # is never delivered in their place (_without_retypings).
+        #
+        # Until #259 they were only prose in the problem statement. Across 112
+        # recorded sessions V3 replaced the model's file in all 33 of its
+        # deliveries, three of them test files replaced by module code that
+        # ran, tested nothing, and left two runs unable to finish.
+        incumbent = None
+        if baseline_code:
+            incumbent = {"index": INCUMBENT_INDEX, "incumbent": True,
+                         "code": baseline_code, **_lens_view(baseline_code)}
+            inc_passed, inc_out, inc_err, inc_evidence = verified_sandbox(baseline_code)
+            incumbent.update(
+                passed=inc_passed, stdout=inc_out, stderr=inc_err,
+                verification_evidence=inc_evidence,
+                contract_record=_evaluate_candidate(
+                    file_path, baseline_code, inc_passed, emit, task=_task))
+            emit("incumbent",
+                 f"The submitted file: passed={inc_passed}"
+                 + (f" stderr={inc_err[:80]}" if inc_err else ""),
+                 passed=inc_passed, energy=incumbent.get("energy"))
+            capture.note_candidate(
+                role="incumbent", index=INCUMBENT_INDEX, code=baseline_code,
+                accepted=inc_passed, record=incumbent["contract_record"],
+                phase="incumbent", lens=_candidate_lens_payload(incumbent))
+            # The same closure rule as the probe's below, asked first: a
+            # submitted file whose own record closes is already the verified
+            # winner, and nothing generated could outrank it.
+            if inc_passed and _record_closes(incumbent["contract_record"], baseline_code):
+                emit("incumbent_holds",
+                     "The submitted file passed and closes — keeping it")
+                result["passed"] = True
+                result["code"] = baseline_code
+                result["phase_solved"] = "incumbent"
+                result["candidates_generated"] = 1 if probe_code else 0
+                result["total_time_ms"] = (time.time() - start) * 1000
+                result["verification_evidence"] = inc_evidence
+                result["winning_score"] = incumbent.get("energy_norm") or 0.0
+                result["evidence_record"] = incumbent["contract_record"]
+                result["events"] = events
+                return result
 
         probe_result = _evaluate_candidate(
             file_path, probe_code, probe_passed, emit, task=_task)
@@ -1918,6 +1984,12 @@ class V3PipelineService:
         emit("phase1", f"Generating {k} diverse candidates...", k=k)
         candidates = []
 
+        def members():
+            """The selectable pool: the incumbent, when the caller sent one,
+            and every generated candidate. `candidates` stays the generated
+            ones alone, so `k` counts generations and nothing else."""
+            return ([incumbent] if incumbent else []) + candidates
+
         def out_of_budget(reserve_ms: Optional[float] = None) -> bool:
             """True when too little of ATLAS_V3_TIMEOUT is left to start more
             work and still hand back a result.
@@ -1964,14 +2036,17 @@ class V3PipelineService:
             emit("budget_exhausted", reason,
                  candidates=len(candidates),
                  remaining_ms=round(_remaining_budget_ms(start, budget_ms) or 0))
-            pool = [c for c in candidates if not c.get("vetoed_by")]
-            passing = [c for c in pool if c.get("passed")]
+            pool = [c for c in members() if not c.get("vetoed_by")]
+            passing = _without_retypings([c for c in pool if c.get("passed")], emit)
             chosen = None
             if passing:
                 passing.sort(key=energy_rank_key)
                 chosen = passing[0]
                 result["passed"] = True
-                result["phase_solved"] = "budget"
+                if chosen.get("incumbent"):
+                    result["phase_solved"] = "incumbent"
+                else:
+                    result["phase_solved"] = "budget"
             else:
                 # No code rather than an unverified candidate. The caller's
                 # baseline is the model's own write, which is syntax- and
@@ -2131,15 +2206,26 @@ class V3PipelineService:
             result["candidates_generated"] = len(candidates)
 
             # ===== SANDBOX TESTING =====
-            emit("sandbox_test", f"Testing {len(candidates)} candidates...",
-                 candidates=len(candidates))
+            # The incumbent is in the pool from here on: tested once already,
+            # ranked with the rest.
+            pool_members = members()
+            emit("sandbox_test", f"Testing {len(pool_members)} candidates...",
+                 candidates=len(pool_members))
             # Sort by energy (easy first) for early-exit potential; an
             # unscored candidate has no energy and goes last.
             candidates.sort(key=energy_rank_key)
+            pool_members.sort(key=energy_rank_key)
 
             passing = []
-            for c in candidates:
+            for c in pool_members:
                 check_client()
+                if c.get("incumbent"):
+                    # Checked once, above, on its exact bytes; a failure is
+                    # final and it enters repair like any failing candidate.
+                    _capture_pool_member(capture, c, probe_code)
+                    if c.get("passed"):
+                        passing.append(c)
+                    continue
                 if c.get("passed"):
                     # Cached execution result -- do NOT skip evidence. This
                     # `continue` is exactly how candidate zero escaped the
@@ -2178,8 +2264,8 @@ class V3PipelineService:
                          index=c["index"], elapsed_ms=sb_ms,
                          stderr=(stderr or "")[:120])
 
-            emit("sandbox_done", f"{len(passing)}/{len(candidates)} passed",
-                 passed=len(passing), total=len(candidates))
+            emit("sandbox_done", f"{len(passing)}/{len(pool_members)} passed",
+                 passed=len(passing), total=len(pool_members))
 
             # Nothing passed: every candidate failed to execute (or, outside
             # Python, its syntax check) or failed the project's build command.
@@ -2200,15 +2286,15 @@ class V3PipelineService:
             # command is still one that failed it.
             if not passing and self_tests and self_tests.test_cases:
                 agreed = _consensus_winners(
-                    [c for c in candidates if not _failed_a_project_check(c)],
+                    [c for c in pool_members if not _failed_a_project_check(c)],
                     self_tests.test_cases, sandbox, emit, task_input_file)
                 for c in agreed:
                     c["consensus"] = True
                     passing.append(c)
                 if agreed:
                     emit("sandbox_done",
-                         f"0/{len(candidates)} passed; {len(agreed)} agree, selectable by consensus",
-                         passed=0, agreed=len(agreed), total=len(candidates))
+                         f"0/{len(pool_members)} passed; {len(agreed)} agree, selectable by consensus",
+                         passed=0, agreed=len(agreed), total=len(pool_members))
 
             # ===== LENS VETO =====
             # PC-207 alignment fix: hard-reject sandbox-passing candidates whose
@@ -2271,7 +2357,7 @@ class V3PipelineService:
                             f"likely does not implement the task")
                         vetoed.append(c)
                         emit("lens_veto",
-                             f"Candidate {c['index']} sandbox-passed but lens-vetoed "
+                             f"{_who(c)} sandbox-passed but lens-vetoed "
                              f"(gx_min={gx_min:.3f} < {severe:.3f}) — likely a stub",
                              index=c["index"], gx_score_min=gx_min,
                              first_off_rails_idx=per_step.get("first_off_rails_idx", -1))
@@ -2331,7 +2417,7 @@ class V3PipelineService:
                             "would raise NameError at runtime: "
                             + ", ".join(struct["unresolved_calls"][:5]))
                         emit("structural_veto",
-                             f"Candidate {c['index']} sandbox-passed but "
+                             f"{_who(c)} sandbox-passed but "
                              f"{struct['n_unresolved']} unresolved call(s): "
                              f"{', '.join(struct['unresolved_calls'][:3])}",
                              index=c["index"],
@@ -2403,7 +2489,7 @@ class V3PipelineService:
                                 "to no in-scope definition: "
                                 + ", ".join(unresolved[:5]))
                             emit("call_graph_veto",
-                                 f"Candidate {c.get('index')} has unresolved call(s): "
+                                 f"{_who(c)} has unresolved call(s): "
                                  f"{', '.join(unresolved[:3])}",
                                  index=c.get("index"), unresolved=unresolved[:5])
                             print(f"  [call_graph] vetoed cand {c.get('index')} — "
@@ -2415,6 +2501,12 @@ class V3PipelineService:
             # (S* tiebreaking used to run first for 2+ passers; across 118 H200
             # tiebreaks every pair scored 0-0 and 110/110 winners equaled the
             # lens min-energy pick, so it carried zero discriminating signal.)
+            #
+            # The incumbent is ranked like any other candidate (#259). A rule
+            # that kept it on every tie was measured against: in 3 of 23
+            # recorded AoC deliveries the model's own file was wrong yet ran
+            # cleanly, and a lens-ranked fresh candidate was right.
+            passing = _without_retypings(passing, emit)
             if passing:
                 ci_list = [
                     CandidateInfo(c["index"], c["code"], c["energy"],
@@ -2491,16 +2583,18 @@ class V3PipelineService:
                     winner = _candidate_by_index(passing, selected.index)
                     lens_scored = getattr(selected, "energy", None) is not None
                     lens_failure = (winner or {}).get("lens_failure")
+                    named = ("the submitted file" if (winner or {}).get("incumbent")
+                             else f"candidate {selected.index}")
                     if (winner or {}).get("consensus"):
-                        detail = (f"Lens selected candidate {selected.index} from candidates "
+                        detail = (f"Lens selected {named} from candidates "
                                   f"that agree — no candidate passed verification")
                     elif lens_scored:
-                        detail = f"Lens selected candidate {selected.index}"
+                        detail = f"Lens selected {named}"
                     else:
                         # The only verified candidate carries no score. It
                         # is delivered on its sandbox evidence and says so;
                         # a scored candidate would have outranked it.
-                        detail = (f"Selected candidate {selected.index}: verified, "
+                        detail = (f"Selected {named}: verified, "
                                   f"unscored by the lens "
                                   f"({scoring.describe_lens_failure(lens_failure or {})})")
                     emit("selected", detail,
@@ -2513,6 +2607,10 @@ class V3PipelineService:
                         # A phase the proxy's verifiedPhase does not list: the
                         # pick rests on agreement, not on a check it passed.
                         result["phase_solved"] = "consensus"
+                    elif (winner or {}).get("incumbent"):
+                        # The caller's own bytes held. The proxy reads that as
+                        # no proposal, whatever the phase says.
+                        result["phase_solved"] = "incumbent"
                     else:
                         result["phase_solved"] = "phase1"
                     result["total_time_ms"] = (time.time() - start) * 1000
@@ -2545,14 +2643,16 @@ class V3PipelineService:
                     return finish_with_best(
                         "interactive task: baseline meets the compile bar, repair skipped")
             emit("phase3", "All candidates failed — entering repair phase...",
-                 failing=len([c for c in candidates if not c.get("passed")]))
+                 failing=len([c for c in members() if not c.get("passed")]))
 
             failing = [
                 FailingCandidate(
                     index=c["index"], code=c["code"],
                     error_output=c.get("stderr", ""),
                 )
-                for c in candidates if not c.get("passed")
+                # The incumbent too: the caller's own file is a candidate, and
+                # when it fails, it is the likeliest one to repair.
+                for c in sorted(members(), key=energy_rank_key) if not c.get("passed")
             ]
 
             # Repair runs the SAME self-tests phase 0 generated —
@@ -2778,12 +2878,12 @@ class V3PipelineService:
             # Same reasoning the vetoed branch below already used, and the
             # same as the budget boundary: "executes but is wrong" is worse
             # than an honest failure.
-            unverified = [c for c in candidates if not c.get("vetoed_by")]
+            unverified = [c for c in members() if not c.get("vetoed_by")]
             if unverified:
                 emit("fallback_unverified",
                      f"{len(unverified)} candidate(s), none passed verification — "
                      f"leaving the caller's gated baseline in place")
-            elif candidates:
+            elif members():
                 emit("fallback_all_vetoed",
                      "Every candidate was vetoed — returning no code")
             result["total_time_ms"] = (time.time() - start) * 1000
@@ -2807,15 +2907,10 @@ def _build_problem_from_request(
 ) -> str:
     """Build a problem description for the V3 pipeline from a generate request.
 
-    This is the ONLY place `baseline_code` is used. The incumbent becomes
-    prose in the prompt; it receives no adapter, no contract record, no
-    execution, no consensus probe, no lens score, and no place in `passing`
-    or the selection pool. Pool index 0 is the phase-zero probe candidate --
-    a fresh generation -- not the incumbent, whatever the "candidate #0"
-    comments elsewhere say. So a selection that concludes
-    `best_not_closure_eligible` has ranked the V3-generated candidates
-    against each other and has said nothing about whether the winner beats
-    the artifact it would replace.
+    Here the incumbent is prose: the reference the generated candidates work
+    from. It is ALSO a candidate in its own right, with its exact bytes -- the
+    pipeline checks, scores and ranks it beside them (#259) -- and pool index
+    0 is still the phase-zero probe, a fresh generation, not the incumbent.
 
     The user's own request leads, when the caller sends one. Without it the
     pipeline saw only "Create the file X", the project context and the

@@ -54,7 +54,9 @@ def make_service(monkeypatch, candidates):
     monkeypatch.setattr(RuntimeSandbox, "outcomes", {BROKEN: "NameError: missing_name"})
     monkeypatch.setattr(adapters, "SandboxAdapter", RuntimeSandbox)
     monkeypatch.setattr(scoring, "score_candidate_combined", lambda code: dict(scoring.NEUTRAL_COMBINED))
-    monkeypatch.setattr(scoring, "score_candidate", lambda code: (1.0 if code == BROKEN else 4.0, 0.1, False))
+    # The lens prefers the regression; the submitted baseline ranks last.
+    monkeypatch.setattr(scoring, "score_candidate", lambda code: (
+        1.0 if code == BROKEN else 5.0 if code == BASELINE else 4.0, 0.1, False))
     service.plan_search = SimpleNamespace(generate=lambda *a, **kw:
         SimpleNamespace(candidates=candidates, total_tokens=0))
     return service
@@ -72,8 +74,12 @@ def test_pipeline_does_not_select_a_runtime_regression(monkeypatch):
 def test_pipeline_returns_no_replacement_when_every_candidate_regresses(monkeypatch):
     service = make_service(monkeypatch, [BROKEN, BROKEN, BROKEN])
     result = service.run("build a web application", file_path="app.py", baseline_code=BASELINE)
-    assert not result["passed"]
-    assert not result["code"], "the existing proxy fallback must retain its submitted baseline"
+    # #259: the submitted baseline is a candidate and the only one that
+    # imports, so its exact bytes come back -- which the proxy reads as no
+    # replacement, exactly as it read an empty answer before.
+    assert result["code"] == BASELINE
+    assert result["phase_solved"] == "incumbent"
+    assert BROKEN not in (result["code"] or "")
 
 
 def test_pipeline_does_not_call_environment_failure_a_regression(monkeypatch):

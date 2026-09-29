@@ -311,7 +311,8 @@ def test_selection_vocabulary_reaches_telemetry_and_the_envelope(monkeypatch):
 # check the delivered bytes against. These drive each phase through the real
 # run() and assert the envelope describes the exact returned hash.
 
-SUCCESS_PHASES = ("probe", "budget", "phase1", "pr_cot", "refinement")
+SUCCESS_PHASES = ("probe", "budget", "phase1", "pr_cot", "refinement",
+                  "incumbent")
 
 
 def _envelope_for(result):
@@ -418,6 +419,20 @@ def test_refinement_exit_describes_its_delivery(monkeypatch):
     env = _assert_envelope_describes_delivery(result, "refinement")
     assert result["code"] == winning
     assert env["identity"]["candidate_content_hash"] == C.content_hash(winning)
+
+
+def test_incumbent_exit_describes_its_delivery(monkeypatch):
+    """#259: the caller's own stylesheet parses, and a stylesheet closes on
+    syntax, so its exact bytes are the verified winner before anything
+    generated is ranked. They come back unchanged, with their own record."""
+    theirs = "body { color: blue; }\n"
+    service, _ = _service(monkeypatch, task_type="interactive", code=PLAIN_CSS)
+    result = service.run("build the thing", task_id="t", file_path="theme.css",
+                         baseline_code=theirs)
+    env = _assert_envelope_describes_delivery(result, "incumbent")
+    assert result["code"] == theirs
+    assert env["identity"]["candidate_content_hash"] == C.content_hash(theirs)
+    assert env["evaluation"]["closure_eligible"] is True
 
 
 def test_every_successful_exit_is_covered():
@@ -715,6 +730,35 @@ def test_interactive_repair_is_skipped_when_the_baseline_compiles(monkeypatch):
     # Candidates fail the compile smoke; the baseline passes it.
     monkeypatch.setattr(scoring, "smoke_compile_check",
         lambda code, sandbox, language=None, filename="": (code == BASELINE, "ok", ""))
+    repaired = {"n": 0}
+
+    def _repair(*a, **k):
+        repaired["n"] += 1
+        return SimpleNamespace(repairs=[], total_tokens=0)
+    service.pr_cot = SimpleNamespace(repair=_repair)
+
+    result = service.run("build a flask web page for the office",
+                         task_id="t", file_path="app.py", baseline_code=BASELINE)
+
+    stages = [e["stage"] for e in result["events"]]
+    assert "phase3" not in stages, "the repair phase must be skipped"
+    assert repaired["n"] == 0, "PR-CoT repair must not run"
+    # #259: the baseline is a candidate, it passed, and nothing else did, so
+    # its exact bytes are the pick -- the proxy reads that as no proposal.
+    assert result["phase_solved"] == "incumbent"
+    assert result["code"] == BASELINE
+
+
+def test_interactive_repair_is_skipped_when_a_failing_baseline_compiles(monkeypatch):
+    """The baseline fails a check beyond the compile (here the interactive
+    lint), so no candidate passed at all: the compile bar still holds repair
+    back, and nothing is returned in place of the caller's bytes."""
+    BASELINE = "print('a flask app that compiles')\n"
+    service, _calls = _service(monkeypatch, task_type="interactive")
+    monkeypatch.setattr(scoring, "smoke_compile_check",
+        lambda code, sandbox, language=None, filename="": (code == BASELINE, "ok", ""))
+    monkeypatch.setattr(scoring, "interactive_lint",
+                        lambda code: (False, "reads stdin in a loop"))
     repaired = {"n": 0}
 
     def _repair(*a, **k):

@@ -581,16 +581,15 @@ def test_candidate_bytes_reach_no_serialiser_or_emitter():
 
 
 # =====================================================================
-# The incumbent, measured — in a shadow pool that decides nothing.
+# The incumbent is a real candidate (#259).
 #
-# `baseline_code` is the artifact V3 was asked to improve on. It reaches
-# the service as prose in the problem statement and nothing else: no
-# adapter, no contract record, no execution, no place in `passing` or the
-# selection pool. So a selection that concludes best_not_closure_eligible
-# has ranked the generated candidates against each other and said nothing
-# about whether the winner beats what it would replace. These record the
-# incumbent through the SAME adapter->contract path, keep it in a separate
-# pool, and prove the live path is byte-identical either way.
+# `baseline_code` is the caller's own file. Until #259 it reached the service
+# as prose plus a shadow record that decided nothing, so selection ranked the
+# generated candidates against each other and never against the bytes the
+# winner would replace: across 112 recorded sessions V3 replaced the model's
+# file in all 33 of its deliveries. Now its exact bytes are checked like any
+# candidate's, recorded in the pool under their own role, and ranked by the
+# lens with the rest.
 # =====================================================================
 
 INCUMBENT = "def solve(x):\n    return x + 99"
@@ -600,14 +599,27 @@ def _of(records, kind):
     return [r for r in records if r.get("type") == kind]
 
 
+def _incumbent_records(records):
+    return [r for r in _of(records, "candidate_evaluation")
+            if r.get("role") == "incumbent"]
+
+
 def _run_with_incumbent(monkeypatch, tmp_path, *, capture=True,
-                        baseline=INCUMBENT, task_id="inc"):
+                        baseline=INCUMBENT, task_id="inc", energies=None):
     sink = tmp_path / "pool.jsonl"
     if capture:
         monkeypatch.setenv(v3pipeline.CAPTURE_ENV, str(sink))
     else:
         monkeypatch.delenv(v3pipeline.CAPTURE_ENV, raising=False)
     service = _capture_service(monkeypatch)
+    if energies is not None:
+        # One energy per artifact, 1.0 unless named, through both lens calls:
+        # the probe is scored by the combined call, everything else by C(x).
+        monkeypatch.setattr(scoring, "score_candidate",
+                            lambda code: (energies.get(code, 1.0), 0.1, False))
+        monkeypatch.setattr(scoring, "score_candidate_combined",
+                            lambda code: {**scoring.NEUTRAL_COMBINED,
+                                          "cx_energy": energies.get(code, 1.0)})
     result = service.run("add one", task_id=task_id,
                          file_path="/workspace/e2e/solve.py",
                          baseline_code=baseline)
@@ -615,7 +627,7 @@ def _run_with_incumbent(monkeypatch, tmp_path, *, capture=True,
 
 
 def test_the_incumbent_is_evaluated_exactly_once(monkeypatch, tmp_path):
-    """One canonical evaluation, not one per candidate and not zero."""
+    """One canonical evaluation of its exact bytes, not one per visit."""
     calls = []
     real = v3pipeline._evaluate_candidate
     monkeypatch.setattr(v3pipeline, "_evaluate_candidate",
@@ -623,58 +635,66 @@ def test_the_incumbent_is_evaluated_exactly_once(monkeypatch, tmp_path):
                                                    real(fp, code, *a, **k))[1])
     _, sink = _run_with_incumbent(monkeypatch, tmp_path)
     assert calls.count(INCUMBENT) == 1, calls.count(INCUMBENT)
-
-    observations = _of(_capture_records(sink), "incumbent_observation")
-    assert len(observations) == 1
+    assert len(_incumbent_records(_capture_records(sink))) == 1
 
 
 def test_the_incumbent_record_describes_the_exact_baseline_bytes(
         monkeypatch, tmp_path):
     _, sink = _run_with_incumbent(monkeypatch, tmp_path)
-    obs = _of(_capture_records(sink), "incumbent_observation")[0]
+    obs = _incumbent_records(_capture_records(sink))[0]
     raw = base64.b64decode(obs["code_b64"])
     assert raw.decode() == INCUMBENT
     assert obs["code_sha256"] == hashlib.sha256(raw).hexdigest()
     assert obs["code_bytes"] == len(raw)
     assert obs["contract_record"]["candidate_content_hash"] == obs["code_sha256"]
-    assert obs["role"] == "incumbent_baseline"
-    assert obs["pool"] == "shadow_comparison"
-    assert obs["influences_live_selection"] is False
+    assert obs["candidate_index"] == v3pipeline.INCUMBENT_INDEX
 
 
 def test_the_incumbent_shares_the_task_identity_of_the_candidates(
         monkeypatch, tmp_path):
-    """Same contract, artifact scope and evaluation context — otherwise the
-    two records are incomparable and the comparison is meaningless."""
+    """Same contract, artifact scope and evaluation context -- otherwise the
+    records are incomparable and ranking them means nothing."""
     _, sink = _run_with_incumbent(monkeypatch, tmp_path)
     records = _capture_records(sink)
-    obs = _of(records, "incumbent_observation")[0]["contract_record"]
+    obs = _incumbent_records(records)[0]["contract_record"]
     cand = next(r["contract_record"] for r in _of(records, "candidate_evaluation")
-                if r.get("contract_record"))
+                if r.get("contract_record") and r["role"] != "incumbent")
     for field in ("contract_id", "contract_version", "artifact_scope",
                   "evaluation_context_hash"):
         assert obs[field] == cand[field], field
     assert obs["candidate_content_hash"] != cand["candidate_content_hash"]
 
 
-def test_the_incumbent_never_enters_a_live_list_or_decision(
+def test_the_incumbent_is_in_the_live_pool_and_holds_an_exact_tie(
         monkeypatch, tmp_path):
-    result, sink = _run_with_incumbent(monkeypatch, tmp_path)
+    """Every rival scores the same energy: the exact bytes stand."""
+    result, sink = _run_with_incumbent(monkeypatch, tmp_path, energies={})
     records = _capture_records(sink)
-    obs = _of(records, "incumbent_observation")[0]
-
-    # Not the returned code, not a pool member, not the selection.
-    assert result["code"] != INCUMBENT
+    obs = _incumbent_records(records)[0]
     summary = _of(records, "selection_summary")[0]
-    assert obs["code_sha256"] not in summary["pool"]
-    assert summary["service_returned_candidate_hash"] != obs["code_sha256"]
-    assert summary["verified_index"] is None
-    # Not in the candidate pool capture either: it has its own record type.
-    assert all(r["code_sha256"] != obs["code_sha256"]
-               for r in _of(records, "candidate_evaluation"))
-    # And nothing about it reaches the envelope the proxy reads.
-    assert result.get("evidence_record", {}).get(
-        "candidate_content_hash") != obs["code_sha256"]
+    assert obs["code_sha256"] in summary["pool"]
+    assert result["code"] == INCUMBENT
+    assert result["phase_solved"] == "incumbent"
+    assert result["passed"] is True
+    assert summary["service_returned_candidate_hash"] == obs["code_sha256"]
+    assert result["evidence_record"]["candidate_content_hash"] == obs["code_sha256"]
+
+
+def test_a_candidate_the_lens_ranks_higher_replaces_the_incumbent(
+        monkeypatch, tmp_path):
+    """Ranked like any candidate: lower energy wins, whoever wrote it."""
+    result, _ = _run_with_incumbent(monkeypatch, tmp_path,
+                                    energies={INCUMBENT: 5.0, CAP_ONE: 0.5})
+    assert result["code"] == CAP_ONE
+    assert result["phase_solved"] == "phase1"
+
+
+def test_the_incumbent_ranks_first_when_the_lens_prefers_it(
+        monkeypatch, tmp_path):
+    result, _ = _run_with_incumbent(monkeypatch, tmp_path,
+                                    energies={INCUMBENT: 0.2})
+    assert result["code"] == INCUMBENT
+    assert result["phase_solved"] == "incumbent"
 
 
 def test_capture_off_leaves_the_live_path_byte_identical(monkeypatch, tmp_path):
@@ -692,56 +712,30 @@ def test_capture_off_leaves_the_live_path_byte_identical(monkeypatch, tmp_path):
         [(e.get("stage"), e.get("detail")) for e in on["events"]]
 
 
-def test_capture_off_evaluates_no_incumbent_at_all(monkeypatch, tmp_path):
-    """Off means the work is not done, not that its output is discarded."""
+def test_capture_off_still_checks_the_incumbent(monkeypatch, tmp_path):
+    """The incumbent is live: the diagnostic being off changes nothing
+    about it, and still writes nothing."""
     calls = []
     real = v3pipeline._evaluate_candidate
     monkeypatch.setattr(v3pipeline, "_evaluate_candidate",
                         lambda fp, code, *a, **k: (calls.append(code),
                                                    real(fp, code, *a, **k))[1])
     _run_with_incumbent(monkeypatch, tmp_path, capture=False)
-    assert INCUMBENT not in calls
+    assert INCUMBENT in calls
     assert list(tmp_path.iterdir()) == []
-
-
-def test_an_unevaluable_incumbent_is_recorded_truthfully(monkeypatch, tmp_path):
-    """Never synthesise a result for it."""
-    real = v3pipeline._evaluate_candidate
-
-    def _boom_on_incumbent(fp, code, *a, **k):
-        if code == INCUMBENT:
-            raise RuntimeError("adapter unavailable")
-        return real(fp, code, *a, **k)
-
-    monkeypatch.setattr(v3pipeline, "_evaluate_candidate", _boom_on_incumbent)
-    sink = tmp_path / "pool.jsonl"
-    monkeypatch.setenv(v3pipeline.CAPTURE_ENV, str(sink))
-    service = _capture_service(monkeypatch)
-    result = service.run("add one", task_id="inc-broken",
-                         file_path="/workspace/e2e/solve.py",
-                         baseline_code=INCUMBENT)
-    # The run itself is unaffected: an incumbent that cannot be measured is
-    # a gap in the diagnostic, never a change to the pipeline.
-    assert result["phase_solved"] != "none" or result["code"] is not None
-    obs = _of(_capture_records(sink), "incumbent_observation")
-    assert len(obs) == 1
-    assert obs[0]["contract_record"] is None
-    assert obs[0]["evaluation"].startswith("unevaluated:")
 
 
 def test_the_three_roles_stay_distinct(monkeypatch, tmp_path):
     """Incumbent, phase-zero probe and generated alternatives are three
     different artifacts and three different names."""
     _, sink = _run_with_incumbent(monkeypatch, tmp_path)
-    records = _capture_records(sink)
-    incumbent = {r["code_sha256"] for r in _of(records, "incumbent_observation")}
-    probe = {r["code_sha256"] for r in _of(records, "candidate_evaluation")
-             if r["role"] == "candidate_zero"}
-    generated = {r["code_sha256"] for r in _of(records, "candidate_evaluation")
-                 if r["role"] == "generated"}
-    assert incumbent and probe and generated
-    assert not (incumbent & probe) and not (incumbent & generated)
-    assert not (probe & generated)
+    records = _of(_capture_records(sink), "candidate_evaluation")
+    by_role = {role: {r["code_sha256"] for r in records if r["role"] == role}
+               for role in ("incumbent", "candidate_zero", "generated")}
+    assert all(by_role.values()), by_role
+    assert not (by_role["incumbent"] & by_role["candidate_zero"])
+    assert not (by_role["incumbent"] & by_role["generated"])
+    assert not (by_role["candidate_zero"] & by_role["generated"])
 
 
 def test_no_new_field_reaches_any_public_surface():

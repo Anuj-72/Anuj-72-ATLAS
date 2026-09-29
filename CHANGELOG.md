@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Changed: V3 ranks the model's own file as a candidate, and keeps its role
+
+V3 used the model's file only as prose in its prompt, never as a candidate,
+so its winner replaced the model's file whenever anything passed: in 33 of
+33 deliveries across 112 recorded sessions. One of those replacements put
+module code in place of a test file. The module code ran, tested nothing,
+and left the run unable to finish.
+
+- The model's exact bytes are now a candidate. They face the same checks as
+  V3's own candidates, and the lens ranks them with the rest. V3 replaces
+  them only with a candidate the lens ranks higher.
+- A replacement must keep the file's role: every top-level def, class and
+  assignment name, and every name the file imports from another project
+  file. A candidate that drops one fails verification, and repair is told
+  which names it dropped.
+- A candidate that differs from the model's file only in whitespace never
+  replaces it.
+- When the model's bytes win, V3 returns them unchanged with
+  `phase_solved: "incumbent"`, and the proxy writes them as the model's own.
+
 ### Changed: the TUI and VS Code show whether a run completed, and why
 
 The `done` event carries `status` (completed, incomplete, stopped,

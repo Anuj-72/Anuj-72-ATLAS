@@ -262,10 +262,12 @@ class V3Handler(BaseHTTPRequestHandler):
 
         Request format (V3GenerateRequest):
             file_path: str          — target file path
-            baseline_code: str      — incumbent_baseline: the caller's own
-                                      content. It becomes prose in the problem
-                                      statement and is NOT a V3 candidate; pool
-                                      index 0 is the phase-zero probe candidate
+            baseline_code: str      — the incumbent: the caller's own content.
+                                      Prose in the problem statement, and also
+                                      a real candidate with its exact bytes:
+                                      checked, scored and ranked with the
+                                      generated ones, and every replacement
+                                      must keep its top-level names (#259)
             project_context: dict   — other files in project {path: content}
             framework: str          — detected framework
             build_command: str      — build verification command
@@ -287,7 +289,9 @@ class V3Handler(BaseHTTPRequestHandler):
                                       evidence envelope says what was shown.
             phase_solved: str       — how it was chosen: probe, phase1, pr_cot,
                                       refinement or budget after a check it
-                                      passed, consensus by agreement alone
+                                      passed, consensus by agreement alone,
+                                      incumbent when the caller's own bytes
+                                      held (code is then those bytes)
             candidates_tested: int
             winning_score: float
             total_tokens: int
@@ -373,8 +377,8 @@ class V3Handler(BaseHTTPRequestHandler):
                 build_command=build_command,
                 working_dir=working_dir or "/workspace",
                 # The incumbent's exact request bytes, before
-                # _build_problem_from_request wrapped them in prose. Read
-                # only by the diagnostic capture.
+                # _build_problem_from_request wrapped them in prose: the
+                # pipeline checks and ranks these bytes as a candidate.
                 baseline_code=baseline_code,
                 budget_ms=budget_ms,
             )
