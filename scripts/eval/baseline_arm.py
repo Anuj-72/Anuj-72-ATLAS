@@ -167,11 +167,17 @@ def fit_context(messages: list, context_tokens: int) -> list:
     return fitted
 
 
-def context_tokens_of(llama_url: str, get=None) -> int:
-    """The model server's context window, from its /props."""
-    get = get or get_json
-    props = get(f"{llama_url}/props", 30)
-    return int(props["default_generation_settings"]["n_ctx"])
+def server_props(llama_url: str, get=None) -> dict:
+    """The model server's /props: its context window and what it serves."""
+    return (get or get_json)(f"{llama_url}/props", 30)
+
+
+def model_identity(props: dict) -> dict:
+    """What the model server says it serves, as far as /props tells. n_ctx is
+    the context window; the rest names the model and the server build."""
+    settings = props.get("default_generation_settings") or {}
+    return {"n_ctx": int(settings["n_ctx"]), "model": settings.get("model"),
+            "model_path": props.get("model_path"), "build_info": props.get("build_info")}
 
 
 def post_json(url: str, body: dict, timeout: float) -> dict:

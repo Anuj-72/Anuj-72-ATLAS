@@ -49,6 +49,7 @@ def arm_summary(records: list) -> dict:
         "endings_of_failures": dict(Counter(f"{r['status']}/{r['reason']}"
                                             for r in graded if r["grade"] != PASS)),
         "tasks_whose_repeats_disagree": _disagreeing_tasks(graded),
+        "pass_rate_by_kind": _by_kind(graded),
     }
 
 
@@ -66,6 +67,16 @@ def _rate(k: int, n: int) -> dict:
     lo, hi = wilson(k, n)
     return {"k": k, "n": n, "rate": round(k / n, 4) if n else None,
             "ci95": [round(lo, 4), round(hi, 4)]}
+
+
+def _by_kind(graded: list) -> dict:
+    """Pass rates per suite category. A kind is a label the suite gives to
+    several tasks, never a task's name."""
+    kinds = defaultdict(list)
+    for r in graded:
+        kinds[r.get("kind") or "unlabelled"].append(r)
+    return {k: _rate(sum(1 for r in rs if r["grade"] == PASS), len(rs))
+            for k, rs in sorted(kinds.items())}
 
 
 def _disagreeing_tasks(records: list) -> int:

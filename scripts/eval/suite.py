@@ -22,6 +22,8 @@ class Task:
     runtime: str
     network: bool
     grader_timeout_s: int
+    kind: str = ""  # the suite's category; report gives pass rates by kind
+    lang: str = ""
 
     @property
     def prompt(self) -> str:
@@ -43,6 +45,11 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def suite_digest(root: Path) -> str:
+    """The SHA-256 of suite.json: which frozen suite a record measured."""
+    return sha256_file(root / "suite.json")
+
+
 def load_suite(root: Path) -> list[Task]:
     """Every task in the suite, after each file is checked against suite.json."""
     manifest = _read_json(root / "suite.json")
@@ -59,7 +66,8 @@ def _load_task(task_dir: Path, entry: dict) -> Task:
     task = Task(id=str(meta.get("id", "")), dir=task_dir,
                 mode=meta.get("mode", "work"), runtime=meta.get("runtime", ""),
                 network=meta.get("network", False),
-                grader_timeout_s=meta.get("grader_timeout_s", 120))
+                grader_timeout_s=meta.get("grader_timeout_s", 120),
+                kind=meta.get("kind", ""), lang=meta.get("lang", ""))
     _check_task(task, entry["id"])
     return task
 
@@ -91,6 +99,8 @@ def _check_task(task: Task, listed_id: str) -> None:
         problems.append("network must be true or false")
     if not isinstance(task.grader_timeout_s, int) or task.grader_timeout_s <= 0:
         problems.append("grader_timeout_s must be a positive whole number")
+    if not isinstance(task.kind, str) or not isinstance(task.lang, str):
+        problems.append("kind and lang must be strings")
     for need in ("prompt.md", "grade"):
         if not (task.dir / need).is_file():
             problems.append(f"no {need}")

@@ -17,6 +17,7 @@ import atlas_arm  # noqa: E402
 import baseline_arm as B  # noqa: E402
 import driver  # noqa: E402
 import grading as G  # noqa: E402
+import provenance as P  # noqa: E402
 import report as R  # noqa: E402
 import suite as S  # noqa: E402
 from result import ArmResult  # noqa: E402
@@ -28,7 +29,8 @@ def make_suite(root: Path, runtime="python3.13", extra=None) -> Path:
     task = root / "tasks" / "t01"
     files = {
         "task.json": json.dumps({"id": "t01", "mode": "work", "runtime": runtime,
-                                 "network": False, "grader_timeout_s": 60}),
+                                 "network": False, "grader_timeout_s": 60,
+                                 "kind": "cli", "lang": "python"}),
         "prompt.md": "Write answer.txt containing 42.\n",
         "grade": "#!/bin/sh\ngrep -q 42 answer.txt\n",
         "seed/README": "toy\n",
@@ -296,6 +298,17 @@ def test_the_summary_counts_false_completions_and_keeps_no_task_text():
     assert "t1" not in json.dumps(s) and "t2" not in json.dumps(s)
 
 
+def test_the_report_gives_pass_rates_by_kind():
+    recs = [dict(_rec("t1", 1, "completed", G.PASS), kind="cli"),
+            dict(_rec("t2", 1, "completed", G.FAIL), kind="cli"),
+            dict(_rec("t3", 1, "completed", G.PASS), kind="web"),
+            _rec("t4", 1, "completed", G.PASS)]
+    by_kind = R.arm_summary(recs)["pass_rate_by_kind"]
+    assert {k: (v["k"], v["n"]) for k, v in by_kind.items()} == {
+        "cli": (1, 2), "web": (1, 1), "unlabelled": (1, 1)}
+    assert "t1" not in json.dumps(by_kind)
+
+
 def test_the_arms_are_compared_with_an_interval():
     a = [_rec(f"t{i}", 1, "completed", G.PASS if i < 8 else G.FAIL) for i in range(10)]
     b = [_rec(f"t{i}", 1, "completed", G.PASS if i < 4 else G.FAIL) for i in range(10)]
@@ -320,20 +333,115 @@ def test_the_development_stack_is_never_measured(tmp_path):
     assert problems and "development stack" in problems[0]
 
 
-def test_a_run_records_each_session_and_its_grade(tmp_path, monkeypatch):
+class FakeHost:
+    """docker, git and HTTP answers for a stack that is up: the grader image
+    resolves, the sandbox is on one network, and the proxy and model server
+    answer. Nothing here starts a container or reaches a network."""
+
+    def __init__(self, internal="false", timeout=600):
+        self.internal, self.timeout = internal, timeout
+
+    def run(self, argv, **kw):
+        joined = " ".join(argv)
+        out = {"docker image inspect": "sha256:" + "ab" * 32,
+               "rev-parse HEAD": "0123456789abcdef0123456789abcdef01234567",
+               "status --porcelain": "",
+               "docker ps": "cid1",
+               "docker inspect": "atlaseval_sandbox-net",
+               "docker network inspect": self.internal}
+        text = next((v for k, v in out.items() if k in joined), "")
+
+        class R:
+            returncode, stdout, stderr = 0, text + "\n", ""
+        return R()
+
+    def get(self, url, timeout):
+        if url.endswith("/version"):
+            return {"api_version": "1.0.0", "session_timeout_s": self.timeout}
+        return {"default_generation_settings": {"n_ctx": 32768, "model": "gemma"},
+                "model_path": "/models/gemma.gguf", "build_info": "b6000"}
+
+
+def _run_with(monkeypatch, tmp_path, host, arm="baseline", extra=()):
     suite = make_suite(tmp_path / "s")
     out = tmp_path / "records.jsonl"
     monkeypatch.setattr(driver, "stack_identity", lambda args: ({"commit": "b0e6013"}, []))
+    monkeypatch.setattr(driver, "run_context",
+                        lambda args, root: P.run_context(args, root, run=host.run, get=host.get))
+    monkeypatch.setattr(driver, "run_baseline",
+                        lambda *a, **k: ArmResult("completed", "done", 9.0, 3, 500))
     monkeypatch.setattr(driver, "run_atlas",
                         lambda *a, **k: ArmResult("completed", "deliverables_demonstrated", 9.0, 3, 500))
-    monkeypatch.setattr(driver, "grade", lambda task, ws, image: G.Grade(G.PASS, "ok"))
-    code = driver.main(["run", str(suite), "--arm", "atlas", "--out", str(out), "--image", "img",
+    monkeypatch.setattr(driver, "grade",
+                        lambda task, ws, image: G.Grade(G.PASS, "ok", f"ok\ngraded with {image}\n"))
+    code = driver.main(["run", str(suite), "--arm", arm, "--out", str(out), "--image", "sandbox:eval",
                         "--compose-project", "atlaseval", "--workspace-root", str(tmp_path / "w"),
-                        "--repeats", "2", "--commit", "b0e6013"])
-    recs = [json.loads(line) for line in out.read_text().splitlines()]
+                        "--repeats", "2", "--commit", "b0e6013", *extra])
+    recs = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
+    return code, recs, suite
+
+
+def test_a_record_ties_its_result_to_suite_image_session_and_model(tmp_path, monkeypatch):
+    """#275: every field that ties a result to the frozen suite, the grader
+    image, the session, the driver and the model."""
+    code, recs, suite = _run_with(monkeypatch, tmp_path, FakeHost())
     assert code == 0 and len(recs) == 2
-    assert recs[0]["grade"] == G.PASS and recs[0]["stack"] == {"commit": "b0e6013"}
+    r = recs[0]
+    assert r["suite_sha256"] == S.sha256_file(suite / "suite.json")
+    assert (r["kind"], r["lang"], r["task_network"]) == ("cli", "python", False)
+    assert r["grader_image"] == {"ref": "sandbox:eval", "id": "sha256:" + "ab" * 32}
+    assert "graded with sha256:" in r["grade_output"]     # graded by ID, whole output kept
+    assert r["subdir"].startswith("eval-baseline-") and r["subdir"] != recs[1]["subdir"]
+    assert r["started_utc"].endswith("Z") and "T" in r["started_utc"]
+    assert r["sandbox_network"] == {"egress": True, "networks": {"atlaseval_sandbox-net": False}}
+    assert r["driver"] == {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": False}
+    assert r["context_tokens"] == 32768
+    assert r["model"] == {"n_ctx": 32768, "model": "gemma",
+                          "model_path": "/models/gemma.gguf", "build_info": "b6000"}
+    assert r["session_timeout_s"] == 600 and r["stack"] == {"commit": "b0e6013"}
     assert (tmp_path / "w").is_dir() and len(list((tmp_path / "w").iterdir())) == 2
+
+
+def test_a_budget_that_is_not_the_stacks_is_refused(tmp_path, monkeypatch):
+    code, recs, _ = _run_with(monkeypatch, tmp_path, FakeHost(timeout=900))
+    assert code == 2 and recs == []
+
+
+def test_an_older_proxy_that_reports_no_timeout_is_recorded_as_such(tmp_path, monkeypatch):
+    code, recs, _ = _run_with(monkeypatch, tmp_path, FakeHost(timeout=None), arm="atlas")
+    assert code == 0 and recs[0]["session_timeout_s"] is None and "model" not in recs[0]
+
+
+def test_an_internal_sandbox_network_has_no_egress():
+    for internal, want in (("true", False), ("false", True)):
+        host = FakeHost(internal=internal)
+        assert P.sandbox_network("atlaseval", run=host.run)["egress"] is want
+
+    def none_mode(argv, **kw):
+        class R:
+            returncode, stderr = 0, ""
+            stdout = "cid1\n" if argv[1] == "ps" else "none\n"
+        return R()
+    assert P.sandbox_network("atlaseval", run=none_mode) == {"egress": False, "networks": {"none": True}}
+
+
+def test_a_grader_image_docker_does_not_know_is_refused_before_any_check(tmp_path, monkeypatch):
+    def unknown(argv, **kw):
+        class R:
+            returncode, stdout, stderr = 1, "", "No such image"
+        return R()
+    assert G.resolve_image("sandbox:gone", run=unknown) == ""
+    graded = []
+    monkeypatch.setattr(driver, "resolve_image", lambda image: "")
+    monkeypatch.setattr(driver, "check_controls", lambda t, image: graded.append(image) or [])
+    assert driver.main(["check", str(make_suite(tmp_path)), "--image", "sandbox:gone"]) == 2
+    assert graded == []
+
+
+def test_the_grader_output_is_kept_whole_up_to_the_cap():
+    assert G.full_output("a\nb\n", "warn\n") == "a\nb\n\n[stderr]\nwarn\n"
+    big = G.full_output("x" * (G.OUTPUT_CAP + 5), "")
+    assert big.startswith("x" * 10) and big.endswith(f"[cut: the grader wrote {G.OUTPUT_CAP + 5} characters]")
 
 
 def test_an_unknown_task_id_is_refused(tmp_path):

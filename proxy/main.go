@@ -1170,6 +1170,7 @@ func writeError(w http.ResponseWriter, status int, code ErrorCode,
 
 func handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	total, _ := sessionBudget()
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"api_version":      APIVersion,
 		"protocol_version": ProtocolVersion,
@@ -1178,6 +1179,8 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		// it: two installs of one model can differ here and behave
 		// differently.
 		"grammar_mode": effectiveGrammarMode(),
+		// The session limit a measurement's budget has to equal.
+		"session_timeout_s": int(total / time.Second),
 	})
 }
 

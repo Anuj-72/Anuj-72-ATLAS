@@ -4153,6 +4153,26 @@ func TestSyntaxRegistryOwnsExecutability(t *testing.T) {
 	}
 }
 
+// /version reports the session limit, so a measurement can check that its
+// budget is the stack's own (#275).
+func TestVersionReportsTheSessionTimeout(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want float64
+	}{{"", 600}, {"900", 900}, {"not-a-number", 600}} {
+		t.Setenv("ATLAS_AGENT_SESSION_TIMEOUT_SEC", c.env)
+		rec := httptest.NewRecorder()
+		handleVersion(rec, httptest.NewRequest("GET", "/version", nil))
+		var body map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["session_timeout_s"] != c.want {
+			t.Errorf("ATLAS_AGENT_SESSION_TIMEOUT_SEC=%q: /version says %v, want %v", c.env, body["session_timeout_s"], c.want)
+		}
+	}
+}
+
 // /version reports the grammar mode this process applies, so a measurement
 // can record the configuration it ran against.
 func TestVersionReportsTheGrammarMode(t *testing.T) {

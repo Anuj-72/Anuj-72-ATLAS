@@ -11,12 +11,14 @@ from typing import Optional
 
 PASS, FAIL, GRADER_ERROR = "pass", "fail", "grader_error"
 TIMEOUT_EXIT = 124  # what coreutils `timeout` exits with
+OUTPUT_CAP = 1_000_000  # characters of grader output kept per session
 
 
 @dataclass(frozen=True)
 class Grade:
-    outcome: str  # PASS, FAIL or GRADER_ERROR
-    reason: str   # the grader's first line, or why it could not grade
+    outcome: str      # PASS, FAIL or GRADER_ERROR
+    reason: str       # the grader's first line, or why it could not grade
+    output: str = ""  # the grader's whole output, for the private record
 
 
 def build_workspace(task, dest: Path, overlay: Optional[Path] = None) -> None:
@@ -44,7 +46,28 @@ def grade(task, workspace: Path, image: str, run=subprocess.run) -> Grade:
             return Grade(GRADER_ERROR, f"the grader container outlived {task.grader_timeout_s} s")
         except OSError as e:
             return Grade(GRADER_ERROR, f"the grader could not start: {e}")
-    return outcome_of(p.returncode, p.stdout, p.stderr, task.grader_timeout_s)
+    g = outcome_of(p.returncode, p.stdout, p.stderr, task.grader_timeout_s)
+    return Grade(g.outcome, g.reason, full_output(p.stdout, p.stderr))
+
+
+def full_output(stdout: str, stderr: str) -> str:
+    """stdout, then stderr under a marker, cut at OUTPUT_CAP with a note."""
+    text = (stdout or "") + (f"\n[stderr]\n{stderr}" if stderr else "")
+    if len(text) > OUTPUT_CAP:
+        return text[:OUTPUT_CAP] + f"\n[cut: the grader wrote {len(text)} characters]"
+    return text
+
+
+def resolve_image(image: str, run=subprocess.run) -> str:
+    """The image's content ID (sha256:...), so every grade in a block uses one
+    image even if its tag moves; "" when docker does not know it."""
+    try:
+        p = run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    out = (p.stdout or "").strip()
+    return out if p.returncode == 0 and out.startswith("sha256:") else ""
 
 
 def grader_argv(task, copy: Path, image: str) -> list:

@@ -1172,12 +1172,13 @@ curl http://localhost:8080/health
 ## Versioning and error codes
 
 `GET /version` returns the API version, the SSE protocol version, the
-full error-code set, and the tool-call grammar mode this proxy applies
-(`strict` or `loose`, from `ATLAS_GRAMMAR_MODE`), so a measurement can
+full error-code set, the tool-call grammar mode this proxy applies
+(`strict` or `loose`, from `ATLAS_GRAMMAR_MODE`), and the session limit in
+seconds (`ATLAS_AGENT_SESSION_TIMEOUT_SEC`, default 600), so a measurement can
 record the configuration it ran against:
 
 ```json
-{"api_version": "1.0.0", "protocol_version": 1, "error_codes": [...], "grammar_mode": "strict"}
+{"api_version": "1.0.0", "protocol_version": 1, "error_codes": [...], "grammar_mode": "strict", "session_timeout_s": 600}
 ```
 
 `api_version` follows semver (minor = additive, major = breaking).

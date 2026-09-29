@@ -23,8 +23,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from atlas_arm import run_atlas  # noqa: E402
-from baseline_arm import Workspace, context_tokens_of, run_baseline  # noqa: E402
-from grading import build_workspace, check_controls, grade  # noqa: E402
+from baseline_arm import Workspace, run_baseline  # noqa: E402
+from grading import build_workspace, check_controls, grade, resolve_image  # noqa: E402
+from provenance import run_context  # noqa: E402
 from report import arm_summary, compare  # noqa: E402
 from suite import SuiteError, load_suite  # noqa: E402
 
@@ -44,7 +45,11 @@ def main(argv=None) -> int:
 
 def cmd_check(args) -> int:
     """Every grader's controls must separate before any run."""
-    problems = [p for t in load_suite(Path(args.suite)) for p in check_controls(t, args.image)]
+    image_id = resolve_image(args.image)
+    if refused([] if image_id else [f"docker cannot resolve the grader image {args.image!r}"]):
+        return 2
+    print(f"grader image {args.image} = {image_id}")
+    problems = [p for t in load_suite(Path(args.suite)) for p in check_controls(t, image_id)]
     for p in problems:
         print(f"control: {p}")
     print("controls separate" if not problems else f"{len(problems)} control problem(s)")
@@ -52,19 +57,19 @@ def cmd_check(args) -> int:
 
 
 def cmd_run(args) -> int:
-    tasks = select(load_suite(Path(args.suite)), args.tasks)
+    suite_root = Path(args.suite)
+    tasks = select(load_suite(suite_root), args.tasks)
     identity, problems = stack_identity(args)
-    for p in problems:
-        print(f"error: {p}", file=sys.stderr)
-    if problems:
+    if refused(problems):
         return 2
-    if args.arm == "baseline" and not args.context_tokens:
-        args.context_tokens = context_tokens_of(args.llama_url)
+    context, problems = run_context(args, suite_root)
+    if refused(problems):
+        return 2
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     with open(args.out, "a") as out:
         for rep in range(1, args.repeats + 1):
             for task in tasks:
-                record = run_one(task, rep, args, identity, stamp)
+                record = run_one(task, rep, args, identity, stamp, context)
                 out.write(json.dumps(record) + "\n")
                 out.flush()
                 print(f"{task.id} r{rep} {args.arm}: {record['status']} / {record['grade']}", flush=True)
@@ -80,11 +85,12 @@ def cmd_report(args) -> int:
     return 0
 
 
-def run_one(task, rep: int, args, identity: dict, stamp: str) -> dict:
+def run_one(task, rep: int, args, identity: dict, stamp: str, context: dict) -> dict:
     """A fresh workspace, one session in the arm, then the grade."""
     subdir = f"eval-{args.arm}-{stamp}-{task.id}-r{rep}"
     host = Path(args.workspace_root) / subdir
     build_workspace(task, host)
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if args.arm == "atlas":
         # The stack's own session timeout ends the session; this is a backstop.
         result = run_atlas(task, args.proxy_url, subdir, subdir, int(args.budget_s) + 180)
@@ -92,11 +98,19 @@ def run_one(task, rep: int, args, identity: dict, stamp: str) -> dict:
         ws = Workspace(host, f"{args.workspace_mount}/{subdir}")
         result = run_baseline(task, ws, args.llama_url, args.sandbox_url,
                               args.budget_s, args.context_tokens)
-    g = grade(task, host, args.image)
-    return {"arm": args.arm, "task": task.id, "rep": rep, "status": result.status,
-            "reason": result.reason, "turns": result.turns, "tokens": result.tokens,
-            "wall_s": result.wall_s, "grade": g.outcome, "grade_reason": g.reason,
-            "budget_s": args.budget_s, "stack": identity}
+    g = grade(task, host, context["grader_image"]["id"])
+    return dict(context, arm=args.arm, task=task.id, kind=task.kind, lang=task.lang,
+                task_network=task.network, rep=rep, subdir=subdir, started_utc=started,
+                status=result.status, reason=result.reason, turns=result.turns,
+                tokens=result.tokens, wall_s=result.wall_s, grade=g.outcome,
+                grade_reason=g.reason, grade_output=g.output, budget_s=args.budget_s,
+                stack=identity)
+
+
+def refused(problems: list) -> bool:
+    for p in problems:
+        print(f"error: {p}", file=sys.stderr)
+    return bool(problems)
 
 
 def stack_identity(args) -> tuple:

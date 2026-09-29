@@ -16,6 +16,13 @@ of its layers.
   whose pass and fail controls do not separate.
 - A run refuses the development stack and a stack it cannot tie to one
   commit.
+- Each record ties its result to the frozen suite (the SHA-256 of
+  `suite.json`), the grader image (by ID), the session (start time and
+  workspace), the driver's own commit, the sandbox's network state and, on
+  the baseline arm, the model server's context window and identity. It
+  keeps the grader's whole output. `report` gives pass rates by task kind.
+- `GET /version` reports `session_timeout_s`, and a run refuses a
+  `--budget-s` that differs from it.
 
 The contract is in `docs/EVAL_INTERFACE.md`.
 
