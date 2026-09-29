@@ -117,14 +117,9 @@ def test_editing_an_existing_file_is_not_penalised():
     assert not any("already exist" in r for r in reasons), reasons
 
 
-def test_the_existing_file_set_reads_the_workspace(tmp_path):
-    (tmp_path / "input.txt").write_text("199\n200\n")
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "mod.py").write_text("x = 1\n")
-    found = v3main._existing_workspace_files(str(tmp_path), {"ctx_only.py": "y = 2"})
-    assert "input.txt" in found
-    assert "sub/mod.py" in found
-    assert "ctx_only.py" in found      # what the proxy shipped counts too
+def test_the_existing_file_set_is_the_proxy_listing_and_the_context():
+    found = v3main._known_files({"ctx_only.py": "y = 2"}, ["./input.txt", "sub/mod.py"])
+    assert found == {"ctx_only.py", "input.txt", "sub/mod.py"}
 
 
 def test_the_prompt_names_existing_files_so_no_candidate_proposes_creating_them():

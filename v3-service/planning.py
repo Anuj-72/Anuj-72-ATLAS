@@ -191,19 +191,10 @@ def _verify_step_verifies(action: str) -> bool:
 _CREATE_ACTIONS = ("write_file", "create", "generate")
 
 
-def _existing_workspace_files(working_dir: str, project_context: Dict[str, str]) -> set:
-    """Relative paths already present, from the workspace and the context the
-    proxy shipped. Best-effort: an unreadable directory yields what context
-    knows, and the check simply does less."""
-    found = {k.lstrip("./") for k in (project_context or {})}
-    if working_dir and os.path.isdir(working_dir):
-        for root, dirs, files in os.walk(working_dir):
-            dirs[:] = [d for d in dirs if d not in
-                       (".git", "node_modules", "__pycache__", ".venv")]
-            for f in files:
-                rel = os.path.relpath(os.path.join(root, f), working_dir)
-                found.add(rel.lstrip("./"))
-    return found
+def _known_files(project_context: Dict[str, str], existing_files: Optional[List[str]]) -> set:
+    """Relative paths already present: the proxy's listing and the context it
+    shipped. This service has no workspace mount, so it lists no directory."""
+    return {f.lstrip("./") for f in [*(project_context or {}), *(existing_files or [])]}
 
 
 
@@ -499,14 +490,11 @@ def generate_plan(
     # to the request-ID ContextVar, so an unset identity here would strip
     # attribution off every /v3/plan generation.
     llm.request_identity = request_identity
-    # What is already on disk. The proxy sends the listing because this
-    # service has no /workspace mount — walking working_dir here finds
-    # nothing, which is why the first version of this check never fired.
-    # Needed before the prompt: naming the files stops all three candidates
-    # proposing the same "create the input data" opening step, which scoring
-    # alone cannot fix when every candidate shares the flaw.
-    existing = _existing_workspace_files(working_dir, project_context)
-    existing.update(f.lstrip("./") for f in (existing_files or []))
+    # What is already on disk, as the proxy lists it. Needed before the
+    # prompt: naming the files stops all three candidates proposing the same
+    # "create the input data" opening step, which scoring alone cannot fix
+    # when every candidate shares the flaw.
+    existing = _known_files(project_context, existing_files)
 
     prompt = _build_plan_prompt(user_message, working_dir, project_context, sorted(existing))
 

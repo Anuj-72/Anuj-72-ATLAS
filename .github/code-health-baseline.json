@@ -87,7 +87,7 @@
   "v3-service/pipeline.py:V3PipelineService._run_impl": 1418,
   "v3-service/pipeline.py:V3PipelineService._run_impl.verified_sandbox": 129,
   "v3-service/planning.py:_score_plan": 111,
-  "v3-service/planning.py:generate_plan": 157,
+  "v3-service/planning.py:generate_plan": 154,
   "v3-service/scoring.py:interactive_lint": 130,
   "v3-service/stages/plan_search.py:PlanSearch.generate": 128,
   "v3-service/stages/refinement_loop.py:RefinementLoop.run": 162,
