@@ -3608,7 +3608,7 @@ func restoreDeliverable(ctx *AgentContext, key string) restoreDecision {
 	ctx.LedgerMu.Unlock()
 
 	dec.Restored = true
-	log.Printf("[recovery] restored %s to the last version shown to be valid", rel)
+	log.Printf("[recovery] restored %s to the last version shown to be valid", logPath(rel))
 	return dec
 }
 

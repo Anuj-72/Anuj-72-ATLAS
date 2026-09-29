@@ -963,7 +963,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 			s.turn, gateTrigger(s.userWantsVerification, s.sawFailedVerification), s.gateBounces["verification_gate"], maxGateBounces)
 		staleJob, staleFile := staleServingJob(ctx)
 		if staleJob != "" {
-			log.Printf("[agent] job %s predates the last change to %s — probing it would not show it", staleJob, staleFile)
+			log.Printf("[agent] job %s predates the last change to %s — probing it would not show it", logPath(staleJob), logPath(staleFile))
 		}
 		return "verification_gate", verificationRejectionFor(
 			s.sawFailedVerification, s.serverStartBlocked, anyBackgroundJobID(ctx), s.redRunStreak,
@@ -980,7 +980,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 		if staleJob, staleFile := staleServingJob(ctx); staleJob != "" {
 			if s.chargeBounce("verification_gate") {
 				log.Printf("[agent] the probe that verified this loop hit job %s, started before the last change to %s (bounce %d/%d)",
-					staleJob, staleFile, s.gateBounces["verification_gate"], maxGateBounces)
+					logPath(staleJob), logPath(staleFile), s.gateBounces["verification_gate"], maxGateBounces)
 				return "verification_gate", verificationRejectionFor(false, false, "", 0, "", staleJob, staleFile)
 			}
 			// The probe answered for older code, so nothing verified this.
@@ -1070,7 +1070,7 @@ func (s *runState) gateUnresolved(gate, finding string) {
 		s.unresolvedGates = map[string]string{}
 	}
 	s.unresolvedGates[gate] = finding
-	log.Printf("[agent] %s: bounces spent and the finding still holds: %s", gate, truncateStr(finding, 160))
+	log.Printf("[agent] %s: bounces spent and the finding still holds: %s", gate, logPath(truncateStr(finding, 160)))
 }
 
 // unresolvedReasons are the spent gates whose finding is a fact about the
@@ -3025,7 +3025,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 				if consecutiveErrors >= 3 {
 					samePath := stuckOnOnePath(ctx.RecentFailurePaths)
 					if !samePath {
-						log.Printf("[agent] path-aware breaker: %d consecutive failures across different paths (%v) — continuing, not a stuck loop", consecutiveErrors, ctx.RecentFailurePaths)
+						log.Printf("[agent] path-aware breaker: %d consecutive failures across different paths (%v) — continuing, not a stuck loop", consecutiveErrors, logPaths(ctx.RecentFailurePaths))
 						// Reset consecutiveErrors so the multi-file grind
 						// can keep going. The recent-paths list stays as
 						// a rolling window so if subsequent fails DO
@@ -3227,7 +3227,7 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 						"turn":   turn,
 						"detail": note,
 					})
-					log.Printf("[agent] asset lint: %s", truncateStr(note, 160))
+					log.Printf("[agent] asset lint: %s", logPath(truncateStr(note, 160)))
 				}
 			}
 

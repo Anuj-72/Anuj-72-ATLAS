@@ -608,12 +608,8 @@ def _hash_file(path: Path) -> str:
 
 
 def _observe_paths(root: Path, names: List[str]) -> Dict[str, str]:
-    """sha256 of each named relative path, or "" where it is absent.
-
-    Absence is a real answer and is reported as the empty string rather than
-    omitted, so a caller can tell "the file is not there" from "we did not
-    look".
-    """
+    """sha256 of each named relative path, or "" where it is absent, so a
+    caller can tell "the file is not there" from "we did not look"."""
     out: Dict[str, str] = {}
     for name in names or []:
         try:
@@ -621,7 +617,9 @@ def _observe_paths(root: Path, names: List[str]) -> Dict[str, str]:
         except HTTPException:
             out[name] = ""
             continue
-        out[name] = _hash_file(root / rel)
+        # The normpath + prefix form CodeQL follows; _contained_path would mkdir.
+        path = os.path.normpath(os.path.join(str(root), rel))
+        out[name] = _hash_file(Path(path)) if path.startswith(str(root) + os.sep) else ""
     return out
 
 
@@ -1270,7 +1268,7 @@ def _jinja_template_errors(code: str, filename: Optional[str]) -> List[str]:
     except Exception:
         return []  # fail open: no Jinja available here
     try:
-        jinja2.Environment().parse(code)
+        jinja2.Environment(autoescape=True).parse(code)  # parsed only, never rendered
         return []
     except jinja2.TemplateSyntaxError as e:
         msg = (getattr(e, "message", "") or "").lower()
