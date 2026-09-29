@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -131,7 +130,7 @@ func (w *oldStrWatch) load(path string) bool {
 		w.unreadable = true
 		return false
 	}
-	data, err := os.ReadFile(resolveAgentPath(w.ctx, path))
+	data, _, err := readWorkspaceFile(w.ctx, path)
 	if err != nil {
 		w.unreadable = true
 		return false
@@ -181,7 +180,7 @@ func openOldStr(stream string) (string, bool) {
 			if i+4 >= len(s) {
 				return sb.String(), true
 			}
-			n, err := strconv.ParseUint(s[i+1:i+5], 16, 32)
+			n, err := strconv.ParseUint(s[i+1:i+5], 16, 16)
 			if err != nil {
 				return sb.String(), true
 			}

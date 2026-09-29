@@ -318,3 +318,26 @@ func TestEveryPrefixOfAMatchingOldStrCanStillMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestTheWatchNeverReadsOutsideTheWorkspace(t *testing.T) {
+	// A file outside the workspace, and a symlink inside it that leads there:
+	// the "lines matched" feedback must not become a way to probe either.
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte(oldStrTarget()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, dir := oldStrWorld(t, "unrelated\n")
+	if err := os.Symlink(outside, filepath.Join(dir, "link.py")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{outside, "link.py", "../" + filepath.Base(filepath.Dir(outside)) + "/secret.txt"} {
+		w := newOldStrWatch(ctx)
+		if w.load(path) {
+			t.Errorf("the watch read %s, which is outside the workspace", path)
+		}
+	}
+	w := newOldStrWatch(ctx)
+	if !w.load("executor_server.py") {
+		t.Error("a file inside the workspace was not read")
+	}
+}
