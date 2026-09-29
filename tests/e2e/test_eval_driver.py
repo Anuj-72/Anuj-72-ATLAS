@@ -71,6 +71,7 @@ def test_the_check_gives_the_same_result_for_a_relative_and_an_absolute_path(tmp
         seen.append(next(a for a in argv if a.endswith(":/grade:ro")))
         return FakeDocker()(argv, **kw)
 
+    monkeypatch.setattr(driver, "resolve_image", lambda image: "sha256:img")
     monkeypatch.setattr(driver, "check_controls",
                         lambda task, image: G.check_controls(task, image, run=fake_docker))
     assert driver.main(["check", "s", "--image", "img"]) == 0
