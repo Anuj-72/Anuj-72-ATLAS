@@ -1800,8 +1800,9 @@ func latestUserMessage(ctx *AgentContext) string {
 }
 
 // writeFileWithV3 routes through the V3 pipeline for T2/T3 tasks.
-// Model's content becomes baseline candidate #0; V3 generates diverse
-// alternatives, tests all, selects the best.
+// The model's content is the incumbent: V3 checks and ranks it with the
+// alternatives it generates, and sends it back unchanged when none ranks
+// higher (#259), which proposedV3Candidate reads as no proposal.
 func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResult, error) {
 	// Build V3 request with project context
 	req := V3GenerateRequest{
