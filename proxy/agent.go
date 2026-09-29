@@ -1698,6 +1698,11 @@ func runAgentLoop(ctx *AgentContext, userMessage string) error {
 					"getting truncated. Try a more targeted request (e.g. 'edit just the " +
 					"@app.route(\"/product\") handler in app.py') so the response stays under the " +
 					"token cap."
+				if ctx.LastStreamCut == "old_str_unmatched" {
+					summary = "Stopped: three edit_file calls in a row ran old_str past the text in " +
+						"the file, and each was cut before it was sent. Nothing was changed by them. " +
+						"Ask again and name the line to change, or ask for replace_lines with line numbers."
+				}
 				if ctx.LastStreamCut == "content_loop" {
 					// Same misdiagnosis the classifier used to make: the token cap
 					// had nothing to do with it. The model began repeating itself
@@ -4046,6 +4051,7 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 	// Stale from the previous turn otherwise, which would blame a clean
 	// parse failure on a cut that happened earlier.
 	ctx.LastStreamCut = ""
+	ctx.LastOldStrCut = nil
 	ctx.LastFencedStream = fencedStreamStats{}
 	wireMessages := toWireMessages(messages)
 	wireMessages = appendLastReadRestatementFor(ctx, wireMessages, restateOnly)
@@ -4242,7 +4248,11 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 		contentLoopCut bool
 		noFenceCut     bool
 		lastLoopCheck  int
+		oldStrCut      bool
 	)
+	// An edit_file old_str is checked against its file while it streams
+	// (old_str_watch.go). Not in a fenced sub-call, which carries a body.
+	oldStrW := newOldStrWatch(ctx)
 
 	// Per-turn reasoning budget. A reasoning-heavy model can spiral for
 	// tens of thousands of tokens inside ONE generation (observed: a
@@ -4394,9 +4404,12 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 				!strings.Contains(contentBuf.String(), "```") {
 				noFenceCut = true
 			}
-			if !contentLoopCut && contentBuf.Len() > 600 && contentBuf.Len()-lastLoopCheck > 200 {
+			if !contentLoopCut && !oldStrCut && contentBuf.Len() > 600 && contentBuf.Len()-lastLoopCheck > 200 {
 				lastLoopCheck = contentBuf.Len()
 				contentLoopCut = streamLooping(contentBuf.String())
+				if !contentLoopCut && !fencedSubCall {
+					oldStrCut = oldStrW.runaway(contentBuf.String())
+				}
 			}
 		}
 		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
@@ -4421,6 +4434,17 @@ func callLLMOnceRestating(ctx *AgentContext, messages []AgentMessage, temperatur
 			log.Printf("[agent] content loop detected (%d chars) — model repeating itself; cutting the stream", contentBuf.Len())
 			ctx.Stream("content_loop_cut", map[string]interface{}{"chars": contentBuf.Len()})
 			ctx.LastStreamCut = "content_loop"
+			break
+		}
+		if oldStrCut {
+			log.Printf("[agent] edit_file old_str on %s stopped matching the file after %d line(s) and ran on (%d bytes) — cutting the stream",
+				logPath(oldStrW.Path), oldStrW.MatchedLines, oldStrW.Chars)
+			ctx.Stream("old_str_cut", map[string]interface{}{
+				"path": oldStrW.Path, "chars": contentBuf.Len(),
+				"old_str_chars": oldStrW.Chars, "matched_lines": oldStrW.MatchedLines,
+			})
+			ctx.LastStreamCut = "old_str_unmatched"
+			ctx.LastOldStrCut = oldStrW
 			break
 		}
 	}
@@ -5864,6 +5888,12 @@ func classifyParseFailure(raw, streamCut string) (category, feedback string) {
 			"file, and input or fixture data should be read at runtime by the code you " +
 			"write, never retyped into a tool call. Write the CODE that processes the " +
 			"data, not the data."
+	case "old_str_unmatched":
+		return "old_str_cut", "Your edit_file call was stopped while old_str was still arriving: " +
+			"it had stopped matching any text in the file and kept going. Nothing was executed " +
+			"and the file is unchanged. old_str must be text copied from the file; one short " +
+			"line that appears once in it is enough to place an edit, or use replace_lines " +
+			"with the line numbers read_file showed."
 	case "reasoning_budget":
 		return "reasoning_cut", "Your response was cut off: it spent the whole per-turn " +
 			"budget on reasoning without emitting a tool call. Skip the deliberation and " +
@@ -5943,6 +5973,10 @@ func classifyParseFailure(raw, streamCut string) (category, feedback string) {
 // Nothing in the cut call is executed either way.
 func parseFailureFeedback(ctx *AgentContext, raw, streamCut string) (string, string) {
 	category, feedback := classifyParseFailure(raw, streamCut)
+	if category == "old_str_cut" && ctx != nil && ctx.LastOldStrCut != nil && ctx.LastOldStrCut.Cut {
+		// The watch knows the file and the line where old_str left it.
+		return category, oldStrCutFeedback(ctx.LastOldStrCut)
+	}
 	if category != "loop_cut" && category != "truncated_tool" {
 		return category, feedback
 	}

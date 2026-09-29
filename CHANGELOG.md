@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### Fixed: an edit_file old_str that stopped matching its file ran on to the token cap
+
+An old_str is text copied from the target file, so it can be checked while it
+streams. The loop cut stopped a runaway only when its tail repeated word for
+word, and one carrying changing line numbers never does. In one recorded
+session an old_str ran 25,333 characters and 322 s to the token cap after the
+model wrote a form feed where the file has a newline.
+
+Now, once no completion of what has arrived could match the file, and old_str
+has run 256 more characters, the stream is cut. The model is told the file and
+the line where old_str stopped matching, and that one short line is enough to
+place an edit. "Could match" uses edit_file's own tolerance (exact, curly
+quotes, read_file line numbers, whitespace on each line), so an old_str that
+matches is never cut.
+
 ### Changed: V3 ranks the model's own file as a candidate, and keeps its role
 
 V3 used the model's file only as prose in its prompt, never as a candidate,

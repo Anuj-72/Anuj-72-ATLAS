@@ -684,6 +684,20 @@ func (m *tuiModel) appendChatEvent(ev chatEvent) {
 			Body: fmt.Sprintf("content loop detected — stream cut after %d chars", p.Chars),
 		})
 
+	// Stream cut: an edit_file old_str had stopped matching its file and was
+	// still arriving (#215), so the call could not succeed.
+	case "old_str_cut":
+		var p struct {
+			Path         string `json:"path"`
+			MatchedLines int    `json:"matched_lines"`
+		}
+		_ = json.Unmarshal(ev.Data, &p)
+		m.chat = append(m.chat, chatMessage{
+			Role: roleSystem, Meta: "cut",
+			Body: fmt.Sprintf("edit_file old_str stopped matching %s after %d line(s) — stream cut",
+				p.Path, p.MatchedLines),
+		})
+
 	// The other half of content_loop_cut: the cut was ANSWERED rather than
 	// ending the run — the model was told why and given another attempt.
 	// Without a case here the user watched a stream stop and a new turn begin
