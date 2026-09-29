@@ -1633,8 +1633,8 @@ func unreadFileCitations(ctx *AgentContext, text string) []string {
 			continue
 		}
 		seen[name] = true
-		resolved := resolveAgentPath(ctx, name)
-		if info, err := os.Stat(resolved); err != nil || info.IsDir() {
+		resolved, info, err := statWorkspaceFile(ctx, name) // "x/../../y" is never looked up
+		if err != nil || info.IsDir() {
 			continue
 		}
 		if ctx.WasBodySeen(resolved) || ledgerTracks(ctx, resolved) {
@@ -2639,7 +2639,7 @@ func inlineCodePayload(segment string) (string, bool) {
 // that inspect a script before deciding how it should be run.
 func workspaceFileReader(ctx *AgentContext) func(string) (string, bool) {
 	return func(rel string) (string, bool) {
-		data, err := os.ReadFile(filepath.Join(ctx.WorkingDir, rel))
+		data, _, err := readWorkspaceFile(ctx, rel) // rel is parsed from a command string
 		if err != nil {
 			return "", false
 		}
