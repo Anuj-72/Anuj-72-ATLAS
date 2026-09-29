@@ -152,7 +152,10 @@ a file"). In the smoke run on 2026-09-28 (add_function rep 2), the file was
 the session's own test file. The model re-sent it three times, never ran it,
 and passing work ended "stopped". For a file the session wrote, the refusal
 now says that the file is on disk with exactly this content, and that the
-next step is to run it or its tests.
+next step is to run it or its tests. This holds at any size: the refusal
+used to need 200 bytes, and in the smoke runs of 2026-09-29 a 76-byte test
+file was re-sent five times and passing work ended "stopped" in 4 of 84
+sessions.
 
 ### Fixed: the reliability runner counted working guards as service faults
 
