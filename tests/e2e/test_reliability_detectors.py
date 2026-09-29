@@ -710,3 +710,105 @@ def test_docker_that_cannot_be_asked_is_not_read_as_stable_mid_session(rel):
     snap = _states(rel, lens=(0, False, "T1"))
     assert rel.stack_changes(snap, None) == [
         "container state could not be read at the end of the session"]
+
+
+# --- one commit, five images (#241) --------------------------------------------
+#
+# A result is evidence only for the stack that produced it. Before a run, the
+# runner checks the stated commit against the gated deploy's record and each
+# running service's image against the image recorded for that commit.
+
+_IMAGES = {"llama-server": "sha256:aaa", "geometric-lens": "sha256:bbb",
+           "v3-service": "sha256:ccc", "sandbox": "sha256:ddd", "atlas-proxy": "sha256:eee"}
+
+
+def _fake_images(images):
+    """`docker ps` lists one container per service; `docker inspect` reports
+    each one's compose service label and image id."""
+    def run(argv, **kw):
+        if argv[:2] == ["docker", "ps"]:
+            return _Proc("\n".join(f"atlas-{s}-1" for s in images) + "\n")
+        if argv[:2] == ["docker", "inspect"]:
+            return _Proc("".join(f"{s} {i}\n" for s, i in images.items()))
+        raise AssertionError(f"unexpected command {argv}")
+    return run
+
+
+def _deploy_record(tmp_path, sha="b0e6013", images=None):
+    d = tmp_path / "atlas-ralph"
+    (d / "deployed").mkdir(parents=True)
+    (d / "DEPLOYED_SHA").write_text(sha + "\n")
+    (d / "deployed" / f"running-{sha}.json").write_text(json.dumps(
+        {"sha": sha, "running": {s: {"image_id": i} for s, i in (images or _IMAGES).items()}}))
+    return d
+
+
+def test_a_single_commit_stack_is_verified_and_its_images_recorded(rel, tmp_path):
+    ident = rel.deployed_identity("atlas", _deploy_record(tmp_path), "b0e6013",
+                                  run=_fake_images(_IMAGES))
+    assert ident["verified"] and not ident["mismatch"], ident["problems"]
+    assert ident["commit"] == "b0e6013"
+    assert ident["images"] == _IMAGES
+
+
+def test_a_mixed_stack_is_refused(rel, tmp_path):
+    live = dict(_IMAGES, **{"v3-service": "sha256:999"})
+    ident = rel.deployed_identity("atlas", _deploy_record(tmp_path), "b0e6013",
+                                  run=_fake_images(live))
+    assert ident["mismatch"] and not ident["verified"]
+    assert any("v3-service runs sha256:999" in p for p in ident["problems"]), ident["problems"]
+
+
+def test_a_checkout_that_is_not_the_deployed_commit_is_refused(rel, tmp_path):
+    ident = rel.deployed_identity("atlas", _deploy_record(tmp_path), "47907c9",
+                                  run=_fake_images(_IMAGES))
+    assert ident["mismatch"]
+    assert any("deployed from b0e6013" in p for p in ident["problems"])
+    # The same commit, named at another length, is the same commit.
+    ok = rel.deployed_identity("atlas", _deploy_record(tmp_path / "x"), "b0e6013a1b2c",
+                               run=_fake_images(_IMAGES))
+    assert ok["verified"], ok["problems"]
+
+
+def test_a_service_that_is_not_running_is_refused(rel, tmp_path):
+    live = {s: i for s, i in _IMAGES.items() if s != "llama-server"}
+    ident = rel.deployed_identity("atlas", _deploy_record(tmp_path), "b0e6013",
+                                  run=_fake_images(live))
+    assert ident["mismatch"]
+    assert "llama-server is not running" in ident["problems"]
+
+
+def test_a_stack_with_no_deploy_record_is_unverified_not_refused(rel, tmp_path):
+    ident = rel.deployed_identity("atlas", tmp_path / "none", "b0e6013",
+                                  run=_fake_images(_IMAGES))
+    assert not ident["mismatch"] and not ident["verified"]
+    assert ident["images"] == _IMAGES
+    assert "unverified" in ident["problems"][0]
+
+
+def test_the_runner_refuses_a_mixed_stack_before_any_session(rel, tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    record = _deploy_record(tmp_path)
+    monkeypatch.setattr(rel, "stack_identity", lambda url: {})
+    monkeypatch.setattr(rel, "running_images",
+                        lambda project, run=None: dict(_IMAGES, sandbox="sha256:777"))
+
+    def no_session(*a, **k):
+        raise AssertionError("a session ran on a mixed stack")
+    monkeypatch.setattr(rel, "run_session", no_session)
+    monkeypatch.setattr(sys, "argv", ["e2e-reliability.py", "--workspace", str(ws),
+                                      "--deploy-dir", str(record), "--commit", "b0e6013",
+                                      "--sandbox-container", "", "--tasks", "offbyone"])
+    assert rel.main() == 2
+
+
+def test_the_identity_is_kept_with_every_result(rel, tmp_path):
+    ident = rel.deployed_identity("atlas", _deploy_record(tmp_path), "b0e6013",
+                                  run=_fake_images(_IMAGES))
+    stack = {"grammar_mode": "loose", "commit": ident["commit"], "images": ident["images"],
+             "identity_verified": ident["verified"]}
+    row = rel.result_row(_session(rel, [], tmp_path), {}, stack)
+    assert row["stack"]["commit"] == "b0e6013"
+    assert row["stack"]["images"]["atlas-proxy"] == "sha256:eee"
+    assert row["stack"]["identity_verified"] is True

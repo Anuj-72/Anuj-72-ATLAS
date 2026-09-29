@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Added: the reliability runner measures only the stack deployed for its commit
+
+A result is evidence only for the stack that produced it. Before its first
+session, `scripts/e2e-reliability.py` now reads the gated deploy's record
+(`--deploy-dir`, default `~/atlas-ralph`). The commit it measures (`--commit`,
+default: this checkout's HEAD) must be the deployed commit, and each of the
+five services must run the image recorded for that commit. Otherwise the run
+is refused, and each difference is named. Every result keeps the commit, the
+five image ids and whether the identity was verified. A stack with no deploy
+record, such as one on a contributor's machine, runs, but is marked
+unverified.
+
 ### Fixed: an edit_file old_str that stopped matching its file ran on to the token cap
 
 An old_str is text copied from the target file, so it can be checked while it

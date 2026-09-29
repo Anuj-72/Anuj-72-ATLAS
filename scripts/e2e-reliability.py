@@ -1800,6 +1800,95 @@ def stack_changes(before: dict | None, after: dict | None) -> list[str]:
     return out
 
 
+# The five services a stack runs, as scripts/deploy-gated.sh names them.
+STACK_SERVICES = ("llama-server", "geometric-lens", "v3-service", "sandbox", "atlas-proxy")
+
+
+def running_images(project: str, run=subprocess.run) -> dict | None:
+    """The image id each running service of the compose project uses.
+
+    None when docker cannot be asked. `run` is subprocess.run, injectable for
+    tests."""
+    try:
+        ps = run(["docker", "ps", "--filter",
+                  f"label=com.docker.compose.project={project}", "--format", "{{.Names}}"],
+                 capture_output=True, text=True, timeout=30)
+        names = (ps.stdout or "").split()
+        if ps.returncode != 0 or not names:
+            return None
+        p = run(["docker", "inspect", "--format",
+                 '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', *names],
+                capture_output=True, text=True, timeout=30)
+        if p.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = {}
+    for line in (p.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            out[parts[0]] = parts[1]
+    return out or None
+
+
+def _same_commit(a: str, b: str) -> bool:
+    """Two commit ids name one commit when the shorter is a prefix of the
+    longer and at least 7 characters long."""
+    a, b = (a or "").strip(), (b or "").strip()
+    short = min(len(a), len(b))
+    return short >= 7 and a[:short] == b[:short]
+
+
+def deployed_identity(project: str, deploy_dir: Path, commit: str,
+                      run=subprocess.run) -> dict:
+    """The commit and the five images this run measures (#241).
+
+    A result is evidence only for the stack that produced it. The gated deploy
+    records the commit it deployed (DEPLOYED_SHA) and, in
+    deployed/running-<sha>.json, the image each of the five services runs for
+    it. llama-server is kept, not rebuilt, when inference/ did not change, so
+    an image's own build commit is not the test: the record is. The stack is
+    that commit's only when the stated commit is the deployed one and every
+    running service uses the image recorded for it.
+
+    Returns {"commit", "images", "verified", "mismatch", "problems"}. A
+    mismatch means a record exists and the stack differs from it: a run is
+    refused. With no record there is nothing to check against (a stack this
+    script did not deploy): the run is unverified, and says so."""
+    out = {"commit": commit, "images": {}, "verified": False, "mismatch": False,
+           "problems": []}
+    try:
+        deployed = (deploy_dir / "DEPLOYED_SHA").read_text().strip()
+    except OSError:
+        out["problems"].append(f"no gated deploy record in {deploy_dir}: the stack is unverified")
+        live = running_images(project, run) if project else None
+        out["images"] = live or {}
+        return out
+    out["commit"] = deployed
+    if commit and not _same_commit(commit, deployed):
+        out["problems"].append(f"the checkout is at {commit}, but the stack was deployed from {deployed}")
+    try:
+        record = json.loads((deploy_dir / "deployed" / f"running-{deployed}.json").read_text())
+        recorded = {svc: (v or {}).get("image_id", "") for svc, v in (record.get("running") or {}).items()}
+    except (OSError, ValueError):
+        recorded = {}
+        out["problems"].append(f"no record of the images deployed for {deployed}")
+    live = running_images(project, run) if project else None
+    out["images"] = live or {}
+    if live is None:
+        out["problems"].append("docker could not be asked which images are running")
+    else:
+        for svc in STACK_SERVICES:
+            if svc not in live:
+                out["problems"].append(f"{svc} is not running")
+            elif recorded and live[svc] != recorded.get(svc):
+                out["problems"].append(
+                    f"{svc} runs {live[svc][:19]}, not the {recorded.get(svc, '?')[:19]} deployed for {deployed}")
+    out["mismatch"] = bool(out["problems"])
+    out["verified"] = not out["problems"]
+    return out
+
+
 def result_row(s: Session, evaluator, stack) -> dict:
     """One session in the run's JSON result."""
     return {
@@ -1832,6 +1921,11 @@ def main() -> int:
     ap.add_argument("--compose-project", default="atlas",
                     help="compose project whose containers are checked for restarts "
                          "and OOM kills around each session; '' to skip")
+    ap.add_argument("--deploy-dir", default=os.environ.get(
+                        "ATLAS_DEPLOY_DIR", str(Path.home() / "atlas-ralph")),
+                    help="the gated deploy's record directory (scripts/deploy-gated.sh)")
+    ap.add_argument("--commit", default="",
+                    help="the commit this run claims to measure; default: this checkout's HEAD")
     ap.add_argument("--tasks", default=",".join(TASKS))
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--timeout", type=int, default=900)
@@ -1861,6 +1955,24 @@ def main() -> int:
     # What the proxy says it runs, read once before any session and kept
     # with every result.
     STACK = stack_identity(args.url)
+    # And which commit and images it is (#241). A stack that differs from its
+    # gated deploy record is not measured at all.
+    commit = args.commit
+    if not commit:
+        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True)
+        commit = head.stdout.strip() if head.returncode == 0 else ""
+    identity = deployed_identity(args.compose_project, Path(args.deploy_dir), commit)
+    if identity["mismatch"]:
+        for line in identity["problems"]:
+            print(f"error: {line}", file=sys.stderr)
+        print("error: refusing to measure a stack that is not the one deployed "
+              "for this commit", file=sys.stderr)
+        return 2
+    for line in identity["problems"]:
+        print(f"warning: {line}", file=sys.stderr)
+    STACK.update(commit=identity["commit"], images=identity["images"],
+                 identity_verified=identity["verified"])
 
     global _SANDBOX_CONTAINER, _SANDBOX_WORKDIR
     _SANDBOX_CONTAINER = args.sandbox_container or ""
