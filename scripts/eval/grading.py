@@ -31,7 +31,12 @@ def grade(task, workspace: Path, image: str, run=subprocess.run) -> Grade:
     """The task's grader on a copy of the workspace, so it cannot change the original."""
     with tempfile.TemporaryDirectory(prefix="eval-grade-") as tmp:
         copy = Path(tmp) / "w"
-        shutil.copytree(workspace, copy)
+        try:
+            # Links stay links, as the sandbox saw them: the host never follows
+            # one out of the workspace, and a dangling one is part of the work.
+            shutil.copytree(workspace, copy, symlinks=True)
+        except OSError as e:  # shutil.Error too: one task's copy must not stop the block
+            return Grade(GRADER_ERROR, f"the workspace could not be copied: {str(e)[:200]}")
         try:
             p = run(grader_argv(task, copy, image), capture_output=True, text=True,
                     timeout=task.grader_timeout_s + 60)

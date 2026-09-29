@@ -34,6 +34,11 @@ tasks/<id>/
   and is stopped after `grader_timeout_s`.
 - It is called as `/grade /w`, with the copy at `/w` as its cwd, and reads
   only the workspace.
+- The copy keeps links as links, as the sandbox saw them. A link can point
+  anywhere in the grader's container, so a grader that compares the work with
+  its own data checks that the work's paths resolve inside `/w`.
+- A workspace that cannot be copied is a grader error for that session, and
+  the block goes on.
 - Exit 0 means pass and exit 1 means fail. Any other exit, or a timeout, is a
   grader error, counted apart. Its first line of output is kept as the reason.
 - `driver.py check` refuses the suite unless every grader passes

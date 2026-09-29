@@ -109,6 +109,32 @@ def test_grading_uses_a_copy_and_leaves_the_workspace_alone(tmp_path):
     assert not (ws / "grader-was-here").exists()
 
 
+def test_a_dangling_link_is_graded_as_a_link(tmp_path):
+    task = S.load_suite(make_suite(tmp_path / "s"))[0]
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "answer.txt").write_text("42\n")
+    (ws / "gone").symlink_to(tmp_path / "nowhere")
+    seen = {}
+
+    def docker(argv, **kw):
+        copy = Path(next(a.split(":")[0] for a in argv if a.endswith(":/w")))
+        seen["link"] = (copy / "gone").is_symlink()
+        return FakeDocker()(argv, **kw)
+    assert G.grade(task, ws, "img", run=docker).outcome == G.PASS
+    assert seen["link"]
+
+
+def test_a_workspace_that_cannot_be_copied_is_a_grader_error(tmp_path, monkeypatch):
+    task = S.load_suite(make_suite(tmp_path / "s"))[0]
+
+    def fails(*a, **k):
+        raise G.shutil.Error([("src", "dst", "unreadable")])
+    monkeypatch.setattr(G.shutil, "copytree", fails)
+    got = G.grade(task, tmp_path, "img", run=FakeDocker())
+    assert got.outcome == G.GRADER_ERROR and "could not be copied" in got.reason
+
+
 def test_controls_that_separate_pass_the_check(tmp_path):
     task = S.load_suite(make_suite(tmp_path))[0]
     assert G.check_controls(task, "img", run=FakeDocker()) == []
