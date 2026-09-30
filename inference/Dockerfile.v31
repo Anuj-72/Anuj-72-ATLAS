@@ -110,6 +110,8 @@ RUN cd /llama.cpp && \
 #    hit the on-disk cache. id=llama-ccache shares the cache across
 #    all Dockerfile.* in this dir; sharing=locked prevents concurrent
 #    writes if multiple builds run in parallel. #117.
+# Only the stats call may fail: a failed configure or compile must fail this step,
+# not surface later as a missing binary at COPY.
 RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
     cd /llama.cpp && \
     cmake -B build \
@@ -120,7 +122,7 @@ RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache && \
     cmake --build build --config Release -j5 && \
-    ccache --show-stats || true
+    (ccache --show-stats || true)
 
 FROM ${RUNTIME_IMAGE}
 # Re-declare ARG after FROM so the runtime stage can reference it if

@@ -101,6 +101,8 @@ RUN cd /llama.cpp && \
 #    builds) because Vulkan compiles compute shaders to SPIR-V once
 #    and the vendor driver JITs to native at runtime — the same binary
 #    runs on every supported ICD without rebuild.
+# Only the stats call may fail: a failed configure or compile must fail this step,
+# not surface later as a missing binary at COPY.
 RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
     cd /llama.cpp && \
     cmake -B build \
@@ -109,7 +111,7 @@ RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
     cmake --build build --config Release -j5 && \
-    ccache --show-stats || true
+    (ccache --show-stats || true)
 
 # ---------------------------------------------------------------------------
 # Runtime stage — Ubuntu base with the Vulkan loader + Mesa ICDs for

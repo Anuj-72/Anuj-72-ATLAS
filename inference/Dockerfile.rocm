@@ -78,6 +78,8 @@ RUN cd /llama.cpp && \
 #    Note: ccache wraps hipcc the same way it wraps gcc/g++ — the
 #    HIP compiler invocations are normal cc-style commands with HIP
 #    kernels passed as source.
+# Only the stats call may fail: a failed configure or compile must fail this step,
+# not surface later as a missing binary at COPY.
 RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
     cd /llama.cpp && \
     cmake -B build \
@@ -89,7 +91,7 @@ RUN --mount=type=cache,id=llama-ccache,target=/root/.ccache,sharing=locked \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DBUILD_SHARED_LIBS=OFF && \
     cmake --build build --config Release -j5 && \
-    ccache --show-stats || true
+    (ccache --show-stats || true)
 
 # ---------------------------------------------------------------------------
 # Runtime stage — same ROCm base image. There is no slim 'runtime'
