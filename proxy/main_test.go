@@ -4270,34 +4270,46 @@ func TestHandleWorkspace(t *testing.T) {
 		}
 	})
 
-	t.Run("containerized tracks the docker marker file", func(t *testing.T) {
-		marker := filepath.Join(t.TempDir(), ".dockerenv")
-		prev := dockerEnvMarker
-		dockerEnvMarker = marker
-		t.Cleanup(func() { dockerEnvMarker = prev })
+	t.Run("containerized tracks the runtime markers", func(t *testing.T) {
+		dir := t.TempDir()
+		docker, podman := filepath.Join(dir, ".dockerenv"), filepath.Join(dir, ".containerenv")
+		prev := containerMarkers
+		containerMarkers = []string{docker, podman}
+		t.Cleanup(func() { containerMarkers = prev })
+		t.Setenv("KUBERNETES_SERVICE_HOST", "")
 
-		// Marker absent: bare host.
-		if isContainerized() {
-			t.Fatalf("containerized with no marker file at %s", marker)
-		}
-		rec := httptest.NewRecorder()
-		newProxyMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workspace", nil))
-		var res map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["containerized"] != false {
-			t.Errorf("got containerized %v, want false", res["containerized"])
+		containerized := func() any {
+			rec := httptest.NewRecorder()
+			newProxyMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workspace", nil))
+			var res map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &res)
+			return res["containerized"]
 		}
 
-		// Marker present: Docker runtime created it.
-		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		// No marker and no Kubernetes variable: bare host.
+		if got := containerized(); got != false {
+			t.Fatalf("bare host: got containerized %v, want false", got)
+		}
+		// Podman writes /run/.containerenv, not /.dockerenv.
+		if err := os.WriteFile(podman, nil, 0o600); err != nil {
 			t.Fatalf("write marker: %v", err)
 		}
-		rec = httptest.NewRecorder()
-		newProxyMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/workspace", nil))
-		res = nil
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["containerized"] != true {
-			t.Errorf("got containerized %v, want true", res["containerized"])
+		if got := containerized(); got != true {
+			t.Errorf("podman marker: got containerized %v, want true", got)
+		}
+		_ = os.Remove(podman)
+		// Docker writes /.dockerenv.
+		if err := os.WriteFile(docker, nil, 0o600); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		if got := containerized(); got != true {
+			t.Errorf("docker marker: got containerized %v, want true", got)
+		}
+		_ = os.Remove(docker)
+		// A K3s pod under containerd has no marker file, only the variable.
+		t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+		if got := containerized(); got != true {
+			t.Errorf("kubernetes pod: got containerized %v, want true", got)
 		}
 	})
 

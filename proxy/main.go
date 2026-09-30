@@ -1185,20 +1185,26 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dockerEnvMarker is the file the Docker runtime creates in every container.
-// A var, not a const, so tests can point it at a temp path and exercise both
-// branches — the real path is absolute and unwritable, and the test host may
-// itself be a container.
-var dockerEnvMarker = "/.dockerenv"
+// containerMarkers are files a container runtime creates in every
+// container: Docker writes /.dockerenv, Podman writes /run/.containerenv.
+// A var so tests can point it at temp paths.
+var containerMarkers = []string{"/.dockerenv", "/run/.containerenv"}
 
-// isContainerized reports whether this process is running inside a Docker
-// container. ATLAS_WORKSPACE_DIR is unreliable for this — the local
-// (non-Docker) proxy launcher sets it too (runtime.py:283), so both modes
-// would report the same value. /.dockerenv is Docker-runtime-created and
-// absent on bare host processes, so it's the actual signal.
+// isContainerized reports whether this process runs in a container.
+// ATLAS_WORKSPACE_DIR is no signal: the local (non-Docker) proxy launcher
+// sets it too (runtime.py:283). Kubernetes, and so K3s, sets
+// KUBERNETES_SERVICE_HOST in every pod, where containerd creates neither
+// marker file.
 func isContainerized() bool {
-	_, err := os.Stat(dockerEnvMarker)
-	return err == nil
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return true
+	}
+	for _, m := range containerMarkers {
+		if _, err := os.Stat(m); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func handleWorkspace(w http.ResponseWriter, r *http.Request) {

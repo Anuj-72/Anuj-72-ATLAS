@@ -1215,7 +1215,9 @@ string when the proxy can't report an absolute path (unset, or a
 relative default like `.`), never a raw relative value. `working_dir` is the path the proxy writes to inside its own process
 (from `ATLAS_WORKSPACE_DIR` — `/workspace` under Compose, the launch
 cwd for a locally-spawned proxy). `containerized` is `true` when
-`/.dockerenv` exists; `working_dir` is not a container signal, since
+a container runtime's marker file exists (`/.dockerenv` for Docker,
+`/run/.containerenv` for Podman) or `KUBERNETES_SERVICE_HOST` is set (a
+Kubernetes or K3s pod); `working_dir` is not a container signal, since
 the local launcher sets it too.
 
 This endpoint requires the service token like any other route — it
