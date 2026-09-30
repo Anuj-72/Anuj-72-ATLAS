@@ -1601,6 +1601,20 @@ not classify as model or harness) — plus objective code-quality probes from
   3.12 syntax and cost a full session).
 - Nine real `.env` keys were reported as typos by `atlas config validate`.
 
+### Proxy reports its workspace path
+
+- New `GET /workspace` endpoint returns the host and container paths the
+  proxy has mounted, so a client can check whether its own folder matches
+  what the proxy is actually editing — exact, instead of the VS Code
+  extension's old post-edit `fs.stat` heuristic. Requires the service token
+  like any other route, since it discloses a host filesystem path.
+- `docker-compose.yml` now passes `ATLAS_PROJECT_DIR` into the proxy's own
+  environment (previously only used at compose-time to build the bind mount,
+  never reaching the container), so the endpoint has something to report.
+- The VS Code extension's `alignment.ts` tries the endpoint first, falling
+  back to the existing `atlas workspace` CLI check when it's unreachable or
+  the proxy predates this route — the CLI path stays, since only it can
+  detect the proxy/sandbox split-bind case.
 
 ### CodeQL now scans the TypeScript client
 
