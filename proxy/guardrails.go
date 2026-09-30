@@ -193,26 +193,191 @@ var shellForkBombRe = regexp.MustCompile(`\(\)\s*\{[^}]*\|[^}]*&[^}]*\}\s*;`)
 // command that only mentions one, like `grep mkfs notes.txt`, is allowed.
 var shellDeviceWriteRe = regexp.MustCompile(`(^|\s)>\s*/dev/(sd|nvme|mmcblk|vd|hd|xvd)`)
 
-// shellWrapperRe matches a `bash -c "…"` / `sh -c '…'` / `eval …` prefix so we
-// can unwrap it and run the catastrophic checks against the REAL command — a
-// model that wraps `rm -rf /` in `bash -c` must not slip past the denylist.
-var shellWrapperRe = regexp.MustCompile(`^\s*(?:(?:bash|sh|zsh|dash|ksh)\s+-c|eval)\s+`)
+// shellCommandWords splits the simple shell words needed to inspect a wrapper.
+// It removes shell quotes and escapes so adjacent quoted parts (for example,
+// the quote escape in a nested single-quoted command) become one argument.
+// An incomplete quote cannot form an executable shell command.
+func shellCommandWords(seg string) ([]string, bool) {
+	var words []string
+	for i := 0; i < len(seg); {
+		for i < len(seg) && strings.ContainsRune(" \t\r\n", rune(seg[i])) {
+			i++
+		}
+		if i == len(seg) {
+			break
+		}
+		var word strings.Builder
+		quote := byte(0)
+		for i < len(seg) {
+			c := seg[i]
+			if quote == 0 && strings.ContainsRune(" \t\r\n", rune(c)) {
+				break
+			}
+			switch {
+			case c == '\'' && quote != '"':
+				if quote == '\'' {
+					quote = 0
+				} else {
+					quote = '\''
+				}
+			case c == '"' && quote != '\'':
+				if quote == '"' {
+					quote = 0
+				} else {
+					quote = '"'
+				}
+			case c == '\\' && quote != '\'' && i+1 < len(seg):
+				i++
+				next := seg[i]
+				if quote == '"' && !strings.ContainsRune("$`\"\\\n", rune(next)) {
+					word.WriteByte('\\')
+				}
+				if next != '\n' {
+					word.WriteByte(next)
+				}
+			default:
+				word.WriteByte(c)
+			}
+			i++
+		}
+		if quote != 0 {
+			return nil, false
+		}
+		words = append(words, word.String())
+	}
+	return words, true
+}
 
-// unwrapShellWrapper strips one `bash -c "…"` / `eval "…"` layer (and the
-// surrounding quotes) so catastrophic-pattern checks see the inner command.
+// unwrapShellWrapper finds the actual command after policy-supported prefixes,
+// then returns the code executed by one shell -c or eval layer.
 func unwrapShellWrapper(seg string) string {
-	loc := shellWrapperRe.FindStringIndex(seg)
-	if loc == nil {
+	words, ok := shellCommandWords(seg)
+	if !ok {
 		return seg
 	}
-	inner := strings.TrimSpace(seg[loc[1]:])
-	if len(inner) >= 2 {
-		if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
-			(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
-			inner = inner[1 : len(inner)-1]
+	// GNU env -S splits one argument into a command and its arguments.
+	// Without this, the command remains hidden in a single word.
+	expandedEnv := false
+	commandIndex := commandPosition(words)
+	for j := 0; j < len(words) && j <= commandIndex; j++ {
+		if filepath.Base(words[j]) != "env" {
+			continue
+		}
+		k := j + 1
+	envOptions:
+		for k < len(words) {
+			option := words[k]
+			// GNU env accepts combined short flags and unambiguous long
+			// option abbreviations. Normalize only its split-string option.
+			if strings.HasPrefix(option, "-") && !strings.HasPrefix(option, "--") {
+				short := strings.TrimLeft(option[1:], "i0v")
+				if strings.HasPrefix(short, "S") {
+					option = "-" + short
+				}
+			}
+			if name, value, attached := strings.Cut(option, "="); len(name) > 2 &&
+				strings.HasPrefix(name, "--") && strings.HasPrefix("--split-string", name) {
+				option = "--split-string"
+				if attached {
+					option += "=" + value
+				}
+			}
+			var splitString string
+			end := k + 1
+			switch {
+			case option == "-S" || option == "--split-string":
+				if k+1 >= len(words) {
+					return seg
+				}
+				splitString = words[k+1]
+				end++
+			case strings.HasPrefix(option, "--split-string="):
+				splitString = strings.TrimPrefix(option, "--split-string=")
+			case strings.HasPrefix(option, "-S"):
+				splitString = option[2:]
+			default:
+				if option == "--" {
+					break envOptions
+				}
+				if strings.HasPrefix(option, "-") {
+					k++
+					if wrapperOptionTakesValue("env", option) {
+						k++
+					}
+					continue
+				}
+				if strings.Contains(option, "=") {
+					k++
+					continue
+				}
+				break envOptions
+			}
+			split, valid := shellCommandWords(splitString)
+			if !valid {
+				return seg
+			}
+			words = append(append(append([]string{}, words[:k]...), split...), words[end:]...)
+			expandedEnv = true
+			commandIndex = commandPosition(words)
+			// Revisit this option position: its split text can hold another -S.
 		}
 	}
-	return inner
+	i := commandPosition(words)
+	if i >= len(words) {
+		return seg
+	}
+	switch filepath.Base(words[i]) {
+	case "bash", "sh", "zsh", "dash", "ksh":
+		j := i + 1
+		commandString := false
+		for j < len(words) {
+			option := words[j]
+			if option == "--" || option == "-" {
+				j++
+				break
+			}
+			if len(option) < 2 || (option[0] != '-' && option[0] != '+') {
+				break
+			}
+			if option == "--rcfile" || option == "--init-file" {
+				j += 2
+				continue
+			}
+			if !strings.HasPrefix(option, "--") {
+				// -c selects the first operand after ALL shell options.
+				if option[0] == '-' && strings.Contains(option[1:], "c") {
+					commandString = true
+				}
+				if strings.ContainsAny(option[1:], "oO") {
+					j += 2 // the option/shopt name, including combined flags
+					continue
+				}
+			}
+			j++
+		}
+		if commandString && j < len(words) {
+			return words[j]
+		}
+	case "eval":
+		i++
+		if i < len(words) && words[i] == "--" {
+			i++
+		}
+		if i < len(words) {
+			return strings.Join(words[i:], " ")
+		}
+	}
+	if expandedEnv {
+		// Recheck direct commands revealed by env -S too. Preserve argument
+		// quoting so punctuation in an echo argument cannot become shell code.
+		for j := i; j < len(words); j++ {
+			if words[j] == "" || strings.ContainsAny(words[j], " \t\r\n;|&()<>$`\"'\\*?[]{}~#") {
+				words[j] = "'" + strings.ReplaceAll(words[j], "'", "'\\''") + "'"
+			}
+		}
+		return strings.Join(words[i:], " ")
+	}
+	return seg
 }
 
 // validateShellCommand returns a non-empty rejection reason ONLY for a command
@@ -229,20 +394,28 @@ func validateShellCommand(cmd string) string {
 	if stripped == "" {
 		return ""
 	}
-	// Whole-command checks (survive segment splitting / wrapper quoting).
-	unwrapped := unwrapShellWrapper(stripped)
-	if shellForkBombRe.MatchString(stripped) || shellForkBombRe.MatchString(unwrapped) {
-		return "refused: that is a fork bomb — it would exhaust the sandbox's process table. If you need to spawn processes, run them one at a time."
-	}
-	if shellDeviceWriteRe.MatchString(stripped) || shellDeviceWriteRe.MatchString(unwrapped) {
-		return "refused: writing to a block device is blocked. Work with files under the project directory instead."
-	}
-	for _, seg := range commandSegments(stripped) {
-		// A wrapper's inner command can itself hold several commands.
-		for _, inner := range commandSegments(unwrapShellWrapper(strings.TrimSpace(seg))) {
-			if msg := catastrophicCommand(inner); msg != "" {
-				return msg
-			}
+	// Inspect each execution layer. Unwrapping removes a shell/eval wrapper
+	// or an env split-string layer, so traversal needs no recursion limit.
+	pending := []string{stripped}
+	for len(pending) > 0 {
+		seg := strings.TrimSpace(pending[len(pending)-1])
+		pending = pending[:len(pending)-1]
+		if shellForkBombRe.MatchString(seg) {
+			return "refused: that is a fork bomb — it would exhaust the sandbox's process table. If you need to spawn processes, run them one at a time."
+		}
+		if shellDeviceWriteRe.MatchString(seg) {
+			return "refused: writing to a block device is blocked. Work with files under the project directory instead."
+		}
+		segments := commandSegments(seg)
+		if len(segments) > 1 {
+			pending = append(pending, segments...)
+			continue
+		}
+		if msg := catastrophicCommand(seg); msg != "" {
+			return msg
+		}
+		if inner := unwrapShellWrapper(seg); inner != seg {
+			pending = append(pending, inner)
 		}
 	}
 	return ""
@@ -301,6 +474,37 @@ var commandPrefixWords = map[string]bool{
 // `timeout 5s`, `env -i`.
 var wrapperArgRe = regexp.MustCompile(`^(-.*|\d+(\.\d+)?[smhd]?)$`)
 
+// Some prefix options take a separate value. Skipping only the option would
+// mistake that value for the executable (for example `sudo -u root bash -c`).
+func wrapperOptionTakesValue(wrapper, option string) bool {
+	switch wrapper {
+	case "sudo":
+		switch option {
+		case "-u", "--user", "-g", "--group", "-h", "--host", "-C", "--close-from", "-p", "--prompt", "-r", "--role", "-t", "--type":
+			return true
+		}
+	case "doas":
+		return option == "-u"
+	case "env":
+		switch option {
+		case "-u", "--unset", "-C", "--chdir", "-S", "--split-string":
+			return true
+		}
+	case "nice":
+		return option == "-n" || option == "--adjustment"
+	case "timeout":
+		switch option {
+		case "-s", "--signal", "-k", "--kill-after":
+			return true
+		}
+	case "stdbuf":
+		return option == "-i" || option == "-o" || option == "-e"
+	case "time":
+		return option == "-f" || option == "--format" || option == "-o" || option == "--output"
+	}
+	return false
+}
+
 // commandPosition returns the index of the word a segment actually runs,
 // past variable assignments and prefix words with their arguments.
 func commandPosition(fields []string) int {
@@ -308,9 +512,14 @@ func commandPosition(fields []string) int {
 	for i < len(fields) {
 		switch f := fields[i]; {
 		case commandPrefixWords[filepath.Base(f)]:
+			wrapper := filepath.Base(f)
 			i++
 			for i < len(fields) && wrapperArgRe.MatchString(fields[i]) {
+				option := fields[i]
 				i++
+				if strings.HasPrefix(option, "-") && wrapperOptionTakesValue(wrapper, option) && i < len(fields) {
+					i++
+				}
 			}
 		case strings.Contains(f, "=") && !strings.HasPrefix(f, "-"):
 			i++ // VAR=value
