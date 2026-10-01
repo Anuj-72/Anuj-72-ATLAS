@@ -1436,6 +1436,23 @@ than adding another retry around it.
   did not count as progress), and workspace-path containment validation.
   `replace_lines` is registered in all four.
 
+## [3.1.6] - 2026-10-01 — Maia
+
+A security release. It changes nothing else.
+
+### Security: a command behind a prefix or a nested shell skipped the command policy
+
+- The command policy checked the command at the start of the line. A command
+  placed after a prefix, or inside a nested shell or `eval`, was not checked
+  the same way, so a command the policy refuses could still run. The policy
+  now looks through these layers and checks every command they run.
+- A command whose quoting or execution layers cannot be inspected completely
+  is now refused, with a message saying so, instead of allowed.
+- Inspection goes at most 16 layers deep; a command with more is refused.
+- One rarely used form is now refused: `eval` of generated command text with
+  nested quoting. Run the generated command directly instead.
+- Reported and fixed by @Rendegou (GHSA-m9w4-p32x-chx9).
+
 ## [3.1.5] - 2026-09-29 — Maia
 
 A security release. It changes nothing else.
