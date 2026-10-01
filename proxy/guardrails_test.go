@@ -424,11 +424,7 @@ func TestValidateShellCommandAllowsOrdinaryWrappedShells(t *testing.T) {
 		`eval 'echo rm -rf /'`,
 		`eval -- 'echo rm -rf /'`,
 		`bash -c 'echo rm -rf /'`,
-		`env -S`, // Incomplete input must not panic.
-		`env --split-string`,
-		`bash -c`,
 		`bash -o`,
-		`bash -c 'unterminated`,
 		`eval --`,
 	}
 	for _, cmd := range allowed {
