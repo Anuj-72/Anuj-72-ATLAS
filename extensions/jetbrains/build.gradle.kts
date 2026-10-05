@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 plugins {
     kotlin("jvm") version "2.4.20"
     id("org.jetbrains.intellij.platform") version "2.19.0"
+    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
 }
 
 group = "com.inferstep.atlas"
@@ -58,4 +59,11 @@ kotlin {
         languageVersion.set(KotlinVersion.KOTLIN_2_3)
         apiVersion.set(KotlinVersion.KOTLIN_2_3)
     }
+}
+
+// The ktlint engine is pinned rather than left to the plugin's default,
+// so the rules the gate enforces don't drift under us; .editorconfig is
+// the single source for the rule settings themselves.
+ktlint {
+    version.set("1.8.0")
 }
