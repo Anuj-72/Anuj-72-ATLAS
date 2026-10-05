@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
@@ -27,6 +28,26 @@ intellijPlatform {
     pluginConfiguration {
         ideaVersion {
             sinceBuild = "261"
+        }
+    }
+}
+
+// One run task per IDE target, so the plugin can be smoke-tested against
+// each product rather than assuming IDEA compatibility. The built-in
+// runIde covers IntelliJ IDEA itself.
+intellijPlatformTesting {
+    runIde {
+        register("runPyCharm") {
+            type = IntelliJPlatformType.PyCharm
+            version = "2026.1"
+        }
+        register("runWebStorm") {
+            type = IntelliJPlatformType.WebStorm
+            version = "2026.1"
+        }
+        register("runGoLand") {
+            type = IntelliJPlatformType.GoLand
+            version = "2026.1"
         }
     }
 }
