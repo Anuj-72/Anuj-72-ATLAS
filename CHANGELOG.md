@@ -4,6 +4,39 @@
 
 ## [Unreleased]
 
+### Added: the JetBrains plugin scaffold, its style gate and its CI
+
+`extensions/jetbrains/` is the second IDE client ([issue #35](https://github.com/inferstep/ATLAS/issues/35)),
+scaffolded the way the VS Code extension was. This stage is the skeleton
+only: a static ATLAS tool window, the Gradle build, the gates and the
+packaging.
+- The `protocol` module holds the proxy's endpoint paths and takes no
+  IntelliJ dependency, so the wire contract is testable on its own. Two
+  JUnit tests assert the exact documented strings.
+- The plugin targets IntelliJ Platform 2026.1.3 (`sinceBuild = 261`, no
+  until-build) and pins Kotlin to language and API level 2.3: the 2026.1
+  IDE bundles the 2.3.x standard library, so bytecode from a newer level
+  would not load. `verifyPluginProjectConfiguration` checks both in the
+  gate.
+- `ktlint` is the Kotlin gate, with `.editorconfig` as the single source
+  of its rules and lines limited to 100 characters, matching the other
+  languages. Kotlin is deliberately not in `scripts/code_health.py`,
+  which scans the Go and Python trees.
+- `.github/workflows/jetbrains-plugin.yml` runs `ktlintCheck test
+  verifyPluginProjectConfiguration buildPlugin`, path-filtered to the
+  plugin tree.
+- `java-kotlin` joins the CodeQL matrix, with `build-mode: manual` and a
+  forced in-process compile of both `compileKotlin` tasks that the leg
+  asserts from its log, so a skipped compile fails rather than scanning
+  nothing.
+- `gradle` joins `.github/dependabot.yml`, scoped to
+  `/extensions/jetbrains`; the platform and the IntelliJ Platform Gradle
+  Plugin stay hand-managed because moving them is a compatibility
+  decision.
+- `runPyCharm`, `runWebStorm` and `runGoLand` launch sandboxed IDEs, so
+  the plugin can be smoke-tested against each product rather than
+  assuming IDEA compatibility.
+
 ### Added: a driver for the held-out evaluation, with a bare-model baseline
 
 `scripts/eval/` runs a frozen suite through two arms, grades each finished

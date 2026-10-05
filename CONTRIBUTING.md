@@ -232,6 +232,13 @@ for `proxy/` and `tui/`.
 variables (`"$var"`), use `[[` for conditionals, and comment non-obvious
 logic.
 
+**Kotlin** (the JetBrains plugin, `extensions/jetbrains/`). `ktlint` is the
+gate, and `extensions/jetbrains/.editorconfig` is the single source of the
+rules it applies — no baseline and no rule configuration in the Gradle
+build. Lines up to 100 characters. Run `./gradlew ktlintCheck` from
+`extensions/jetbrains/`, or `ktlintFormat` to apply the same rules. Kotlin
+is not covered by `scripts/code_health.py`.
+
 **YAML and Kubernetes.** 2-space indentation, resource limits on every
 container, meaningful names and labels.
 
