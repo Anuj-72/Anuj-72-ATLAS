@@ -45,7 +45,7 @@ from atlas import compose as compose_config
 from atlas import env as cli_env
 from atlas import publishing
 from atlas.client import LlamaProbe, post_json_or_none, probe_llama
-from atlas.commands import model_registry
+from atlas.commands import lens_card, model_registry
 
 
 # Shared ANSI colors + unicode-safe output primitives.
@@ -1100,7 +1100,8 @@ def _emit_build(args: argparse.Namespace, color: bool) -> int:
 
 def _render_model_card_md(model_name: str, base_model: str, dim: int,
                            sha256: str, size_bytes: int,
-                           license_id: str, files_uploaded: List[str]) -> str:
+                           license_id: str, files_uploaded: List[str],
+                           provenance: str) -> str:
     """Generate the README.md / model card body for the HF upload.
 
     Front-matter is the YAML block HuggingFace renders into the sidebar
@@ -1151,9 +1152,7 @@ atlas lens check
 
 ## Provenance
 
-Trained locally via `atlas lens build` against {base_model}'s
-self-embeddings. Architecture: {dim} -> 512 -> 128 -> 1 (SiLU, SiLU,
-Softplus). Contrastive ranking loss on labeled pass/fail code samples.
+{provenance}
 
 ## License
 
@@ -1275,8 +1274,7 @@ def _emit_publish(args: argparse.Namespace, color: bool) -> int:
                     f"publishing.{RESET if color else ''}")
         return 1
 
-    files_to_upload = ["cost_field.pt", "model_identity.json"]
-    files_to_upload.append("cx_normalization.json")
+    files_to_upload = ["cost_field.pt", "model_identity.json", "cx_normalization.json"]
     # Pickle-free twin: include only when at least as fresh as the .pt —
     # an older safetensors is a previous model's weights.
     st_path = os.path.join(artifact_dir, "cost_field.safetensors")
@@ -1368,8 +1366,9 @@ def _emit_publish(args: argparse.Namespace, color: bool) -> int:
                 return 1
 
         # Upload model card
+        provenance = lens_card.model_card_provenance(artifact_dir, base_model, dim)
         card_md = _render_model_card_md(model_label, base_model, dim, sha,
-                                          size, license_id, files_to_upload)
+                                          size, license_id, files_to_upload, provenance)
         try:
             api.upload_file(path_or_fileobj=card_md.encode(),
                              path_in_repo="README.md",
