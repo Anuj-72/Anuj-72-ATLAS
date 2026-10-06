@@ -7,11 +7,12 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence
 
@@ -61,6 +62,36 @@ class Result:
     reason: str = ""
 
 
+# Set to a directory to make the test gates write coverage reports into it.
+# CI sets it; without it a run is unchanged.
+COVERAGE_DIR_ENV = "ATLAS_COVERAGE_DIR"
+
+
+def _with_coverage(gates: dict[str, Gate]) -> dict[str, Gate]:
+    """Add coverage output to the test gates when ATLAS_COVERAGE_DIR is set.
+
+    Go gates write a cover profile. pytest gates need pytest-cov; they write
+    an LCOV report, whose paths are relative to the repo root, and keep the
+    raw data file beside it so that the reports of several runs can be
+    combined.
+    """
+    out_dir = os.environ.get(COVERAGE_DIR_ENV, "").strip()
+    if not out_dir:
+        return gates
+    out = Path(out_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("go-proxy-test", "go-tui-test"):
+        gate, label = gates[name], name[: -len("-test")]
+        flags = (f"-coverprofile={out / (label + '.out')}", "-covermode=atomic")
+        gates[name] = replace(gate, command=gate.command[:-1] + flags + gate.command[-1:])
+    for name, label in (("python-tests", "python"), ("python-tests-lens", "python-lens")):
+        gate = gates[name]
+        flags = ("--cov", f"--cov-report=lcov:{out / (label + '.lcov')}")
+        env = dict(gate.env or {}, COVERAGE_FILE=str(out / f".coverage.{label}"))
+        gates[name] = replace(gate, command=gate.command + flags, env=env)
+    return gates
+
+
 def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
@@ -80,6 +111,29 @@ def _docker_compose_available() -> bool:
         check=False,
     )
     return completed.returncode == 0
+
+
+def _shell_scripts() -> list[str]:
+    """Every shell script in the repository. git lists the tracked ones, which leaves out a
+    virtualenv or node_modules inside the checkout; without git, the tree is walked instead,
+    skipping hidden directories and node_modules."""
+    listed = subprocess.run(
+        ["git", "ls-files", "*.sh"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if listed.returncode == 0 and listed.stdout.strip():
+        return sorted(listed.stdout.splitlines())
+    return sorted(
+        str(p.relative_to(ROOT))
+        for p in ROOT.rglob("*.sh")
+        if not any(
+            part.startswith(".") or part == "node_modules" for part in p.relative_to(ROOT).parts
+        )
+    )
 
 
 def _compose_gates() -> dict[str, Gate]:
@@ -285,8 +339,8 @@ def _gates(pytest_paths: Sequence[str]) -> dict[str, Gate]:
             "shellcheck",
             (
                 "shellcheck",
-                "--severity=error",
-                *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "scripts").glob("*.sh")),
+                "--severity=warning",
+                *_shell_scripts(),
             ),
             required=False,
             available=lambda: _command_available("shellcheck"),
@@ -308,6 +362,26 @@ def _gates(pytest_paths: Sequence[str]) -> dict[str, Gate]:
             unavailable_reason="yamllint is not installed",
         ),
     }
+
+
+def _ran_no_test(command: Sequence[str], output: str) -> str:
+    """Why a test command that exited 0 proves nothing; empty when it ran a test.
+
+    pytest exits 0 when every collected test was skipped, and `go test` exits
+    0 for packages with no test files and for a -run pattern that matches
+    nothing. Each would report a pass with no test behind it.
+    """
+    if "pytest" in command:
+        summary = [line for line in output.splitlines() if re.search(r" in \d+(\.\d+)?s\b", line)]
+        if not summary:
+            return "pytest printed no summary line, so it is not known that a test ran"
+        if not re.search(r"\b[1-9]\d* passed\b", summary[-1]):
+            return f"pytest passed no test ({summary[-1].strip(' =')}): every test was skipped"
+    if tuple(command[:2]) == ("go", "test"):
+        ran = [line for line in output.splitlines() if line.startswith("ok ") and "[no tests to run]" not in line]
+        if not ran:
+            return "go test ran no test: no package has test files, or -run matched nothing"
+    return ""
 
 
 def _run_gate(gate: Gate, force_required: bool) -> Result:
@@ -337,14 +411,18 @@ def _run_gate(gate: Gate, force_required: bool) -> Result:
     )
     duration = time.monotonic() - start
     output = completed.stdout.rstrip()
+    if completed.returncode != 0:
+        reason = f"exit code {completed.returncode}"
+    else:
+        reason = _ran_no_test(gate.command, output)
     return Result(
         name=gate.name,
-        status="passed" if completed.returncode == 0 else "failed",
+        status="failed" if reason else "passed",
         required=required,
         duration_seconds=round(duration, 3),
         command=list(gate.command),
         output=output,
-        reason="" if completed.returncode == 0 else f"exit code {completed.returncode}",
+        reason=reason,
     )
 
 
@@ -397,7 +475,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    gates = _gates(args.pytest_path or PYTEST_PATHS)
+    gates = _with_coverage(_gates(args.pytest_path or PYTEST_PATHS))
     if args.list:
         for name, gate in gates.items():
             print(f"{name}\t{'required' if gate.required else 'optional'}")

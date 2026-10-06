@@ -74,6 +74,17 @@ working tree in the containers without a rebuild after every edit.
 
 ## 4. Run the quality gate
 
+Before you push, run the checks your change needs:
+
+```bash
+make verify        # fast: the gates that cover the files you changed
+make verify-full   # the same, plus the slow suites CI runs
+```
+
+It prints only what failed, each with how to fix it. To run it on every
+push, install the hook in `.pre-commit-config.yaml` with
+[prek](https://github.com/j178/prek) or pre-commit. The whole gate is:
+
 ```bash
 python scripts/production-readiness.py            # everything
 python scripts/production-readiness.py --list     # the gates
@@ -82,7 +93,27 @@ python scripts/production-readiness.py --only ruff
 
 CI runs the same gates, so a green run here usually means a green pull
 request. An optional tool you haven't installed shows as `unavailable`,
-not as a pass. More on tests is in [Testing](#testing).
+not as a pass. A test gate that ran no test fails, also when its command
+exited 0: every test skipped, a Go package with no test files, or a `-run`
+pattern that matches nothing. More on tests is in [Testing](#testing).
+
+To measure test coverage as CI does, name a directory for the reports
+(the pytest gates need `pytest-cov`):
+
+```bash
+ATLAS_COVERAGE_DIR=coverage python scripts/production-readiness.py --only python-tests
+```
+
+CI sends its coverage reports to [Codecov](https://app.codecov.io/gh/inferstep/ATLAS).
+On a pull request it adds two statuses: the coverage of the whole project,
+and of the lines you changed. They show numbers and do not fail the pull
+request. Codecov does not comment. A branch that does not have `codecov.yml`
+yet uploads nothing; update it from `dev`.
+
+CI also runs the SonarQube Cloud analysis (`sonar-project.properties`), and
+Sonar adds its result to the pull request as a check of its own. The
+analysis needs a secret, so it is skipped for a pull request from a fork;
+a maintainer sees Sonar's result after the merge.
 
 ## 5. Find an issue
 
@@ -160,6 +191,13 @@ before you click **Create pull request**.
 CI for a pull request from outside the org waits until a maintainer
 approves the run. CI on a fork never gets the repository's secrets.
 
+One check, **checks ran**, tests nothing itself. It waits for the other
+workflows of your commit and fails when one of them did not start, when a
+job that has no `if:` condition was skipped or cancelled, or when a required
+check was skipped. Each of these would otherwise look like a pass. Its
+output names what did not run and how to fix it; after you re-run a
+cancelled workflow, re-run this check too.
+
 ## 9. Review
 
 - A maintainer responds within **5 business days**.
@@ -228,6 +266,22 @@ functions, lines up to 100 characters. `ruff` runs in the gate.
 **Go.** Format with `gofmt`. `go vet` and `staticcheck` run in the gate
 for `proxy/` and `tui/`.
 
+New Go code is also linted with [golangci-lint](https://golangci-lint.run)
+(settings in `.golangci.yml`):
+
+```bash
+cd proxy    # or tui
+golangci-lint run ./... --new-from-merge-base=origin/dev
+```
+
+| It reports | What to do |
+|---|---|
+| An error that is returned and not checked, or checked and dropped | Handle it or return it. If ignoring it is right, assign it to `_` and say why in a comment |
+| A new function with a cognitive complexity over 15 | Split it into steps that each do one thing |
+| `os.Getenv` in new code | Read the setting through `envOr`, `envIntOr` or `envDurationSec`, and say in the pull request why a new switch is needed |
+| A `//nolint` with no linter name or no reason | Write `//nolint:<linter> // <reason>` |
+| Code nothing calls | Remove it |
+
 **Bash.** Must pass `shellcheck`. Start with `set -euo pipefail`, quote
 variables (`"$var"`), use `[[` for conditionals, and comment non-obvious
 logic.
@@ -272,6 +326,16 @@ pytest tests/e2e -v
   values through the subprocess environment.
 - `tests/validate_tests.py` (the `test-integrity` gate) rejects weakened
   tests, e.g. `assert True` or a swallowed exception.
+
+One more check reads your change, not the code. It looks for removed or
+skipped tests, history in new comments, new documents, and changes to the
+files that configure the checks. It says what it found, why it matters and
+what to do, and it does not fail:
+
+```bash
+python scripts/integrity_check.py                 # your branch against origin/dev
+python scripts/integrity_check.py --base <commit>
+```
 
 ## License
 

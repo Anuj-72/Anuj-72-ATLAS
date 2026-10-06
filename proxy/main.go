@@ -89,7 +89,7 @@ func resolveVerifyTarget(workingDir string) string {
 	if workingDir == "" {
 		return target
 	}
-	cfg, err := os.ReadFile(filepath.Join(workingDir, ".atlas", "config.toml"))
+	cfg, err := readConfined(workingDir, filepath.Join(".atlas", "config.toml"))
 	if err != nil {
 		return target
 	}
@@ -754,7 +754,7 @@ func main() {
 	log.SetOutput(filteringWriter{w: out})
 
 	addr := ":" + proxyPort
-	log.Printf("ATLAS Proxy v3.1.5 starting on %s", addr)
+	log.Printf("ATLAS Proxy v3.1.6 starting on %s", addr)
 	log.Printf("  Inference: %s", inferenceURL)
 	log.Printf("  Geometric Lens: %s", lensURL)
 	log.Printf("  Sandbox: %s", sandboxURL)

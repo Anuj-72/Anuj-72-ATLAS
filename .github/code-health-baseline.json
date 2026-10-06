@@ -35,7 +35,6 @@
   "proxy/agent.go:handleAgent": 267,
   "proxy/agent.go:runAgentLoop": 2112,
   "proxy/agent.go:runState.exitGates": 338,
-  "proxy/agent.go:samplePlanContext": 130,
   "proxy/agent.go:validateTaskContract": 107,
   "proxy/authorization_decision.go:decideAuthorization": 191,
   "proxy/authorization_grant.go:grantFor": 155,
@@ -92,13 +91,13 @@
   "v3-service/stages/plan_search.py:PlanSearch.generate": 128,
   "v3-service/stages/refinement_loop.py:RefinementLoop.run": 162,
   "v3-service/symbols.py:_ast_selector_to_query": 125,
-  "v3-service/symbols.py:structural_edit": 298
+  "v3-service/symbols.py:structural_edit": 297
  },
  "files": {
-  "atlas/commands/lens.py": 1555,
-  "proxy/agent.go": 9963,
-  "proxy/gates.go": 4067,
-  "proxy/guardrails.go": 3886,
+  "atlas/commands/lens.py": 1554,
+  "proxy/agent.go": 9929,
+  "proxy/gates.go": 4066,
+  "proxy/guardrails.go": 3813,
   "proxy/tools.go": 6706,
   "proxy/types.go": 2080,
   "sandbox/executor_server.py": 2171,

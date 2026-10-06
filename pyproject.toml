@@ -1,6 +1,6 @@
 [project]
 name = "atlas"
-version = "3.1.5"
+version = "3.1.6"
 description = "Adaptive Test-time Learning and Autonomous Specialization"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -49,6 +49,14 @@ atlas = "atlas.__main__:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not integration'"
+
+[tool.coverage.run]
+# The Python code the suites are measured against. A file no test imports
+# still counts, at 0%. Paths are stored relative to the repo root, so a
+# report reads the same on any machine.
+source = ["atlas", "v3-service", "geometric-lens", "sandbox", "scripts"]
+omit = ["geometric-lens/tests/*"]
+relative_files = true
 
 [build-system]
 # >=77 because the SPDX-string `license` form (PEP 639) fails the build
