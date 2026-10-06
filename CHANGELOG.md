@@ -41,6 +41,14 @@ of its layers.
 
 The contract is in `docs/EVAL_INTERFACE.md`.
 
+### Added: the test jobs measure coverage
+
+The Go, Python and TypeScript test jobs write a coverage report and upload it
+with the run. A job that produces no report fails. Until now no job measured
+coverage. Locally, `ATLAS_COVERAGE_DIR=<dir>` makes
+`scripts/production-readiness.py` write the same reports; without it a run
+is unchanged.
+
 ### Added: the reliability runner measures only the stack deployed for its commit
 
 A result is evidence only for the stack that produced it. Before its first
