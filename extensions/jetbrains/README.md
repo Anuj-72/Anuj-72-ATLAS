@@ -48,6 +48,19 @@ All commands run from `extensions/jetbrains/`:
 
 The four run tasks download a full IDE on first use, which is large and slow. They exist so the plugin can be smoke-tested against each product rather than assuming IDEA compatibility.
 
+## Smoke-test status
+
+Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the tool window can be checked in that product by hand. These are manual runs, not tests, and none of them is wired into CI.
+
+| Run task | Product | Smoke-tested by hand |
+|---|---|---|
+| `runIde` | IntelliJ IDEA | no |
+| `runPyCharm` | PyCharm 2026.1 | **yes** — `PY-261.22158.340` |
+| `runWebStorm` | WebStorm 2026.1 | no |
+| `runGoLand` | GoLand 2026.1 | no |
+
+The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above. With the tool window forced visible so its content factory actually runs, the plugin loads, the tool window renders, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
+
 ## Kotlin style
 
 `ktlint` is the Kotlin gate, and `extensions/jetbrains/.editorconfig` is the single source of the rules it applies — there is no baseline file and no rule configuration in the Gradle build. Lines are limited to 100 characters, matching the other languages in this repository.
