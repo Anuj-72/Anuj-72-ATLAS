@@ -273,6 +273,16 @@ pytest tests/e2e -v
 - `tests/validate_tests.py` (the `test-integrity` gate) rejects weakened
   tests, e.g. `assert True` or a swallowed exception.
 
+One more check reads your change, not the code. It looks for removed or
+skipped tests, history in new comments, new documents, and changes to the
+files that configure the checks. It says what it found, why it matters and
+what to do, and it does not fail:
+
+```bash
+python scripts/integrity_check.py                 # your branch against origin/dev
+python scripts/integrity_check.py --base <commit>
+```
+
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** (see [LICENSE](LICENSE)).
