@@ -59,7 +59,7 @@ the tool is a mistake and not a mystery.
 | Coverage | `pyproject.toml` (`[tool.coverage.run]`), `scripts/production-readiness.py` | Go statement coverage per module; Python line coverage over `atlas`, `v3-service`, `geometric-lens`, `sandbox`, `scripts`; TypeScript line coverage of the extension |
 | Codecov | `codecov.yml`; default branch set to `dev` on Codecov | No comment on pull requests, no notes on diff lines. Two statuses that show numbers and always pass. One flag per report (`go-proxy`, `go-tui`, `python`, `typescript`); a flag that a commit does not upload keeps its parent's result |
 | SonarQube Cloud | `sonar-project.properties`, `.github/workflows/sonar.yml`; rule sets and gate on SonarQube Cloud | Analysis runs from CI on `dev`, `main` and pull requests. Test code is named as test code. Coverage is left out. Rule sets: "Sonar way comprehensive", with `pythonsecurity:S8705` off for Python and `githubactions:S8545` and `githubactions:S8541` off for workflows; each raised mostly false alarms on this repository's own scripts and workflows |
-| SonarQube Cloud, gate | on SonarQube Cloud | Today: the built-in "Sonar way" gate. Decided, not live yet: a gate on new code that fails on any new issue, on duplication over 3%, and on security hotspots not reviewed; and for Go, the function-length rule at 100 lines |
+| SonarQube Cloud, gate | on SonarQube Cloud | The built-in "Sonar way" gate, on new code: reliability, security and maintainability rating A, duplicated lines at most 3%, security hotspots reviewed 100%. Its coverage condition has nothing to judge, because coverage is left out of the analysis. The gate reports and is not a required check |
 | CodeScene | on CodeScene | Analyses `dev` |
 
 ## Baselines on `dev`
