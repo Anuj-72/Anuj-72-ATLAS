@@ -10,6 +10,20 @@
 
     <depends>com.intellij.modules.platform</depends>
 
+    <!-- Compose and Jewel are shipped by the IDE, never bundled into the
+         plugin. Requesting the module is what puts them on this plugin's
+         classloader: without this line the tool window throws
+         NoClassDefFoundError on a product that does not enable them for us
+         (PyCharm 2026.1), even though the classes are in its distribution. -->
+    <depends>com.intellij.modules.compose</depends>
+
+    <!-- Stage 1 result: this is the only Compose-family module id a
+         third-party plugin can depend on. Jewel's widgets come with it;
+         the Jewel Markdown modules (intellij.platform.jewel.markdown.*) are
+         shipped but expose no plugin-visible id, so <depends> on them only
+         disables the plugin. Assistant text is rendered with Jewel Text
+         until the platform exposes them. See extensions/jetbrains/README.md. -->
+
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="ATLAS"
                     anchor="right"

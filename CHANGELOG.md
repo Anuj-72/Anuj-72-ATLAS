@@ -4,15 +4,30 @@
 
 ## [Unreleased]
 
-### Added: the JetBrains plugin scaffold, its style gate and its CI
+### Added: the JetBrains plugin scaffold, its Compose spike and its CI
 
 `extensions/jetbrains/` is the second IDE client ([issue #35](https://github.com/inferstep/ATLAS/issues/35)),
-scaffolded the way the VS Code extension was. This stage is the skeleton
-only: a static ATLAS tool window, the Gradle build, the gates and the
-packaging.
-- The `protocol` module holds the proxy's endpoint paths and takes no
-  IntelliJ dependency, so the wire contract is testable on its own. Two
-  JUnit tests assert the exact documented strings.
+scaffolded the way the VS Code extension was: the Gradle build, the gates,
+the packaging, and a Stage 1 spike that renders the tool window.
+- The spike mounts a Jewel Compose panel in the ATLAS tool window, streams
+  stub SSE frames so the UI has to recompose incrementally, and paints the
+  assistant text with the IDE's own theme. This stage has no HTTP, endpoint,
+  or protocol code — the client layer is Stage 2.
+- Compose and Jewel come from the target IDE and are never packaged:
+  `composeUI()` supplies the Compose modules (including the runtime split)
+  and, transitively, the Jewel widgets, and `plugin.xml` depends on
+  `com.intellij.modules.compose` so the platform puts them on the plugin's
+  classloader. Without that dependency the tool window failed with
+  `NoClassDefFoundError` on PyCharm 2026.1, which the tool-window test now
+  guards against.
+- Jewel's Markdown renderer is **not** reachable from a third-party plugin:
+  the `intellij.platform.jewel.markdown.*` modules ship in every 2026.1
+  product but expose no plugin-visible id, so the only Compose-family
+  dependency available is `com.intellij.modules.compose`, which brings the
+  widgets and not the Markdown renderer. Declaring the module directly makes
+  the platform refuse to load the plugin. Assistant text renders as Jewel
+  text until the platform exposes it; the test asserts the descriptor does
+  not reach for the module again.
 - The plugin targets IntelliJ Platform 2026.1.3 (`sinceBuild = 261`, no
   until-build) and pins Kotlin to language and API level 2.3: the 2026.1
   IDE bundles the 2.3.x standard library, so bytecode from a newer level
@@ -26,9 +41,8 @@ packaging.
   verifyPluginProjectConfiguration buildPlugin`, path-filtered to the
   plugin tree.
 - `java-kotlin` joins the CodeQL matrix, with `build-mode: manual` and a
-  forced in-process compile of both `compileKotlin` tasks that the leg
-  asserts from its log, so a skipped compile fails rather than scanning
-  nothing.
+  forced in-process `compileKotlin` that the leg asserts from its log, so a
+  skipped compile fails rather than scanning nothing.
 - `gradle` joins `.github/dependabot.yml`, scoped to
   `/extensions/jetbrains`; the platform and the IntelliJ Platform Gradle
   Plugin stay hand-managed because moving them is a compatibility

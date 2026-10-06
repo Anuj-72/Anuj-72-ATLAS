@@ -1,7 +1,7 @@
 name: jetbrains-plugin
 
 # Code-level checks for the JetBrains plugin (extensions/jetbrains/) —
-# ktlint, protocol unit tests, plugin project configuration, and a
+# ktlint, the tool-window tests, plugin project configuration, and a
 # distributable build. Kept out of test.yml's Go/Python matrix, like
 # vscode-extension.yml: the plugin is its own Gradle ecosystem and only
 # needs to run when its files change.

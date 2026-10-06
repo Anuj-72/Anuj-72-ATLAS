@@ -1,8 +1,12 @@
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
-    kotlin("jvm") version "2.4.20"
+    // 2026.1.3 bundles Kotlin 2.3.20 and Compose 1.10.0. Matching its
+    // compiler avoids Compose inline/runtime ABI mismatches in the IDE.
+    kotlin("jvm") version "2.3.20"
+    kotlin("plugin.compose") version "2.3.20"
     id("org.jetbrains.intellij.platform") version "2.19.0"
     id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
 }
@@ -18,10 +22,18 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":protocol"))
+    testImplementation("junit:junit:4.13.2")
 
     intellijPlatform {
         intellijIdea("2026.1.3")
+        // Compose and Jewel are provided by the target IDE. Never package a
+        // second copy: 2026.1.3 ships Compose Multiplatform 1.10.0 and Jewel
+        // 0.37, including the runtime split. composeUI() adds the Compose
+        // modules and transitively the Jewel widgets the plugin uses. This is
+        // compile time only — plugin.xml carries the matching runtime
+        // <depends>, which is what the classloader actually honours.
+        composeUI()
+        testFramework(TestFrameworkType.Platform)
     }
 }
 

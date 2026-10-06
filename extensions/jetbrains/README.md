@@ -2,25 +2,33 @@
 
 A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop with no agent logic in the plugin itself.
 
-**Status: Stage 1 scaffold.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35). This stage adds the plugin skeleton: a static ATLAS tool window that reports the plugin is installed and nothing more. Chat, permissions, diffs and workspace integration arrive in later stages, one pull request each.
+**Status: Stage 1 technical spike.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35). This stage proves a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme, recompose incrementally as frames arrive, and be covered by tests. The frames are a stub, not the proxy. Chat, permissions, diffs, workspace integration, and all protocol/client logic arrive in later stages, one pull request each.
+
+## Spike results
+
+| Question | Result |
+|---|---|
+| Compose panel mounts in a Swing tool window | Works, once `plugin.xml` depends on `com.intellij.modules.compose` |
+| Incremental streaming recomposition | Works — each stub frame appends and recomposes |
+| IDE theme bridging | Works via `SwingBridgeTheme` |
+| Jewel Markdown rendering | **Not reachable from a third-party plugin** (see below) |
+
+`composeUI()` only adds a *compile-time* dependency. Without the matching `<depends>com.intellij.modules.compose</depends>` in the descriptor the tool window throws `NoClassDefFoundError: androidx/compose/ui/awt/ComposePanel` on a product that does not enable Compose for other plugins — PyCharm 2026.1 was the one that caught it, even though the class is in its distribution.
+
+Jewel's Markdown renderer is a separate matter: `intellij.platform.jewel.markdown.*` modules ship in every 2026.1 product (they are in the `compose` module set) but none of them declares a plugin-visible id. In the whole PyCharm 2026.1 distribution the only Compose-family id a plugin can depend on is `com.intellij.modules.compose`, and that module depends only on Jewel's foundation, UI and IDE-LAF bridge modules. Declaring `<depends>intellij.platform.jewel.markdown.core</depends>` does not pull the module in — it makes the platform refuse to load the plugin at all. Assistant text therefore streams through Jewel `Text` for now; Markdown rendering waits until the platform exposes a depend-able id. `AtlasToolWindowFactoryTest` guards both halves of this.
 
 ## How it works
 
-The plugin is a thin client over the proxy HTTP API (see `docs/API.md`). The protocol module (`protocol/`) holds the proxy's endpoint paths and carries no IntelliJ dependency, so the wire contract can be understood and tested on its own:
-
-* `POST /v1/agent` — streams a turn (text tokens, tool calls/results, permission requests) as server-sent events
-* `POST /v1/permission` — answers permission requests raised mid-turn
-* `POST /cancel` — cancels the in-flight turn
-* `GET /ready`, `GET /health`, `GET /version` — status routes, no service token required
-
-The layout mirrors `extensions/vscode/`, which is the reference IDE client; the TUI (`tui/`) remains the reference client overall.
+The plugin will be a thin client over the proxy HTTP API (see `docs/API.md`) in Stage 2. This Stage 1 spike deliberately has no HTTP, endpoint, or protocol code. The layout mirrors `extensions/vscode/`, which is the reference IDE client; the TUI (`tui/`) remains the reference client overall.
 
 ## Requirements
 
 * JDK 21 (the Gradle toolchain pins 21; nothing else is installed for you)
 * IntelliJ Platform 2026.1 or newer (`sinceBuild = 261`)
 
-The plugin is written in Kotlin against the IntelliJ Platform 2026.1.3 SDK. Kotlin is pinned to language and API level 2.3 because the 2026.1 IDE bundles the 2.3.x standard library; compiling against a newer level produces bytecode the platform cannot load.
+The plugin is written in Kotlin 2.3.20 against the IntelliJ Platform 2026.1.3 SDK. Kotlin language and API levels are pinned to 2.3 because the IDE bundles the 2.3.x standard library; compiling against a newer level produces bytecode the platform cannot load.
+
+The spike uses the Compose runtime and Jewel modules bundled with IntelliJ Platform 2026.1.3: Compose Multiplatform 1.10.0 and Jewel 0.37. `composeUI()` supplies the Compose modules (including the runtime split) and, transitively, the Jewel widgets the plugin uses; nothing is packaged into the plugin. The build-side declaration is only half of it, though: `plugin.xml` depends on `com.intellij.modules.compose`, and that is what puts the classes on the plugin's classloader at runtime. `SwingBridgeTheme` maps the active Swing Look and Feel into the Compose content.
 
 ## Building and running
 
@@ -32,7 +40,7 @@ All commands run from `extensions/jetbrains/`:
 ./gradlew runPyCharm       # launch sandboxed PyCharm
 ./gradlew runWebStorm      # launch sandboxed WebStorm
 ./gradlew runGoLand        # launch sandboxed GoLand
-./gradlew test             # protocol unit tests
+./gradlew test             # BasePlatformTestCase tool-window integration test
 ./gradlew ktlintCheck      # Kotlin formatting and lint gate
 ./gradlew ktlintFormat     # apply the same rules
 ./gradlew buildPlugin      # build the distributable ZIP
@@ -49,10 +57,9 @@ Kotlin is intentionally **not** covered by `scripts/code_health.py`, which scans
 ## Layout
 
 ```
-build.gradle.kts        # plugin module: IPGP, Kotlin toolchain, ktlint, run tasks
-settings.gradle.kts     # root project + protocol module
-protocol/               # proxy endpoint contract, no IntelliJ dependency
-src/main/kotlin/        # tool window and, later, the client and session layers
+build.gradle.kts        # plugin module: IPGP, bundled Compose/Jewel, Kotlin toolchain, ktlint
+settings.gradle.kts     # root project
+src/main/kotlin/        # Compose tool window and, later, the client and session layers
 src/main/resources/     # META-INF/plugin.xml
 .editorconfig           # ktlint rules (single source)
 ```

@@ -51,12 +51,11 @@ updates:
       go:
         patterns: ["*"]
 
-  # The JetBrains plugin is its own Gradle build under extensions/jetbrains
-  # (root plugin + protocol module, sharing settings.gradle.kts), so one
-  # entry covers both modules' dependencies here. The IntelliJ Platform
-  # Gradle Plugin and IntelliJ Platform version are pinned in the build and
-  # stay hand-managed: bumping the platform is a compatibility decision
-  # (sinceBuild, Kotlin API level), not a routine bump.
+  # The JetBrains plugin is its own Gradle build under extensions/jetbrains.
+  # The IntelliJ Platform Gradle Plugin and the IntelliJ Platform version are
+  # pinned in the build and stay hand-managed: bumping the platform is a
+  # compatibility decision (sinceBuild, Kotlin API level), not a routine
+  # bump.
   - package-ecosystem: gradle
     directory: /extensions/jetbrains
     target-branch: dev

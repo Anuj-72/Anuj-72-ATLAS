@@ -102,12 +102,11 @@ jobs:
           (cd tui   && go build ./...)
 
       # The Kotlin plugin is a Gradle build, and CodeQL only extracts
-      # Kotlin from a compile it observes. Force both compileKotlin tasks
-      # (root plugin and protocol) to actually run: --rerun defeats the
-      # task's own up-to-date check, --no-build-cache defeats the cache,
-      # and in-process keeps the Kotlin compiler in the JVM CodeQL
-      # instruments — the Kotlin compiler daemon is a separate process
-      # that --no-daemon does not cover.
+      # Kotlin from a compile it observes. Force the plugin's compileKotlin
+      # task to actually run: --rerun defeats the task's own up-to-date
+      # check, --no-build-cache defeats the cache, and in-process keeps the
+      # Kotlin compiler in the JVM CodeQL instruments — the Kotlin compiler
+      # daemon is a separate process that --no-daemon does not cover.
       - name: build kotlin (forced, in-process)
         if: matrix.language == 'java-kotlin'
         working-directory: extensions/jetbrains
@@ -116,28 +115,28 @@ jobs:
           ./gradlew --no-daemon --no-build-cache --console=plain \
             -Pkotlin.compiler.execution.strategy=in-process \
             -Pkotlin.incremental=false \
-            :compileKotlin --rerun :protocol:compileKotlin --rerun 2>&1 | tee kotlin-compile.log
+            :compileKotlin --rerun 2>&1 | tee kotlin-compile.log
 
       # A skipped Kotlin compile extracts nothing and the leg would pass
       # while scanning zero Kotlin, so fail loudly instead. The negative
       # check uses `if grep; then exit 1` rather than `! grep`, which does
       # not fail the step under `set -e`.
-      - name: assert both kotlin compiles ran
+      - name: assert the kotlin compile ran
         if: matrix.language == 'java-kotlin'
         working-directory: extensions/jetbrains
         run: |
           set -euo pipefail
-          if grep -Eq '^> Task :(protocol:)?compileKotlin (UP-TO-DATE|FROM-CACHE|NO-SOURCE|SKIPPED)$' kotlin-compile.log; then
-            echo "::error::a Kotlin compile was skipped (see kotlin-compile.log); CodeQL would extract nothing"
+          if grep -Eq '^> Task :compileKotlin (UP-TO-DATE|FROM-CACHE|NO-SOURCE|SKIPPED)$' kotlin-compile.log; then
+            echo "::error::the Kotlin compile was skipped (see kotlin-compile.log); CodeQL would extract nothing"
             exit 1
           fi
-          for task in ':compileKotlin' ':protocol:compileKotlin'; do
+          for task in ':compileKotlin'; do
             if ! grep -Eq "^> Task ${task}$" kotlin-compile.log; then
               echo "::error::$task did not run (see kotlin-compile.log)"
               exit 1
             fi
           done
-          echo "ok: both Kotlin compiles executed"
+          echo "ok: the Kotlin compile executed"
 
       - name: analyze
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
