@@ -113,6 +113,29 @@ def _docker_compose_available() -> bool:
     return completed.returncode == 0
 
 
+def _shell_scripts() -> list[str]:
+    """Every shell script in the repository. git lists the tracked ones, which leaves out a
+    virtualenv or node_modules inside the checkout; without git, the tree is walked instead,
+    skipping hidden directories and node_modules."""
+    listed = subprocess.run(
+        ["git", "ls-files", "*.sh"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if listed.returncode == 0 and listed.stdout.strip():
+        return sorted(listed.stdout.splitlines())
+    return sorted(
+        str(p.relative_to(ROOT))
+        for p in ROOT.rglob("*.sh")
+        if not any(
+            part.startswith(".") or part == "node_modules" for part in p.relative_to(ROOT).parts
+        )
+    )
+
+
 def _compose_gates() -> dict[str, Gate]:
     """One validation gate per compose file combination we ship.
 
@@ -316,8 +339,8 @@ def _gates(pytest_paths: Sequence[str]) -> dict[str, Gate]:
             "shellcheck",
             (
                 "shellcheck",
-                "--severity=error",
-                *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "scripts").glob("*.sh")),
+                "--severity=warning",
+                *_shell_scripts(),
             ),
             required=False,
             available=lambda: _command_available("shellcheck"),

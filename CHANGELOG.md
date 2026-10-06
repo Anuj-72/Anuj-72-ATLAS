@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Changed: shellcheck reads every shell script, at warning level
+
+The shellcheck gate read `scripts/*.sh` for errors only, which left out
+`scripts/lib/`, `scripts/setup/` and the two `inference/` entrypoints. It now
+reads every `.sh` file the repository tracks and fails on warnings too. The 25
+warnings that were there are fixed:
+- `local x=$(cmd)` is split into a declaration and an assignment, so a failing
+  command is no longer hidden. Where a failure is expected and was tolerated
+  (`nvidia-smi` on a machine without an NVIDIA GPU, `curl` to a server that is
+  down, `find` on a missing template folder), the assignment keeps tolerating
+  it with `|| true`.
+- Variables that were set and never read are removed. `install.sh` now logs the
+  LLM memory request and limit it works out, beside the CPU ones.
+- The duplicate-NodePort check matches with a glob, the same literal match it
+  made before.
+
+No `# shellcheck disable=` line is added. Two existing ones are replaced: the
+`/etc/os-release` read takes a `source=/dev/null` directive, and
+`deploy-gated.sh` passes its services to `docker compose build` as an array.
+
 ### Fixed: structural_edit refused a Python method unless its first line was bare
 
 structural_edit splices a replacement in at the node's first byte. For a

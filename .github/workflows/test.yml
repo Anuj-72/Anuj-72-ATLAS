@@ -255,9 +255,9 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
 
       - name: shellcheck
-        # --severity=error catches real bugs (unquoted vars in dangerous
-        # contexts, misuse of [[ ]], etc) without bikeshedding on style.
-        # Bump to `warning` later once the scripts are stable.
+        # Every tracked .sh file, at warning level: the install and
+        # bootstrap scripts run with high privileges on a user's machine,
+        # so their warnings are worth reading. Style and info notes stay off.
         run: python scripts/production-readiness.py --only shellcheck
 
   compose-validate:

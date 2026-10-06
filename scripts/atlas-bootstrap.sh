@@ -65,11 +65,10 @@ if [[ -t 1 ]]; then
     RED=$'\033[0;31m'
     GREEN=$'\033[0;32m'
     YELLOW=$'\033[1;33m'
-    BLUE=$'\033[0;34m'
     CYAN=$'\033[0;36m'
     NC=$'\033[0m'
 else
-    BOLD='' DIM='' RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
+    BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' NC=''
 fi
 
 log_step()  { echo -e "${CYAN}${BOLD}==>${NC} ${BOLD}$*${NC}"; }
@@ -215,7 +214,8 @@ detect_distro() {
     if [[ ! -r /etc/os-release ]]; then
         die "/etc/os-release not found — can't detect distro."
     fi
-    # shellcheck disable=SC1091
+    # A system file, outside the repository, so there is nothing for shellcheck to follow.
+    # shellcheck source=/dev/null
     . /etc/os-release
     DISTRO_ID="${ID:-unknown}"
     DISTRO_VERSION_ID="${VERSION_ID:-unknown}"
@@ -1273,7 +1273,8 @@ start_compose() {
     # V3.1.1: when AMD is the detected vendor, splice in the ROCm
     # docker-compose override so /dev/kfd + /dev/dri get passed through
     # and ATLAS_BACKEND=rocm reaches the llama-server container.
-    local DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
+    local DC
+    DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
     if [[ -n "$DOCKER_PREFIX" ]]; then
         log_warn "Using sudo for docker compose (user not in docker group yet — log out/in to fix)"
     fi
@@ -1332,7 +1333,8 @@ wait_for_healthy() {
         return
     fi
 
-    local DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
+    local DC
+    DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
 
     local services=(llama-server geometric-lens v3-service sandbox atlas-proxy)
     # 450s: must exceed the llama-server healthcheck budget in
@@ -1474,7 +1476,8 @@ build_asa_steering_vector() {
         return
     fi
 
-    local DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
+    local DC
+    DC="$DOCKER_PREFIX docker compose $(compose_files_args)"
     local model_file="${ATLAS_MODEL_FILE:-}"
     if [[ -z "$model_file" ]]; then
         log_warn "ATLAS_MODEL_FILE is unset — skipping ASA build until a model is selected"
