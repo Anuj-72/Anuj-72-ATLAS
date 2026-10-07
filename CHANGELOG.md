@@ -73,6 +73,14 @@ Also fixed in the same lines: the TUI build looked for `go` only under
 packages was not found, and the build was skipped with "go: command not
 found".
 
+### Changed: the installer keeps its downloads and logs in a private temporary folder
+
+`scripts/atlas-bootstrap.sh` makes one folder with `mktemp -d` at its start,
+and every download and every log of the run goes there. An install that
+passed removes the folder at the end. When the install failed, or a step
+warned and named its log, the folder is kept, and the last line of the output
+gives its path. A message that names a log gives the path of that file.
+
 ### Changed: the setup script writes the branch rules that are in force, and the release step is a script
 
 `scripts/setup/rulesets.sh` still wrote the rules from before the merge

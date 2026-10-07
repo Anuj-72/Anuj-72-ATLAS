@@ -48,6 +48,12 @@
 #   ATLAS_DOWNLOAD_TRIES=...          how often a download that fails is tried (default: 3)
 #   ATLAS_DOWNLOAD_WAIT_SECONDS=...   the wait between two tries (default: 5)
 #
+# Downloads and logs:
+#   Every download and every log of a run is kept in a private temporary
+#   folder that the run makes for itself. An install that passed removes it
+#   at the end. When the install failed, or a message named one of the logs,
+#   the folder is kept and the last line of the output gives its path.
+#
 # Exit codes:
 #   0   success
 #   1   user-recoverable error (missing prereq, network failure, etc.)
@@ -73,12 +79,21 @@ else
     BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' NC=''
 fi
 
-log_step()  { echo -e "${CYAN}${BOLD}==>${NC} ${BOLD}$*${NC}"; }
-log_info()  { echo -e "    $*"; }
-log_ok()    { echo -e "    ${GREEN}✓${NC} $*"; }
-log_warn()  { echo -e "    ${YELLOW}!${NC} $*"; }
-log_err()   { echo -e "    ${RED}✗${NC} $*" >&2; }
-log_skip()  { echo -e "    ${DIM}⊘ $*${NC}"; }
+# A message that names a file of this run's folder (see "The folder of this
+# run" below) marks the folder, and a marked folder is kept at the end. So a
+# path that a message gave is still there when the script has ended.
+keep_if_named() {
+    if [[ -n "${ATLAS_RUN_DIR:-}" && "$*" == *"$ATLAS_RUN_DIR"* ]]; then
+        : > "$ATLAS_RUN_DIR/.keep" 2>/dev/null || true
+    fi
+}
+
+log_step()  { keep_if_named "$*"; echo -e "${CYAN}${BOLD}==>${NC} ${BOLD}$*${NC}"; }
+log_info()  { keep_if_named "$*"; echo -e "    $*"; }
+log_ok()    { keep_if_named "$*"; echo -e "    ${GREEN}✓${NC} $*"; }
+log_warn()  { keep_if_named "$*"; echo -e "    ${YELLOW}!${NC} $*"; }
+log_err()   { keep_if_named "$*"; echo -e "    ${RED}✗${NC} $*" >&2; }
+log_skip()  { keep_if_named "$*"; echo -e "    ${DIM}⊘ $*${NC}"; }
 
 die() {
     log_err "$*"
@@ -87,6 +102,40 @@ die() {
     echo -e "${DIM}For help: https://github.com/inferstep/ATLAS/issues${NC}"
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# The folder of this run
+# ---------------------------------------------------------------------------
+# Every download and every log of a run goes into one private folder that
+# `mktemp -d` makes for the run: mode 700, and a new name each run. No file
+# is written under a name of its own directly in the shared temporary folder.
+#
+# At the end the folder is removed when the install passed and no message
+# named a file in it, and when nothing was written to it. In every other case
+# it is kept, and the last line of the output gives its path.
+make_run_dir() {
+    ATLAS_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/atlas-bootstrap.XXXXXXXX") \
+        || die "Could not make the temporary folder for this run (mktemp -d failed). Fix: check that ${TMPDIR:-/tmp} can be written and has free space, then run the script again."
+}
+
+end_of_run() {
+    local rc=$?
+    if [[ ! -d "${ATLAS_RUN_DIR:-}" ]]; then
+        return 0
+    fi
+    if [[ $rc -eq 0 && ! -e "$ATLAS_RUN_DIR/.keep" ]]; then
+        rm -rf "${ATLAS_RUN_DIR:?}"
+    elif ! rmdir "$ATLAS_RUN_DIR" 2>/dev/null; then
+        local owner=""
+        if [[ "$(id -u)" == "0" && -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" ]]; then
+            owner=" (the folder belongs to root: read its logs with sudo)"
+        fi
+        printf '    The downloads and logs of this run are kept in %s%s\n' "$ATLAS_RUN_DIR" "$owner"
+    fi
+}
+
+make_run_dir
+trap end_of_run EXIT
 
 # ---------------------------------------------------------------------------
 # A download that fails is tried again
@@ -121,9 +170,9 @@ retry_download() {
     shift
     local tries="${ATLAS_DOWNLOAD_TRIES:-3}" pause="${ATLAS_DOWNLOAD_WAIT_SECONDS:-5}"
     local n=1 rc=0 dir out last
-    # The output of a try and its status are kept in a folder of their own,
-    # which only this user can read. It is removed when the step ends.
-    dir=$(mktemp -d) || return 1
+    # The output of a try and its status are kept in a folder of their own
+    # inside the folder of this run. It is removed when the step ends.
+    dir=$(mktemp -d "$ATLAS_RUN_DIR/try.XXXXXX") || return 1
     out="$dir/output"
     while true; do
         # The status of the command itself, not of the `tee` beside it.
@@ -437,13 +486,13 @@ install_docker() {
     fi
 
     # Official Docker convenience script — handles repo setup per distro.
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh || die "Failed to download Docker installer."
-    $SUDO sh /tmp/get-docker.sh >/tmp/docker-install.log 2>&1 || {
-        log_err "Docker install failed. Last 20 lines of /tmp/docker-install.log:"
-        tail -20 /tmp/docker-install.log >&2 || true
+    curl --proto '=https' --tlsv1.2 -fsSL https://get.docker.com -o "$ATLAS_RUN_DIR/get-docker.sh" || die "Failed to download Docker installer."
+    $SUDO sh "$ATLAS_RUN_DIR/get-docker.sh" >"$ATLAS_RUN_DIR/docker-install.log" 2>&1 || {
+        log_err "Docker install failed. Last 20 lines of $ATLAS_RUN_DIR/docker-install.log:"
+        tail -20 "$ATLAS_RUN_DIR/docker-install.log" >&2 || true
         die "Docker installation failed."
     }
-    rm -f /tmp/get-docker.sh
+    rm -f "$ATLAS_RUN_DIR/get-docker.sh"
 
     # Make sure compose plugin is present (some distros need it as a separate package)
     if ! docker compose version &>/dev/null; then
@@ -528,12 +577,12 @@ install_nvidia_driver_libs() {
             # 5060/70/80/90). Older GPUs work with either open or proprietary;
             # default to open since it's the future and works for both.
             log_info "Installing nvidia-driver:open-dkms (this can take 5-10 min)…"
-            if $SUDO dnf module install -y nvidia-driver:open-dkms 2>&1 | tee /tmp/atlas-nvidia-install.log; then
+            if $SUDO dnf module install -y nvidia-driver:open-dkms 2>&1 | tee "$ATLAS_RUN_DIR/atlas-nvidia-install.log"; then
                 log_ok "nvidia-driver:open-dkms installed"
                 return 0
             else
                 log_err "nvidia-driver:open-dkms install failed. Last 20 lines:"
-                tail -20 /tmp/atlas-nvidia-install.log >&2 || true
+                tail -20 "$ATLAS_RUN_DIR/atlas-nvidia-install.log" >&2 || true
                 return 1
             fi
             ;;
@@ -620,7 +669,7 @@ install_nvidia_toolkit() {
     sleep 3
 
     # Verify (using DOCKER_PREFIX since user may not be in docker group yet).
-    local verify_log=/tmp/atlas-nvidia-verify.log
+    local verify_log="$ATLAS_RUN_DIR/atlas-nvidia-verify.log"
     if $DOCKER_PREFIX docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi >"$verify_log" 2>&1; then
         log_ok "nvidia-container-toolkit verified — Docker can see GPU"
         return
@@ -731,7 +780,7 @@ install_rocm_setup() {
     # 4. Verify by running a ROCm test container — does Docker actually
     # see the GPU through /dev/kfd + /dev/dri?
     log_info "Verifying ROCm container access (pulls rocm/rocm-terminal first time, ~2 GB)…"
-    local verify_log=/tmp/atlas-rocm-verify.log
+    local verify_log="$ATLAS_RUN_DIR/atlas-rocm-verify.log"
     if $DOCKER_PREFIX docker run --rm \
             --device=/dev/kfd --device=/dev/dri \
             --group-add video --group-add render \
@@ -1132,7 +1181,7 @@ install_atlas_cli() {
     # environment") on Debian 12 / Ubuntu 23.04+ / Fedora 38+. Older pip
     # ignores it as an unknown env var, so it's safe to always set.
     log_info "Upgrading pip + setuptools (PEP 660 editable install support)…"
-    retry_download "The pip and setuptools download" --only-if "$PIP_NETWORK_ERROR" --log /tmp/atlas-pip.log -- \
+    retry_download "The pip and setuptools download" --only-if "$PIP_NETWORK_ERROR" --log "$ATLAS_RUN_DIR/atlas-pip.log" -- \
         run_as_target env PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user --upgrade --quiet \
         pip setuptools wheel \
         || log_warn "pip self-upgrade failed; continuing with system pip."
@@ -1141,11 +1190,11 @@ install_atlas_cli() {
     # Only a network error is tried again; a build error stops it at once.
     log_info "Installing ATLAS Python CLI (pip install --user -e .)…"
     if retry_download "The download for the ATLAS CLI install" --only-if "$PIP_NETWORK_ERROR" -- \
-        run_as_target env PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user -e . --quiet | tee -a /tmp/atlas-pip.log; then
+        run_as_target env PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user -e . --quiet | tee -a "$ATLAS_RUN_DIR/atlas-pip.log"; then
         log_ok "ATLAS CLI installed"
     else
-        log_warn "pip install failed (exit ${PIPESTATUS[0]}). Last 20 lines: /tmp/atlas-pip.log"
-        tail -20 /tmp/atlas-pip.log >&2 || true
+        log_warn "pip install failed (exit ${PIPESTATUS[0]}). Last 20 lines of $ATLAS_RUN_DIR/atlas-pip.log:"
+        tail -20 "$ATLAS_RUN_DIR/atlas-pip.log" >&2 || true
         log_warn "  Recovery: cd $ATLAS_INSTALL_DIR && pip install --user -e ."
         return 1
     fi
@@ -1216,7 +1265,7 @@ install_go() {
     esac
 
     local go_url="https://go.dev/dl/go${install_version}.linux-${arch}.tar.gz"
-    local tmp=/tmp/atlas-go.tar.gz
+    local tmp="$ATLAS_RUN_DIR/atlas-go.tar.gz"
     log_info "  Downloading $go_url…"
     if ! curl -fL -# -o "$tmp" "$go_url"; then
         log_warn "Go download failed — atlas-tui binary will need manual install."
@@ -1276,10 +1325,10 @@ build_atlas_tui() {
     # /usr/local/go, is not found.
     set +e
     retry_download "The Go module download" --not-if "$GO_NOT_A_NETWORK_ERROR" -- \
-        run_as_target sh -c "cd '$ATLAS_INSTALL_DIR/tui' && PATH=\"/usr/local/go/bin:\$PATH\" go mod download" | tee /tmp/atlas-tui-build.log
+        run_as_target sh -c "cd '$ATLAS_INSTALL_DIR/tui' && PATH=\"/usr/local/go/bin:\$PATH\" go mod download" | tee "$ATLAS_RUN_DIR/atlas-tui-build.log"
     local rc=${PIPESTATUS[0]}
     if [[ $rc -eq 0 ]]; then
-        run_as_target sh -c "cd '$ATLAS_INSTALL_DIR/tui' && PATH=\"/usr/local/go/bin:\$PATH\" go build -o '$out' ." 2>&1 | tee -a /tmp/atlas-tui-build.log
+        run_as_target sh -c "cd '$ATLAS_INSTALL_DIR/tui' && PATH=\"/usr/local/go/bin:\$PATH\" go build -o '$out' ." 2>&1 | tee -a "$ATLAS_RUN_DIR/atlas-tui-build.log"
         rc=${PIPESTATUS[0]}
     fi
     set -e
@@ -1288,7 +1337,7 @@ build_atlas_tui() {
         log_ok "atlas-tui built: $out"
         return 0
     else
-        log_warn "atlas-tui build failed (exit $rc). Log: /tmp/atlas-tui-build.log"
+        log_warn "atlas-tui build failed (exit $rc). Log: $ATLAS_RUN_DIR/atlas-tui-build.log"
         log_warn "  Recovery: cd $ATLAS_INSTALL_DIR/tui && go build -o $out ."
         return 1
     fi
@@ -1311,29 +1360,29 @@ download_models() {
     fi
 
     log_info "Calling scripts/download-models.sh (this can take 10-30 min on first run)…"
-    log_info "Progress is shown live below; full output also saved to /tmp/atlas-models.log."
+    log_info "Progress is shown live below."
     echo
     # Run as the target user so files end up owned by the human, not root.
     # Stream output live (no grep filter — that hid curl's progress bar
     # and any error messages that didn't match the [INFO]/[WARN]/[ERROR]
     # pattern). `tee` preserves the log without breaking line buffering.
     set +e
-    run_as_target ./scripts/download-models.sh 2>&1 | tee /tmp/atlas-models.log
+    run_as_target ./scripts/download-models.sh 2>&1 | tee "$ATLAS_RUN_DIR/atlas-models.log"
     local rc=${PIPESTATUS[0]}
     set -e
     echo
     if [[ $rc -eq 0 ]]; then
-        log_ok "Model download complete (log: /tmp/atlas-models.log)"
+        log_ok "Model download complete"
     else
         log_err "Model download failed (exit $rc)."
-        die "Model download failed — check the live output above, /tmp/atlas-models.log, disk space, or network."
+        die "Model download failed — check the live output above, $ATLAS_RUN_DIR/atlas-models.log, disk space, or network."
     fi
 
     # Lens/ASA artifacts are selected per model by the registry-aware
     # --lens path. Without compatible artifacts, scoring degrades safely.
     log_info "Fetching model-compatible Lens/ASA artifacts…"
     set +e
-    run_as_target ./scripts/download-models.sh --lens 2>&1 | tee -a /tmp/atlas-models.log
+    run_as_target ./scripts/download-models.sh --lens 2>&1 | tee -a "$ATLAS_RUN_DIR/atlas-models.log"
     rc=${PIPESTATUS[0]}
     set -e
     if [[ $rc -eq 0 ]]; then
@@ -1384,12 +1433,12 @@ start_compose() {
     log_info "Pulling images from GHCR (first run: ~3GB across 5 services)…"
     echo
     set +e
-    $DC pull 2>&1 | tee /tmp/atlas-compose-pull.log
+    $DC pull 2>&1 | tee "$ATLAS_RUN_DIR/atlas-compose-pull.log"
     local rc=${PIPESTATUS[0]}
     set -e
     echo
     if [[ $rc -ne 0 ]]; then
-        log_err "docker compose pull failed (exit $rc). Log: /tmp/atlas-compose-pull.log"
+        log_err "docker compose pull failed (exit $rc). Log: $ATLAS_RUN_DIR/atlas-compose-pull.log"
         log_err "Common causes: GHCR rate-limit, network, or auth (private package)."
         die "Image pull failed — see live output above."
     fi
@@ -1398,15 +1447,15 @@ start_compose() {
     log_info "Starting containers…"
     echo
     set +e
-    $DC up -d 2>&1 | tee /tmp/atlas-compose.log
+    $DC up -d 2>&1 | tee "$ATLAS_RUN_DIR/atlas-compose.log"
     rc=${PIPESTATUS[0]}
     set -e
     echo
     if [[ $rc -ne 0 ]]; then
-        log_err "docker compose up failed (exit $rc). Log: /tmp/atlas-compose.log"
+        log_err "docker compose up failed (exit $rc). Log: $ATLAS_RUN_DIR/atlas-compose.log"
         die "Compose start failed — see live output above."
     fi
-    log_ok "Containers started (log: /tmp/atlas-compose.log)"
+    log_ok "Containers started"
 }
 
 # ---------------------------------------------------------------------------
@@ -1574,7 +1623,7 @@ build_asa_steering_vector() {
     if [[ -f "$vector_path" ]] && [[ -s "$vector_path" ]]; then
         if command -v atlas >/dev/null 2>&1 && \
            ATLAS_CONTROL_VECTOR="$vector_path" atlas asa check --no-color \
-             >> /tmp/atlas-asa-build.log 2>&1; then
+             >> "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1; then
             log_ok "Compatible ASA steering vector already present ($(du -h "$vector_path" 2>/dev/null | cut -f1)) — skipping build"
             return
         fi
@@ -1589,7 +1638,7 @@ build_asa_steering_vector() {
         log_info "Generating model-neutral ASA contrast pairs…"
         if ! run_as_target python3 "$asa_dir/generate_pairs.py" \
              --out "$asa_dir/contrast_pairs.jsonl" --n 1000 --seed 42 \
-             >> /tmp/atlas-asa-build.log 2>&1; then
+             >> "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1; then
             log_warn "ASA contrast-pair generation failed — steering remains disabled"
             return
         fi
@@ -1601,7 +1650,7 @@ build_asa_steering_vector() {
         --positive "$models_dir/_asa_positive.txt" \
         --negative "$models_dir/_asa_negative.txt" \
         --llama-url "http://localhost:${ATLAS_LLAMA_PORT:-8080}" \
-        > /tmp/atlas-asa-build.log 2>&1
+        > "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1
     local rc=$?
     set -e
     if [[ $rc -ne 0 ]] || [[ ! -s "$models_dir/_asa_positive.txt" ]]; then
@@ -1612,7 +1661,7 @@ build_asa_steering_vector() {
 
     # 2. Stop llama-server so the GPU is free for the cvector loader.
     log_info "Pausing llama-server briefly to free the GPU…"
-    $DC stop llama-server >> /tmp/atlas-asa-build.log 2>&1 || true
+    $DC stop llama-server >> "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1 || true
 
     # 3. Run cvector-generator as a one-shot container with a rw models
     #    mount (the compose mount is :ro on purpose).
@@ -1628,14 +1677,14 @@ build_asa_steering_vector() {
         --negative-file /models/_asa_negative.txt \
         --method mean \
         -o /models/_ast_edit_steering.new.gguf \
-        -ngl 99 2>&1 | tee -a /tmp/atlas-asa-build.log
+        -ngl 99 2>&1 | tee -a "$ATLAS_RUN_DIR/atlas-asa-build.log"
     rc=${PIPESTATUS[0]}
     set -e
     echo
 
     # 4. Always restart llama-server, regardless of build outcome.
     log_info "Restarting llama-server…"
-    $DC start llama-server >> /tmp/atlas-asa-build.log 2>&1 || \
+    $DC start llama-server >> "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1 || \
         log_warn "llama-server restart returned non-zero — check 'docker compose ps'"
 
     # 5. Cleanup intermediate prompt files.
@@ -1651,10 +1700,10 @@ build_asa_steering_vector() {
         log_ok "ASA steering vector built ($(du -h "$vector_path" | cut -f1)): $vector_path"
         log_info "  Auto-activates on the next llama-server start via the entrypoint check."
         # Bounce llama-server one more time so it picks up the new vector.
-        $DC restart llama-server >> /tmp/atlas-asa-build.log 2>&1 || true
+        $DC restart llama-server >> "$ATLAS_RUN_DIR/atlas-asa-build.log" 2>&1 || true
     else
         rm -f "$vector_build_path"
-        log_warn "Local ASA build failed (exit $rc). ATLAS will run without steering rather than applying a vector trained for another model. Recovery: geometric-lens/asa_calibration/README.md or rerun bootstrap. Log: /tmp/atlas-asa-build.log. Suppress with ATLAS_BOOTSTRAP_SKIP_ASA=1.${quarantined_vector:+ Prior vector preserved at $quarantined_vector.}"
+        log_warn "Local ASA build failed (exit $rc). ATLAS will run without steering rather than applying a vector trained for another model. Recovery: geometric-lens/asa_calibration/README.md or rerun bootstrap. Log: $ATLAS_RUN_DIR/atlas-asa-build.log. Suppress with ATLAS_BOOTSTRAP_SKIP_ASA=1.${quarantined_vector:+ Prior vector preserved at $quarantined_vector.}"
     fi
 }
 

@@ -55,10 +55,12 @@ def calls(folder, name="fetch"):
     return int(counted.read_text()) if counted.exists() else 0
 
 
-def run(folder, body, tries=None):
+def run(folder, body, tries=None, wait="0"):
     script = "set -euo pipefail\n" + LOGS + function("retry_download") + setting("PIP_NETWORK_ERROR") + setting(
         "GO_NOT_A_NETWORK_ERROR") + body
-    env = {"PATH": f"{folder}:/usr/bin:/bin", "ATLAS_DOWNLOAD_WAIT_SECONDS": "0", "TMPDIR": str(folder)}
+    # The folder of the run, which the script makes at its start, is given here.
+    (folder / "run").mkdir(exist_ok=True)
+    env = {"PATH": f"{folder}:/usr/bin:/bin", "ATLAS_DOWNLOAD_WAIT_SECONDS": wait, "ATLAS_RUN_DIR": str(folder / "run")}
     if tries is not None:
         env["ATLAS_DOWNLOAD_TRIES"] = str(tries)
     return subprocess.run(["bash", "-c", script], cwd=folder, env=env, capture_output=True, text=True, timeout=20)
@@ -157,30 +159,29 @@ def test_with_a_log_file_the_output_goes_there_and_the_retry_line_is_still_print
 
 
 def test_the_helper_keeps_its_two_files_in_a_private_temporary_folder_and_removes_it(tmp_path):
-    # Where the system puts a temporary folder differs from system to system, so the helper's own call says where.
-    notes = 'mktemp() { local made; made=$(command mktemp "$@"); echo "$* $made" >> "%s/made"; echo "$made"; }\n' % tmp_path
+    # The folder is one of its own, inside the folder of the run.
     (tmp_path / "look").write_text(f"""#!/bin/bash
 calls=$(cat "{tmp_path}/look.calls" 2>/dev/null || echo 0)
 calls=$((calls + 1))
 echo "$calls" > "{tmp_path}/look.calls"
 if [ "$calls" = 2 ]; then
-  folder=$(cut -d' ' -f2- "{tmp_path}/made")
-  ls -ld "$folder" | cut -c1-10 > "{tmp_path}/folder.mode"
-  ls "$folder" | sort > "{tmp_path}/folder.files"
+  ls "{tmp_path}/run" > "{tmp_path}/run.files"
+  ls -ld "{tmp_path}"/run/* | cut -c1-10 > "{tmp_path}/folder.mode"
+  ls "{tmp_path}"/run/* | sort > "{tmp_path}/folder.files"
 fi
 echo "{TIMED_OUT}" >&2
 exit 7
 """, encoding="utf-8")
     (tmp_path / "look").chmod(0o755)
-    script = ("set -euo pipefail\n" + LOGS + notes + function("retry_download")
-              + 'retry_download "The package download" -- look || true\n')
-    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "ATLAS_DOWNLOAD_WAIT_SECONDS": "0"}
-    subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=20, check=True)
-    made = (tmp_path / "made").read_text().splitlines()
-    assert len(made) == 1 and made[0].startswith("-d "), made
+    done = run(tmp_path, 'retry_download "The package download" -- look || true\n')
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert len(retry_lines(done)) == 2, done.stdout + done.stderr
+    in_the_run = (tmp_path / "run.files").read_text().split()
+    assert len(in_the_run) == 1, in_the_run
+    assert in_the_run[0].startswith("try."), in_the_run
     assert (tmp_path / "folder.mode").read_text().strip() == "drwx------"
     assert (tmp_path / "folder.files").read_text().split() == ["output", "status"]
-    assert not Path(made[0].split(" ", 1)[1]).exists()
+    assert list((tmp_path / "run").iterdir()) == []
 
 
 def test_a_step_that_fails_and_prints_nothing_is_tried_again_and_says_so(tmp_path):
@@ -257,17 +258,15 @@ def test_when_the_modules_cannot_be_downloaded_the_build_is_not_started(tmp_path
 
 def test_each_step_says_which_of_its_errors_is_tried_again():
     calls_of = dict(re.findall(r'retry_download "([^"]+)"((?: --[a-z-]+ \S+)*) -- ', TEXT.split("\nretry_download() {", 1)[1]))
-    assert calls_of["The pip and setuptools download"] == ' --only-if "$PIP_NETWORK_ERROR" --log /tmp/atlas-pip.log'
+    assert calls_of["The pip and setuptools download"] == ' --only-if "$PIP_NETWORK_ERROR" --log "$ATLAS_RUN_DIR/atlas-pip.log"'
     assert calls_of["The download for the ATLAS CLI install"] == ' --only-if "$PIP_NETWORK_ERROR"'
     assert calls_of["The Go module download"] == ' --not-if "$GO_NOT_A_NETWORK_ERROR"'
 
 
 def test_the_wait_between_two_tries_is_kept(tmp_path):
     stand_in(tmp_path, fails=1, says=TIMED_OUT)
-    script = ("set -euo pipefail\n" + LOGS + function("retry_download") + 'retry_download "The package download" -- fetch\n')
-    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "ATLAS_DOWNLOAD_WAIT_SECONDS": "1", "TMPDIR": str(tmp_path)}
     start = time.monotonic()
-    done = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=20)
+    done = run(tmp_path, 'retry_download "The package download" -- fetch\n', wait="1")
     assert done.returncode == 0 and "Trying it again in 1s (try 2 of 3)" in done.stdout
     assert 1.0 <= time.monotonic() - start < 15
 

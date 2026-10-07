@@ -144,6 +144,8 @@ bash atlas-bootstrap.sh
 | `ATLAS_DOWNLOAD_TRIES=3` | How often a download that fails is tried before the install stops (the pip downloads and the Go module download) |
 | `ATLAS_DOWNLOAD_WAIT_SECONDS=5` | The wait between two tries of a download |
 
+**Downloads and logs.** The installer keeps its downloads and logs in a private temporary folder that it makes for the run. An install that passed removes the folder at the end. When the install failed, or a step warned and named its log, the folder is kept, and the last line of the output gives its path.
+
 **Why `/opt/atlas`?** It's the standard FHS prefix for system-wide third-party software, survives `$HOME` cleanup, and lets multiple users on the same box share one install. If you'd rather it land in your home dir:
 
 ```bash
