@@ -576,6 +576,20 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      # The upload action is taken from the commit that this workflow file
+      # comes from. For a pull request that is the merge commit, and the
+      # checkout above is the head commit: a branch that left dev before an
+      # action was added does not have it in its tree, and the step below
+      # would end with "Can't find 'action.yml'". Only the actions are taken,
+      # into a folder of their own, and after the checkout above, which
+      # clears the workspace.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          sparse-checkout-cone-mode: false
+          path: workflow-commit
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: coverage-*
@@ -586,7 +600,7 @@ jobs:
       # same way (.github/workflows/dev-results.yml).
       # zizmor asks for the `$/` form here. actionlint, in its newest version,
       # does not read that form yet, so the form both read is kept.
-      - uses: ./.github/actions/upload-coverage  # zizmor: ignore[self-repository]
+      - uses: ./workflow-commit/.github/actions/upload-coverage  # zizmor: ignore[self-repository]
         with:
           reports: ${{ runner.temp }}/reports
 
@@ -612,6 +626,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      # The upload action comes from this workflow file's own commit; see the
+      # coverage job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: .github/actions
+          sparse-checkout-cone-mode: false
+          path: workflow-commit
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: coverage-*
@@ -619,6 +642,6 @@ jobs:
 
       # zizmor asks for the `$/` form here. actionlint, in its newest version,
       # does not read that form yet, so the form both read is kept.
-      - uses: ./.github/actions/upload-test-results  # zizmor: ignore[self-repository]
+      - uses: ./workflow-commit/.github/actions/upload-test-results  # zizmor: ignore[self-repository]
         with:
           reports: ${{ runner.temp }}/reports

@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### Fixed: the two upload jobs failed on a pull request whose branch is older than their action
+
+Since the upload steps moved into two actions of this repository
+(`.github/actions/`), `coverage upload` and `test results upload` failed with
+"Can't find 'action.yml'" on a pull request whose branch left `dev` before
+that change. For a pull request GitHub runs the workflow file of the merge
+commit, and these two jobs check out the head commit, because Codecov files a
+report under it. The head commit of such a branch has no `.github/actions`
+folder.
+
+The two jobs now take the action from a second checkout: the commit that the
+workflow file comes from, with only `.github/actions`, in a folder of its
+own. The head commit stays in the workspace, and Codecov is told the same
+commit as before. A new test reads every workflow: a job that checks out
+another commit than its workflow's own takes no action from that tree.
+
 ### Changed: shellcheck reads every shell script, at warning level
 
 The shellcheck gate read `scripts/*.sh` for errors only, which left out

@@ -252,9 +252,11 @@ def uses_of(name):
 
 
 def test_both_workflows_send_through_the_same_two_actions():
-    for name in ("test.yml", "dev-results.yml"):
+    # The jobs of test.yml have the head commit of a pull request in the workspace, so they take the actions from a
+    # folder that holds the workflow's own commit (tests/infrastructure/test_workflow_local_actions.py).
+    for name, folder in (("test.yml", "./workflow-commit/"), ("dev-results.yml", "./")):
         local = [use for use in uses_of(name) if use.startswith("./")]
-        assert local == ["./.github/actions/upload-coverage", "./.github/actions/upload-test-results"], name
+        assert local == [folder + ".github/actions/upload-coverage", folder + ".github/actions/upload-test-results"], name
         assert not [use for use in uses_of(name) if use.startswith("codecov/")], f"{name} sends by itself"
 
 
