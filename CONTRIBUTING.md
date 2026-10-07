@@ -282,9 +282,25 @@ golangci-lint run ./... --new-from-merge-base=origin/dev
 | A `//nolint` with no linter name or no reason | Write `//nolint:<linter> // <reason>` |
 | Code nothing calls | Remove it |
 
+**Dockerfiles.** [hadolint](https://github.com/hadolint/hadolint) reads every
+Dockerfile. It reports and does not fail for a finding. With hadolint
+installed, `python scripts/dockerfile_lint.py` prints what CI prints. Do not
+add a finding in a Dockerfile you change; if a rule is wrong for a line, say
+why in the pull request and do not switch the rule off in the file.
+
 **Bash.** Must pass `shellcheck`. Start with `set -euo pipefail`, quote
 variables (`"$var"`), use `[[` for conditionals, and comment non-obvious
 logic.
+
+**Workflows.** [zizmor](https://docs.zizmor.sh) and
+[actionlint](https://github.com/rhysd/actionlint) read every file in
+`.github/workflows/`, and a finding fails the job. To run them yourself:
+`zizmor .github/workflows/*.yml` and
+`actionlint -shellcheck= -pyflakes= .github/workflows/*.yml`. Every
+`actions/checkout` step sets `persist-credentials: false`, and a value from
+`${{ }}` reaches a script through `env`, not pasted into the script. If a step
+must stay as zizmor names it, write `# zizmor: ignore[<rule>]` on its line with
+the reason beside it, and say so in the pull request.
 
 **Kotlin** (the JetBrains plugin, `extensions/jetbrains/`). `ktlint` is the
 gate, and `extensions/jetbrains/.editorconfig` is the single source of the
@@ -326,11 +342,24 @@ pytest tests/e2e -v
   values through the subprocess environment.
 - `tests/validate_tests.py` (the `test-integrity` gate) rejects weakened
   tests, e.g. `assert True` or a swallowed exception.
+- A test of a limit must be harmless when the limit fails. A command that
+  the limit has to stop ends by itself a little above that limit: build it
+  with `tests/infrastructure/bounded_commands.py`.
 
 One more check reads your change, not the code. It looks for removed or
-skipped tests, history in new comments, new documents, and changes to the
-files that configure the checks. It says what it found, why it matters and
-what to do, and it does not fail:
+skipped tests, history in new comments, new documents, new suppression
+markers, and changes to the files that configure the checks. It says what it
+found, why it matters and what to do, and it does not fail. Three things keep
+its report short:
+- A skip needs its reason: the message of the skip, or a comment on its line
+  or the line directly above. Then a maintainer approves the reason and you
+  have nothing else to do. A skip with no reason asks you for one. A form
+  that stops more than one test (`pytestmark`, a skip on a class, `.only`, a
+  build tag on a Go test file) is named with how far it reaches.
+- A test you rename in place is listed, not questioned. So is a test whose
+  body becomes a helper that your tests call.
+- An import that must follow the line that sets the import path takes
+  `# noqa: E402` and is not counted as a suppression. Every other marker is.
 
 ```bash
 python scripts/integrity_check.py                 # your branch against origin/dev

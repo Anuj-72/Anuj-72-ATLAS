@@ -33,11 +33,18 @@ def test_a_document_change_runs_only_the_checks_of_the_whole_tree(verify):
 def test_a_proxy_change_runs_the_go_gates_and_leaves_the_slow_suite_to_full(verify):
     gates, suites, lens = verify.select(["proxy/agent.go"], full=False)
     assert gates == ALWAYS + ["go-proxy-vet", "go-proxy-staticcheck"]
-    assert suites == []
+    assert suites == ["tests/replay"]
     assert not lens
     gates, suites, _ = verify.select(["proxy/agent.go"], full=True)
     assert "go-proxy-test" in gates
-    assert suites == ["tests/e2e"]
+    assert suites == ["tests/replay", "tests/e2e"]
+
+
+def test_a_file_that_sends_to_the_agent_runs_the_test_that_lists_the_senders(verify):
+    contract = "tests/contracts/test_api_version_contract.py"
+    assert contract in verify.select(["tests/replay/stage.py"], full=False)[1]
+    assert contract not in verify.select(["tests/replay/recording.py"], full=False)[1]
+    assert verify.select(["atlas/cli.py", "tests/replay/stage.py"], full=False)[1].count(contract) == 0
 
 
 def test_a_tui_change_runs_its_tests_too(verify):
@@ -124,3 +131,22 @@ def test_a_base_it_cannot_read_is_an_error_with_a_fix(verify):
     done = subprocess.run([sys.executable, str(SCRIPT), "--base", "no-such-branch"], capture_output=True, text=True, check=False)
     assert done.returncode == 2
     assert "fix:" in done.stderr
+
+
+def test_a_dockerfile_change_asks_for_hadolint_when_it_is_not_installed(verify, monkeypatch):
+    monkeypatch.setattr(verify.shutil, "which", lambda name: None)
+    assert verify.hadolint_notes(["inference/Dockerfile.vulkan"]) == [
+        "skip hadolint: it is not installed (https://github.com/hadolint/hadolint/releases)"]
+
+
+def test_a_dockerfile_change_shows_the_findings_of_its_own_files(verify, monkeypatch):
+    monkeypatch.setattr(verify.shutil, "which", lambda name: "/usr/bin/" + name)
+    listed = "proxy/Dockerfile:2: DL3003 warning: Use WORKDIR\nsandbox/Dockerfile:9: DL3008 warning: Pin\nhadolint: 2 finding(s)\n"
+    monkeypatch.setattr(verify.subprocess, "run", lambda *args, **kwargs: verify.subprocess.CompletedProcess(args, 0, listed, ""))
+    assert verify.hadolint_notes(["proxy/Dockerfile", "docs/API.md"]) == [
+        "note hadolint (reports, does not fail):", "  proxy/Dockerfile:2: DL3003 warning: Use WORKDIR"]
+
+
+def test_a_change_with_no_dockerfile_does_not_run_hadolint(verify):
+    assert verify.hadolint_notes(["proxy/agent.go", "scripts/check_dockerfile_sources.py"]) == []
+

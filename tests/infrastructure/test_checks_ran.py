@@ -15,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "checks_ran.py"
 TESTS = ".github/workflows/tests.yml"
+TITLE = ".github/workflows/pr-title.yml"
 
 
 @pytest.fixture(scope="module")
@@ -115,6 +116,18 @@ def test_every_workflow_of_this_repository_can_be_judged(ran, change):
 
 
 # --- which run and which jobs --------------------------------------------------
+
+def test_the_replay_workflow_is_expected_only_when_its_paths_changed(ran, change):
+    workflows = ran.read_workflows(ROOT)
+    replay = ".github/workflows/replay.yml"
+    assert replay in ran.expected_workflows(workflows, change, ["proxy/agent.go"], "")[0]
+    assert replay in ran.expected_workflows(workflows, change, ["tests/replay/recordings/normal_edit.json"], "")[0]
+    expected, unread = ran.expected_workflows(workflows, change, ["docs/README.md"], "")
+    assert replay not in expected
+    assert replay not in unread
+    in_the_queue = change._replace(event="merge_group", action="checks_requested")
+    assert replay in ran.expected_workflows(workflows, in_the_queue, ["docs/README.md"], "")[0]
+
 
 def test_the_newest_run_of_a_workflow_for_the_event_counts(ran):
     runs = [run(TESTS, "cancelled", created="2000-01-01T00:00:00Z", run_id=1),
@@ -308,3 +321,82 @@ def test_the_report_prints_each_finding_and_an_annotation(ran, capsys):
     assert "FAIL workflow x failed to start. Fix: y." in out
     assert f"::error file={TESTS},title=a check did not run::workflow x failed to start. Fix: y." in out
     assert "1 check(s) did not run" in out
+
+
+def waiting_run(path, **more):
+    return run(path, conclusion="action_required", **more)
+
+
+def test_a_run_that_waits_for_approval_is_named_as_waiting_and_not_as_a_job_that_reported_nothing(ran, change):
+    workflows = {TESTS: workflow(unit={"name": "unit"}), TITLE: workflow(title={"name": "pr title"})}
+    runs = {TESTS: run(TESTS), TITLE: waiting_run(TITLE)}
+    jobs = {TESTS: [job("unit")], TITLE: []}
+    findings, waiting, _, ran_to_an_end = ran.judge(workflows, [TESTS, TITLE], runs, [],
+                                                    lambda r: jobs[r["path"]], ["unit", "pr title"], change)
+    assert waiting == [TITLE]
+    assert messages(findings) == ""
+    assert ran_to_an_end == 1
+
+
+def test_without_the_rule_the_same_run_reads_as_a_job_that_reported_nothing(ran, change):
+    workflows = {TITLE: workflow(title={"name": "pr title"})}
+    findings, _, _ = ran.check(workflows, [TITLE], {TITLE: waiting_run(TITLE)}, lambda r: [], ["pr title"], change)
+    assert "reported nothing: `pr title`" in messages(findings)
+
+
+def test_no_required_check_is_judged_while_a_run_waits(ran, change):
+    workflows = {TESTS: workflow(unit={"name": "unit"}), TITLE: workflow(title={"name": "pr title"})}
+    runs = {TESTS: run(TESTS), TITLE: waiting_run(TITLE)}
+    jobs = {TESTS: [job("unit", "skipped")], TITLE: []}
+    asked = []
+
+    def required_spy(required, reported, branch):
+        asked.append(list(required))
+        return []
+    original, ran.required_findings = ran.required_findings, required_spy
+    try:
+        ran.judge(workflows, [TESTS, TITLE], runs, [], lambda r: jobs[r["path"]], ["unit", "pr title"], change)
+    finally:
+        ran.required_findings = original
+    assert asked == [[]]
+
+
+def test_the_check_does_not_pass_while_a_run_waits(ran):
+    assert ran.outcome([], []) == (0, "checks ran: every check ran")
+    status, line = ran.outcome([], [TITLE])
+    assert status == 1
+    assert line == "checks ran: no verdict yet, 1 workflow(s) wait for a maintainer's approval"
+    status, line = ran.outcome([ran.Finding(TESTS, "x")], [TITLE])
+    assert status == 1
+    assert "1 check(s) did not run, and 1 workflow(s) wait" in line
+
+
+def test_the_waiting_message_says_what_each_person_does(ran, capsys):
+    status = ran.report([], [], True, [TITLE])
+    out = capsys.readouterr().out
+    assert status == 1
+    assert f"WAIT workflow {TITLE} waits for a maintainer's approval" in out
+    assert "If you opened the pull request, there is nothing for you to do." in out
+    assert 'A maintainer: approve the waiting runs on the pull request ("Approve and run"), then run this check again.' in out
+    assert f"::warning file={TITLE},title=waiting for a maintainer's approval::" in out
+    assert "::error" not in out
+    assert "reported nothing" not in out
+
+
+def test_the_wait_for_the_other_runs_does_not_wait_for_an_approval(ran):
+    listings = iter([{TITLE: waiting_run(TITLE)}])
+    runs, running = ran.settle(lambda: next(listings), [TITLE], limit=600, pause=lambda s: None, clock=lambda: 0.0)
+    assert running == []
+    assert runs[TITLE]["conclusion"] == "action_required"
+
+
+def test_a_run_that_starts_after_its_approval_is_waited_for_like_any_other(ran):
+    clock = type("Clock", (), {"now": 0.0})()
+    listings = iter([{TITLE: run(TITLE, status="in_progress", conclusion=None)}, {TITLE: run(TITLE)}])
+
+    def pause(seconds):
+        clock.now += seconds
+    runs, running = ran.settle(lambda: next(listings), [TITLE], limit=600, pause=pause, clock=lambda: clock.now)
+    assert running == []
+    assert runs[TITLE]["conclusion"] == "success"
+

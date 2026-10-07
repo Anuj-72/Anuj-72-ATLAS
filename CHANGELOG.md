@@ -150,6 +150,34 @@ notes off, and makes its two statuses report without failing. A commit that
 has no `codecov.yml` uploads nothing, because Codecov would use its own
 defaults for it.
 
+### Added: CI sends the result of each test to Codecov
+
+A test that passes only sometimes looks green on the run that matters. The
+test jobs now write the result of each test as a JUnit file, and two new
+jobs, `test results upload` and `test results upload (extension)`, send them
+to Codecov's test report, under the flags of the coverage reports. They run
+also when a test job failed, because a failed test is what the report is
+for, and a refused upload turns only the upload job red. No secret is used.
+The report is the "Tests" tab of the repository on Codecov and blocks
+nothing.
+
+In CI the Go test gates run `go test -json`. `scripts/production-readiness.py`
+turns the events back into the text `go test` prints (what each package said,
+and the output of every failed test) and judges that text as before; the
+result of each test is written beside the cover profile. A run without
+`ATLAS_COVERAGE_DIR` is unchanged.
+
+### Changed: a test run for a commit of `dev` is not cancelled by the next push
+
+The `tests` and `vscode-extension` workflows cancelled a run when a newer
+commit came to the same branch. When pull requests merged one after another,
+the run of every commit but the last was cancelled: of the last 30 pushes to
+`dev`, 13 lost their test run, and with it their coverage and test results.
+A pushed commit now has a concurrency group of its own and runs to the end.
+On a pull request a newer commit still cancels the run of the older one. The
+other workflows that start on a push keep cancelling: the result for the
+newest commit takes the place of the older ones.
+
 ### Changed: the SonarQube Cloud analysis runs from CI
 
 Sonar analysed only the default branch by itself. A new `sonar scan` job
@@ -173,6 +201,25 @@ five image ids and whether the identity was verified. A stack with no deploy
 record, such as one on a contributor's machine, runs, but is marked
 unverified.
 
+### Fixed: a check that compares with the base counted the base branch's later changes as the pull request's
+
+Four workflows (the integrity check, `checks ran`, golangci-lint and hadolint)
+took the base of their comparison from the base commit of the pull request
+event. The job checks out the merge of the pull request into the base branch
+as it is now, so every change the base branch got in between was read as part
+of the pull request: the integrity check named files the pull request did not
+touch, `checks ran` could expect a workflow that GitHub had no reason to
+start, and a pull request was judged by an old copy of a script.
+
+The base is now the first parent of the checked-out merge commit, read in one
+place, `scripts/change_base.py`. It stops the step when the checkout is not
+that merge, and takes no other base in its place. In the merge queue the base
+is the one parent of the queue's commit, as before. The base branch's copy of
+the script gives the answer, so a change cannot choose its own base, and the
+script is on the integrity check's list of files that configure the checks.
+The step stops when the parent commit is not in the checkout, and runs no
+copy of the script then.
+
 ### Added: a check that reads the change, not the code
 
 `scripts/integrity_check.py` reads a change's diff for the ways it can weaken
@@ -187,6 +234,129 @@ request. It reports and does not fail the job.
 - New dependencies and large changes are listed.
 
 Each finding says what was found, why it matters and what to do.
+
+### Changed: the integrity check flags less noise and reads more kinds of file
+
+A run of the check over 50 past commits of `dev` found that most of what it
+asked a maintainer to look at was noise from three causes, and that it could
+not see some things at all. Five changes:
+
+- An import that follows the line that sets the import path, marked
+  `# noqa: E402`, is no longer a new suppression. A marked line that only
+  moved inside its file is no longer new either.
+- A size baseline whose numbers only go down, or that loses an entry, is
+  listed for information. A raised number, a new entry or a changed limit
+  still needs a maintainer's approval.
+- A test whose name line changed while its body stayed is listed as renamed,
+  or as turned into a helper when tests of the change call that helper. A
+  test removed with its body, or renamed to a name the runner does not
+  collect, is still reported as removed.
+- A skip with its reason now asks for a maintainer's approval and quotes the
+  reason; a skip with no reason still asks the author for one. A call to a
+  function that skips counts as a skip: one finding for each such function
+  and file, with the number of calls.
+- Suppression markers are read by kind of file: Go, Python, TypeScript and
+  JavaScript, shell, workflow files and Dockerfiles each have their own
+  markers, so the markers of zizmor, yamllint, hadolint, staticcheck and the
+  extension's coverage tool are seen, `NOSONAR` is read in every kind, and a
+  marker's words in a file its linter does not read are text. In a workflow
+  file `continue-on-error: true` and `persist-credentials: true` are named.
+  More files need approval: the canary's list, the replay recordings, the
+  local gate, the scripts whose result is a check's result, and the scripts
+  a workflow runs with a credential that can write.
+
+On the same 50 commits: 18 marker findings, 7 baseline findings, 1 skip and 1
+removed test are no longer reported as they were; 4 changes to newly listed
+files are reported.
+
+### Changed: the integrity check knows the forms by which a test stops running
+
+The check read a skip as one line with one pattern. A skip marker with a name
+of its own, put on nine tests, gave one finding, on the line that defines it.
+Some forms gave none. The forms are now one table for each runner:
+
+- pytest: `skip`, `skipif` and `xfail` as a decorator, a call, a marker with
+  a name of its own, or inside `pytest.param`; `pytestmark`; `importorskip`;
+  `__test__ = False`; and in a `conftest.py`: `collect_ignore`,
+  `collect_ignore_glob`, `pytest_ignore_collect`, and a hook that adds a skip
+  marker.
+- unittest: the skip decorators, `expectedFailure`, `self.skipTest` and
+  `SkipTest`.
+- Go: `t.Skip`, and a build tag on a test file.
+- vitest: `.skip`, `.todo`, `.fails`, `.only`, `.skipIf`, `.runIf`, `xit` and
+  `xdescribe`, also after another word, as in `it.concurrent.skip`.
+
+A form that stops more than one test says how far it reaches: every test of
+the class, of the group or of the file, every other test of the file (`.only`),
+whole test files, or the tests a hook picks. The uses of a named skip marker
+are one finding for each marker and file, with the number of uses. So are the
+calls to `importorskip` in the tests of a file, for each module; the module
+is the reason. A `conftest.py` is read as test material. The same words
+inside a string are text.
+
+Nothing that was reported is dropped. One finding changes its cause: a skip
+marker defined below a helper function was read as part of that function, so
+tests that call the helper were named. The tests that carry the marker are
+named now.
+
+### Changed: the integrity check names a test that leaves the plain test jobs
+
+The pytest jobs run with `-m 'not integration'`. A test that gets the
+`integration` mark is no longer run by them, and the check said nothing. It
+now reads the marks that the runner's settings leave out (`addopts` in
+`pyproject.toml`) and names three ways a change takes a test out: the mark
+on a test or a file that was there before, a file added to the list of the
+hook in a `conftest.py`, and a test file moved under a folder that the hook
+names. A test that is new with the mark is listed for information.
+
+The gates page lists the files that are left out today: 125 tests in 7
+files, which no CI job runs until the nightly runs exist.
+
+Also: a vitest test that gets a modifier in front of its name (`it.only`,
+`it.skipIf(...)`) was reported as removed beside the right finding. It is no
+longer.
+
+### Fixed: a deletion the proxy cannot ask about no longer reads as denied by the user
+
+Before a deletion is approved the proxy holds the file, so that the approval
+is bound to the thing the user saw. That hold exists on Linux only. A proxy
+built for another system refuses every `delete_file` before anyone is asked,
+and the user and the model read "permission denied by user".
+- That refusal now gives its reason: the file could not be held, nobody was
+  asked, nothing was deleted. The reason is in the `tool_result` event, in
+  the message the model reads, and in a new `reason` field of the
+  `permission_denied` event. The terminal client shows it in place of
+  "permission denied".
+- Every other call that is not allowed reads as before, byte for byte: a
+  deletion the user denied, a prompt that timed out, a cancelled request and
+  the other refusals before asking. Those other refusals still read as a
+  denial; that is a separate change.
+- The proxy tests that go through the deletion approval are skipped on a
+  system without the hold, each with the reason printed (`go test -v`). On
+  Linux they run as before. The proxy suite now passes on macOS.
+
+### Changed: a call that was not allowed says why, unless a user denied it
+
+Every call that was not allowed read "permission denied by user", to the user
+and to the model, whether or not a user had denied anything. Now only a
+denial by the user reads so. The other cases give their own reason, in the
+`tool_result` event, in the message the model reads and in the `reason` field
+of the `permission_denied` event, on every system:
+
+- A `delete_file` that the proxy refuses before it asks: a path outside the
+  workspace, a target on the deny list, a file that does not exist, a
+  directory that is not empty, a file type that is not supported, an empty
+  path, arguments that cannot be read. The text is the refusal the tool
+  itself gives, followed by "Nobody was asked, and nothing was deleted."
+- A call that needs approval in a request with no `session_id`: nobody could
+  be asked.
+- A request that ended before the prompt was answered.
+- A prompt that nobody answered in time. The text tells the model not to
+  send the same call again in the turn, because it would wait for the same
+  prompt.
+
+This changes text that the model reads on Linux too. Who is asked, when, and
+what is deleted do not change.
 
 ### Fixed: a question was told to stop reading and write a file
 
@@ -209,6 +379,21 @@ cognitive complexity over 15, new `os.Getenv` switches, suppressions without
 a reason, and formatting. It reports and does not fail the job. The settings
 are in `.golangci.yml`; CONTRIBUTING.md says how to run it and what to do
 about each finding.
+
+### Added: size and complexity limits for the VS Code extension
+
+The Go and Python code have a size check; the extension's TypeScript had none.
+Its lint now fails for a function over 100 lines, or with more than 15
+decision points, where a switch counts once however many cases it has. Two
+files hold a larger function and are listed in `extensions/vscode/eslint.config.mjs`
+with its size: `ChatViewProvider.dispatch` (188 lines, 33 decision points) and
+`predictEdit` (17 decision points). A listed number may go down and may not go
+up. ESLint sets a limit for a whole file, so another function in a listed file
+can reach the listed size before the lint fails.
+
+A test in the extension's suite writes a function one over each limit and
+expects the error, and fails when a listed number is larger than its file
+needs.
 
 ### Fixed: an edit_file old_str that stopped matching its file ran on to the token cap
 
@@ -325,6 +510,27 @@ manifest, is kept by `atlas artifact` snapshot and rollback, and is shipped
 by `atlas lens publish`. When a reference cannot be scored, the bundle gets
 no fingerprint (the check enforces nothing) rather than a wrong one.
 
+### Added: zizmor and actionlint read the workflow files
+
+The workflows are the checks, and only a syntax check read them. Two jobs now
+do: `zizmor (workflows)` for security mistakes and `actionlint (workflows)` for
+mistakes GitHub shows only when a workflow runs. A finding fails the job. Both
+tools are release binaries at a fixed version, held against checksums the
+workflow records.
+
+What zizmor found is fixed:
+- 19 checkout steps kept the job's token in the checkout's git settings. They
+  set `persist-credentials: false` now. One checkout keeps the token, with its
+  reason on the line: the weekly star chart pushes to its own branch.
+- The job that checks the llama.cpp patches pasted the pinned revision into
+  four shell lines. The value reaches the scripts through `env` now.
+- The comment beside the Trivy pin named no tag. It says `v0.36.0` now; the
+  pinned commit is unchanged.
+
+actionlint 1.7.12 found nothing. A test in `tests/infrastructure` holds every
+checkout step to the same rule, so a new one without the setting fails a
+required check. The canary plants a workflow for the two new jobs.
+
 ### Added: a check that fails when another check did not run
 
 A workflow that fails to start shows no check on a pull request, and a job
@@ -339,6 +545,16 @@ when a required check was skipped or was reported by no job. Jobs skipped by
 their own `if:` condition are listed, not judged. The job is not a required
 check.
 
+### Fixed: `checks ran` called a run that waits for approval a job that reported nothing
+
+GitHub holds the runs of a pull request from a fork until a maintainer
+approves them. Such a run has no job, and `checks ran` read that as "1 job(s)
+reported nothing" and turned red on a pull request with nothing wrong. It now
+says that the workflow waits for a maintainer's approval, what the
+contributor does (nothing) and what the maintainer does, and gives no
+verdict: it does not pass while a run waits, and it judges no required check
+until the run has run.
+
 ### Fixed: the `checks ran` job called every workflow missing after one listing without them
 
 The job reads GitHub's list of the runs of a commit once a minute. On one
@@ -350,6 +566,41 @@ workflows that never started and failed, though every one of them ran.
 - Each listing prints one line: how many of the expected workflows are
   listed, how many are running and how many are not listed. A listing that
   leaves out a known run is named in the log.
+
+### Added: replay tests that run the proxy against a recorded session
+
+The proxy is about to be restructured in many small steps. Unit tests check
+pieces; a replay shows that the whole loop still does the same on a recorded
+session, with no model and in seconds. `tests/replay` runs the proxy as a
+binary built from the change. Its four services (the model, the sandbox, V3
+and the lens) are stand-ins that play a recording, and each request the proxy
+sends them is compared, whole, with the recorded one. The events to the
+client and the files at the end are compared too. A test of this kind does
+not know how the proxy is built inside, so moving code does not touch it; a
+change in what the proxy sends, says or writes fails it at the first place
+the run differs. The first recording is a normal session (read, edit, run,
+done). The job `replay (proxy)` runs on pull requests that touch `proxy/` or
+`tests/replay/` and in the merge queue, and is not a required check
+(`docs/quality/gates.md`).
+
+### Added: six more replay cases, the order of calls, and three commands
+
+The replay tests (`tests/replay`) now hold seven recorded sessions: a normal
+one, a tool call that is not well formed, a reply that is cut off, the same
+call again and again until the proxy stops the session, an edit that would
+leave the file unparseable, a write of a whole existing file that is refused
+and redirected, and a `done` before anything was run.
+- The order of the proxy's calls is held across all four services, not only
+  within each one. A recording of a session with calls at the same time can
+  say `"order": "per service"`.
+- `python -m tests.replay.rewrite` writes the expected side of a recording
+  again from the proxy of the checkout and keeps the recorded answers, for a
+  change that is meant to alter what the proxy does.
+- `python -m tests.replay.reach` says how much of the proxy the recordings
+  run through: 26.0% of its statements, and 66 of 131 check functions.
+- `make verify` runs the replay when a file of the proxy changed, and runs
+  the test that lists the senders of agent requests when a changed file
+  sends one.
 
 ### Added: a canary that shows each check still turns red
 
@@ -365,6 +616,46 @@ know, and a canary that was not renewed in 14 days. The two required CodeQL
 jobs and `dependency review` are not covered; the list says why. The renewal
 is by hand, once a week (`docs/quality/gates.md`).
 
+### Changed: a check on the canary must be red for its own violation
+
+`scripts/canary.py check` looked at the color of a check. A job that is red
+from a network fault counted as a check that still works. Each violation in
+`.github/canary.json` now names the text that the log of its check shows
+(`shows`), and the script reads the log of each red check: one that is red
+without that text is named.
+
+Nine more violations: the replay tests (one changed word in a text the model
+reads), the VS Code extension's job (a function over its size limit),
+`pytest (tests/concurrency)`, `pytest (tests/perf)`, the performance gate (a
+budget that every build is over), and the four sandbox smoke jobs (a sample
+that prints a marker and ends with an error). 32 checks must be red now, 23
+before. Two violations can share a file.
+
+Every check that runs on the canary is in the list, with a violation or with
+the reason why it has none. A check that the list does not know is named, so
+a new job cannot run there without a decision. A check with no violation of
+its own that is red through another check's violation is listed with that
+path; one that is red and not listed so is named.
+
+### Added: hadolint reads every Dockerfile, and the weekly scan reads the inference images
+
+Nothing linted the Dockerfiles, and the inference images were the only
+published images no scanner read.
+
+- A `hadolint (dockerfiles)` job lints every Dockerfile the repository tracks
+  (`scripts/dockerfile_lint.py`). It reports and does not fail for a finding:
+  the counts are in the job summary, and the findings in a Dockerfile a change
+  touches are annotations. It fails when it could not lint: no Dockerfile,
+  hadolint did not run, or hadolint could not read a Dockerfile. hadolint is
+  its release binary at v2.15.1, held against a checksum the workflow records.
+  Today it reports 37 findings in 8 Dockerfiles, none of them an error.
+- `make verify` shows hadolint's findings for the Dockerfiles a change
+  touches, when hadolint is installed.
+- The weekly container scan and its signature check read six images, not
+  four: `atlas-llama` and `atlas-llama-vulkan` are added. The ROCm image is
+  built on the user's machine and never published, so it is not scanned.
+- The canary plants a `RUN cd` line for the new job.
+
 ### Added: a page for the quality gates and their baselines
 
 `docs/quality/gates.md` lists the checks on a pull request and which of them
@@ -372,6 +663,21 @@ are required, how the size check, the linters, Codecov, SonarQube Cloud and
 CodeScene are set, and the numbers measured on `dev`: coverage, the size and
 lint counts, and what the outside tools report. The numbers are starting
 points, not targets.
+
+### Changed: the reliability runner answers a permission prompt by a stated policy
+
+A deletion always asks for permission, also in the mode the runner sends, and
+the proxy then waits for an answer for as long as its own limit says (ten
+minutes unless the stack sets another). `scripts/e2e-reliability.py` sent no
+answer, so a session whose model tried to delete a file stood still for that
+whole wait. The runner now answers at once by a policy the run states:
+`--prompts deny` (the default: an unattended run has nobody who could
+approve), `allow`, or `wait` (send nothing, as before). The policy is kept
+with the run (`stack.prompt_policy`), and each prompt with its session
+(`prompts`: the tool, the answer, and whether the proxy took it).
+
+The two loops that read a session's stream are one function now, in
+`scripts/reliability_stream.py`.
 
 ### Added: the reliability runner records container restarts and OOM kills
 
@@ -383,6 +689,21 @@ away during the session is named in the session's `stack_changes` field, in
 the run log, and in a summary line. The outcome of such a session was
 measured over an unstable stack. When docker cannot be asked, nothing is
 claimed.
+
+### Changed: the Go test jobs keep a build cache, and a Go test gate never takes a cached result
+
+The two Go test jobs build with a module and build cache of their own
+(`actions/cache`, with a key from the module, the Go version and the module's
+`go.mod` and `go.sum`). The proxy job had none: the cache setting named
+`proxy/go.sum`, which does not exist. A run in the merge queue takes no part:
+it cannot read a cache of `dev`, and what it saved nothing could read again.
+The two small proxy jobs that build once state that they use no cache.
+
+`go test` prints `ok ... (cached)` and runs nothing when a package's earlier
+result is in its test cache. A build cache carries those results, and the
+test gate read such a line as a pass. Both Go test gates now run with
+`-count=1`, and a result that still comes from the cache fails the gate with
+its reason.
 
 ### Fixed: a test gate passed when it ran no test
 
@@ -407,6 +728,39 @@ the lens has read it since the project indexer was removed. The template no
 longer creates or mounts it, and `ATLAS_PVC_PROJECTS_SIZE` is gone from
 `atlas.conf.example` (an old value is ignored). `uninstall.sh --data` still
 deletes a `lens-projects` claim that an older install left behind.
+
+### Fixed: ten sandbox tests failed on a system without /proc
+
+The sandbox finds the processes of a command in `/proc`, and some of its
+tests count processes the same way. On a system without `/proc` (macOS) ten
+tests in `test_http_cancellation.py` and `test_execution_resource_contract.py`
+failed for that reason alone. They now skip there, with that cause as the
+reason, through one marker in `tests/infrastructure/proc_files.py`. Where
+`/proc` exists they run as before.
+
+### Fixed: tests of the sandbox's limits took the host's memory when the limit did not act
+
+The tests of the memory limit start a command that takes memory, and the
+limit has to stop it. The commands had no end of their own. The sandbox reads
+a command's memory from `/proc`; on a system without it the limit never
+acted, and six tests ran such a command until the system refused more memory
+or a time limit of 20 to 40 seconds passed. A fault in the limit would have
+done the same on Linux.
+
+- Each such command now ends by itself at four times the limit under test,
+  with a status of its own (`tests/infrastructure/bounded_commands.py`). A
+  limit that does not act gives a failed test that says so.
+- The tests that need `/proc` to stop the command, or to see whether a
+  process is left, skip where there is none: nine more test functions, with
+  the same marker and reason as before.
+- A test fails when a command of these two test files is written without an
+  end.
+- The tests that assert "no process is left" count processes in `/proc`. The
+  count now looks for its own process first, by the same route. Where it
+  cannot see a process that is alive it fails with "cannot look", and does
+  not say 0.
+
+No product code changes.
 
 ### Fixed: the TUI tests wrote session files into the real cache folder on macOS
 
