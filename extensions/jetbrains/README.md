@@ -11,11 +11,15 @@ A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent
 | Compose panel mounts in a Swing tool window | Works, once `plugin.xml` depends on `com.intellij.modules.compose` |
 | Incremental streaming recomposition | Works — each stub frame appends and recomposes |
 | IDE theme bridging | Works via `SwingBridgeTheme` |
-| Jewel Markdown rendering | **Not reachable from a third-party plugin** (see below) |
+| Jewel Markdown rendering | Works, through the `intellij.platform.compose.markdown` content module (see below) |
 
 `composeUI()` only adds a *compile-time* dependency. Without the matching `<depends>com.intellij.modules.compose</depends>` in the descriptor the tool window throws `NoClassDefFoundError: androidx/compose/ui/awt/ComposePanel` on a product that does not enable Compose for other plugins — PyCharm 2026.1 was the one that caught it, even though the class is in its distribution.
 
-Jewel's Markdown renderer is a separate matter: `intellij.platform.jewel.markdown.*` modules ship in every 2026.1 product (they are in the `compose` module set) but none of them declares a plugin-visible id. In the whole PyCharm 2026.1 distribution the only Compose-family id a plugin can depend on is `com.intellij.modules.compose`, and that module depends only on Jewel's foundation, UI and IDE-LAF bridge modules. Declaring `<depends>intellij.platform.jewel.markdown.core</depends>` does not pull the module in — it makes the platform refuse to load the plugin at all. Assistant text therefore streams through Jewel `Text` for now; Markdown rendering waits until the platform exposes a depend-able id. `AtlasToolWindowFactoryTest` guards both halves of this.
+Jewel's Markdown renderer is reached by **module name, not by plugin id.** The `intellij.platform.jewel.markdown.*` modules ship in every 2026.1 product, but a `<depends>` takes a plugin id and these are content modules: `<depends>intellij.platform.jewel.markdown.core</depends>` names nothing and makes the platform refuse to load the plugin. The platform's own descriptor declares `intellij.platform.compose.markdown` with `visibility="public"` (in `lib/product-backend.jar` as `META-INF/plugin.xml` on IDEA 2026.1.3 and `META-INF/PythonPlugin.xml` on PyCharm 2026.1), and that one module pulls in Compose plus every Jewel Markdown module. So the descriptor says `<dependencies><module name="intellij.platform.compose.markdown"/></dependencies>`.
+
+The build side names the modules too, because `bundledModule` attaches the jar of the module it is given and not that module's declared dependencies: the aggregator `intellij.platform.compose.markdown` carries no classes of its own, so `intellij.platform.jewel.markdown.core` and `intellij.platform.jewel.markdown.ideLafBridgeStyling` are declared for the compiler. `ProvideMarkdownStyling(project)` paints the Markdown with the IDE's theme, the way `SwingBridgeTheme` does for the surrounding Compose content.
+
+`AtlasToolWindowFactoryTest` still guards the `<depends>` half: a `<depends>` on an `intellij.platform.jewel` module disables the plugin, and that is the mistake the test fails on.
 
 ## How it works
 
@@ -28,7 +32,7 @@ The plugin will be a thin client over the proxy HTTP API (see `docs/API.md`) in 
 
 The plugin is written in Kotlin 2.3.20 against the IntelliJ Platform 2026.1.3 SDK. Kotlin language and API levels are pinned to 2.3 because the IDE bundles the 2.3.x standard library; compiling against a newer level produces bytecode the platform cannot load.
 
-The spike uses the Compose runtime and Jewel modules bundled with IntelliJ Platform 2026.1.3: Compose Multiplatform 1.10.0 and Jewel 0.37. `composeUI()` supplies the Compose modules (including the runtime split) and, transitively, the Jewel widgets the plugin uses; nothing is packaged into the plugin. The build-side declaration is only half of it, though: `plugin.xml` depends on `com.intellij.modules.compose`, and that is what puts the classes on the plugin's classloader at runtime. `SwingBridgeTheme` maps the active Swing Look and Feel into the Compose content.
+The spike uses the Compose runtime and Jewel modules bundled with IntelliJ Platform 2026.1.3: Compose Multiplatform 1.10.0 and Jewel 0.37. `composeUI()` supplies the Compose modules (including the runtime split) and, transitively, the Jewel widgets the plugin uses, and `bundledModule(...)` supplies Jewel's Markdown modules; nothing is packaged into the plugin. The build-side declaration is only half of it, though: `plugin.xml` depends on `com.intellij.modules.compose` and names `intellij.platform.compose.markdown` as a module, and that is what puts the classes on the plugin's classloader at runtime. `SwingBridgeTheme` maps the active Swing Look and Feel into the Compose content.
 
 ## Building and running
 
@@ -59,7 +63,7 @@ Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the
 | `runWebStorm` | WebStorm 2026.1 | no |
 | `runGoLand` | GoLand 2026.1 | no |
 
-The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above. With the tool window forced visible so its content factory actually runs, the plugin loads, the tool window renders, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
+The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
 
 ## Kotlin style
 

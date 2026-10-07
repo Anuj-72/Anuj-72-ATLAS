@@ -20,14 +20,17 @@ the packaging, and a Stage 1 spike that renders the tool window.
   classloader. Without that dependency the tool window failed with
   `NoClassDefFoundError` on PyCharm 2026.1, which the tool-window test now
   guards against.
-- Jewel's Markdown renderer is **not** reachable from a third-party plugin:
-  the `intellij.platform.jewel.markdown.*` modules ship in every 2026.1
-  product but expose no plugin-visible id, so the only Compose-family
-  dependency available is `com.intellij.modules.compose`, which brings the
-  widgets and not the Markdown renderer. Declaring the module directly makes
-  the platform refuse to load the plugin. Assistant text renders as Jewel
-  text until the platform exposes it; the test asserts the descriptor does
-  not reach for the module again.
+- Jewel's Markdown renderer is reached by module name, not by plugin id: the
+  `intellij.platform.jewel.markdown.*` modules ship in every 2026.1 product
+  but are platform content modules, so a `<depends>` on one names nothing and
+  makes the platform refuse to load the plugin. The platform declares
+  `intellij.platform.compose.markdown` with `visibility="public"`, and that
+  single module brings Compose and every Jewel Markdown module with it, so
+  the descriptor uses `<dependencies><module>`; the build names the modules
+  whose classes it compiles against, because `bundledModule` attaches the jar
+  it is given and not that module's declared dependencies. Assistant text is
+  rendered with Jewel's Markdown renderer, styled by the IDE theme through
+  `ProvideMarkdownStyling`, and confirmed on PyCharm 2026.1.
 - The plugin targets IntelliJ Platform 2026.1.3 (`sinceBuild = 261`, no
   until-build) and pins Kotlin to language and API level 2.3: the 2026.1
   IDE bundles the 2.3.x standard library, so bytecode from a newer level

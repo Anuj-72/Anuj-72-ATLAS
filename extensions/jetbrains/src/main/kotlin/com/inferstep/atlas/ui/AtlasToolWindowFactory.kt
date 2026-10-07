@@ -24,6 +24,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.jetbrains.jewel.bridge.theme.SwingBridgeTheme
+import org.jetbrains.jewel.intui.markdown.bridge.ProvideMarkdownStyling
+import org.jetbrains.jewel.markdown.Markdown
 import org.jetbrains.jewel.ui.component.Text
 
 class AtlasToolWindowFactory :
@@ -36,7 +38,7 @@ class AtlasToolWindowFactory :
         val panel = ComposePanel()
         panel.setContent {
             SwingBridgeTheme {
-                atlasStageOneSpike()
+                atlasStageOneSpike(project)
             }
         }
         val content = ContentFactory.getInstance().createContent(panel, "", false)
@@ -81,16 +83,17 @@ private fun stubProxyStream(): Flow<StubFrame> =
  * IDE's own theme.
  *
  * The third answer is partial. Jewel's Markdown renderer ships in every
- * 2026.1 product but exposes no plugin-visible module id, so a third-party
- * plugin cannot depend on it — declaring one only disables the plugin. The
- * assistant text therefore streams through Jewel [Text] for now; the
- * Markdown renderer waits until the platform exposes it.
+ * 2026.1 product as a platform content module rather than a plugin, so it is
+ * named in the descriptor as a `<module>` and never as a `<depends>`: the
+ * latter takes a plugin id and only disables the plugin. Assistant text is
+ * rendered with Jewel's Markdown renderer, and the progress lines with
+ * Jewel [Text]; none of this is the final chat UI.
  *
  * There is no HTTP and no protocol code here; the client layer, sessions and
  * permissions are Stage 2 and later.
  */
 @Composable
-private fun atlasStageOneSpike() {
+private fun atlasStageOneSpike(project: Project) {
     var progress by remember { mutableStateOf(listOf("Connecting to the local proxy…")) }
     var reply by remember { mutableStateOf("") }
 
@@ -111,7 +114,12 @@ private fun atlasStageOneSpike() {
         Text("ATLAS — Stage 1 spike (stub stream, no proxy)")
         progress.forEach { line -> Text(line) }
         if (reply.isNotEmpty()) {
-            Text(reply)
+            // ProvideMarkdownStyling(project) paints the Markdown with the
+            // IDE's own theme, the same way SwingBridgeTheme does for the
+            // surrounding Compose content.
+            ProvideMarkdownStyling(project) {
+                Markdown(reply)
+            }
         }
     }
 }

@@ -17,12 +17,15 @@
          (PyCharm 2026.1), even though the classes are in its distribution. -->
     <depends>com.intellij.modules.compose</depends>
 
-    <!-- Stage 1 result: this is the only Compose-family module id a
-         third-party plugin can depend on. Jewel's widgets come with it;
-         the Jewel Markdown modules (intellij.platform.jewel.markdown.*) are
-         shipped but expose no plugin-visible id, so <depends> on them only
-         disables the plugin. Assistant text is rendered with Jewel Text
-         until the platform exposes them. See extensions/jetbrains/README.md. -->
+    <!-- Jewel's Markdown renderer is a platform content module, declared
+         with visibility="public" by the platform itself, so it is reached
+         as a module and not as a plugin id: a <depends> on it would name
+         nothing and disable the plugin. This one module brings the Compose
+         Markdown stack with it, including the Jewel Markdown modules. See
+         extensions/jetbrains/README.md. -->
+    <dependencies>
+        <module name="intellij.platform.compose.markdown"/>
+    </dependencies>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="ATLAS"

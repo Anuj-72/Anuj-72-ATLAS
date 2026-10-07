@@ -61,6 +61,7 @@ the tool is a mistake and not a mystery.
 | `pytest (tests/perf)`, `pytest (tests/concurrency)`, `perf budget gate` | Performance and concurrency suites |
 | the four `sandbox smoke` jobs | The sandbox image runs Java, Kotlin, PHP and Ruby |
 | `codeql (javascript-typescript)`, `lint + test + build` | Analysis and build of the VS Code extension |
+| `codeql (java-kotlin)`, `ktlint + test + build` | Analysis and build of the JetBrains plugin |
 | the `PR build check` jobs | Each service image builds |
 
 A check that compares a change with its base compares with the base branch

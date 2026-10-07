@@ -33,6 +33,16 @@ dependencies {
         // compile time only — plugin.xml carries the matching runtime
         // <depends>, which is what the classloader actually honours.
         composeUI()
+        // Jewel's Markdown renderer is a content module of the platform, not a
+        // plugin, so it is reached by module name rather than by id: the
+        // platform declares intellij.platform.compose.markdown with
+        // visibility="public", and the descriptor names that module, which
+        // brings the rest with it. <depends> cannot name it (that takes a
+        // plugin id). For the build, each module whose classes are compiled
+        // against has to be named: the aggregator alone carries no classes.
+        bundledModule("intellij.platform.compose.markdown")
+        bundledModule("intellij.platform.jewel.markdown.core")
+        bundledModule("intellij.platform.jewel.markdown.ideLafBridgeStyling")
         testFramework(TestFrameworkType.Platform)
     }
 }

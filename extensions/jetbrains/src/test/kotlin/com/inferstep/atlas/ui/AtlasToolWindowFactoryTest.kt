@@ -50,10 +50,14 @@ class AtlasToolWindowFactoryTest : BasePlatformTestCase() {
     }
 
     /**
-     * The Jewel Markdown modules ship in every 2026.1 product but expose no
-     * plugin-visible id, so a `<depends>` on one makes the platform refuse to
-     * load the plugin at all. Naming a Jewel module here means someone tried
-     * to reach it directly again and needs to read the README note instead.
+     * Jewel's Markdown modules ship in every 2026.1 product, but they are
+     * platform *content modules*: a `<depends>` takes a plugin id, so one on
+     * an `intellij.platform.jewel` module names nothing and makes the
+     * platform refuse to load the plugin. They are reached through the
+     * `intellij.platform.compose.markdown` module instead, which is a
+     * `<dependencies><module>` entry and not a `<depends>`. Naming a Jewel
+     * module in a `<depends>` again means someone took the id route and needs
+     * to read the README note first.
      */
     fun testDescriptorDependsOnNoUnresolvableJewelModule() {
         val descriptor = readDescriptor()
