@@ -633,7 +633,7 @@ SETTINGS_ROWS = {
     "Size check": (), "Go lint": ("golangci-lint",), "Extension lint": ("ESLint",), "Coverage": ("vitest coverage",),
     "Codecov": ("Codecov",), "SonarQube Cloud": ("SonarQube",), "CodeScene": ("CodeScene",),
     "Dockerfile lint": ("hadolint",), "Image scan": ("Trivy",), "Workflow lint": ("zizmor", "actionlint"),
-    "Integrity check": (),
+    "Integrity check": (), "Hashed installs": (),
 }
 
 

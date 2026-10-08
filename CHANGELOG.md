@@ -175,6 +175,22 @@ of its layers.
 
 The contract is in `docs/EVAL_INTERFACE.md`.
 
+### Changed: the test jobs install the product's packages from the hashed lock too
+
+The pytest jobs and the e2e job installed the sandbox's runtime packages,
+jinja2 and the tree-sitter grammars from the product's pin files, which have
+versions and no hashes. They now install them from the one hashed lock
+(`.github/requirements/ci.txt`) with `pip install --require-hashes`, as the
+tools already were.
+
+- `ci.in` holds a copy of each of these pins. A contract test holds every
+  copy the same as its product file, and every line of `ci.in` against the
+  lock, so a lock that was not made again is a failed test.
+- `scripts/ci-lock.sh` makes the lock with pip-compile under Python 3.12
+  (uv before). The lock's header names both. Dependabot reads that header
+  and makes the lock again the same way when it moves a pin.
+- Still without hashes: the lens job's torch and lens packages (#335).
+
 ### Added: the test jobs measure coverage
 
 The Go, Python and TypeScript test jobs write a coverage report and upload it

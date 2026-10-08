@@ -158,31 +158,25 @@ jobs:
       - name: install
         run: |
           # The CLI is stdlib-only, so --no-deps installs everything it needs.
-          # pytest and pyyaml come from the hashed tool lock (ci.in lists
-          # them; scripts/ci-lock.sh regenerates it). pyyaml:
-          # tests/contracts/test_openapi_contract.py importorskips yaml —
-          # without it the whole route-parity contract silently skips.
+          # Everything else comes from the one hashed lock (ci.in lists it;
+          # scripts/ci-lock.sh makes ci.txt again), and pip checks each file
+          # it downloads against the lock's hashes:
+          # - pytest and pyyaml. pyyaml:
+          #   tests/contracts/test_openapi_contract.py importorskips yaml —
+          #   without it the whole route-parity contract silently skips.
+          # - tree-sitter and its grammars for the call-graph and
+          #   structural_edit tests under tests/v3-service/, at the pins the
+          #   image ships: an unpinned install once pulled a newer
+          #   tree-sitter whose API change made extraction return empty.
+          # - the sandbox's runtime packages: the boundary-regression suite
+          #   under tests/infrastructure boots sandbox/executor_server.py,
+          #   which imports fastapi and pydantic.
+          # - jinja2, at the pin the image ships: the sandbox's template
+          #   check passes everything without it.
+          # A contract test holds each of these pins the same as its product
+          # file (tests/contracts/test_ci_lock.py).
           pip install --require-hashes -r .github/requirements/ci.txt
           pip install --no-deps -e .
-          # tree-sitter + grammars for the call-graph/structural_edit tests
-          # under tests/v3-service/, at the exact pins the image ships —
-          # an unpinned install once pulled a newer tree-sitter whose API
-          # change made extraction silently return empty. Only the
-          # tree-sitter lines: the file's torch pin resolves from the
-          # pytorch CPU index, not PyPI, and these tests don't need torch.
-          grep -E '^tree-sitter' v3-service/requirements.txt | xargs pip install
-
-      - name: install sandbox runtime dependencies
-        # tests/infrastructure needs these too: the boundary-regression
-        # suite boots sandbox/executor_server.py, which imports
-        # fastapi/pydantic unconditionally.
-        # jinja2 too, at the pin the image ships: the sandbox's template
-        # check imports it lazily and passes everything without it, so the
-        # tests of that check failed on a runner that lacked it.
-        if: matrix.subset == 'tests/v3-service' || matrix.subset == 'tests/infrastructure'
-        run: |
-          pip install -r sandbox/requirements-runtime.txt
-          grep -E '^jinja2==' sandbox/requirements-verify.txt | xargs pip install
 
       - name: install lens dependencies (CPU torch)
         if: matrix.subset == 'geometric-lens/tests'
@@ -394,9 +388,9 @@ jobs:
 
       - name: install
         run: |
+          # The sandbox's runtime packages are in the hashed lock.
           pip install --require-hashes -r .github/requirements/ci.txt
           pip install --no-deps -e .
-          pip install -r sandbox/requirements-runtime.txt
 
       - name: e2e acceptance test
         env:
