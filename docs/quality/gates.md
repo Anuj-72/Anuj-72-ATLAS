@@ -17,6 +17,23 @@ the tool is a mistake and not a mystery.
   approval.
 - A pull request merges through the merge queue, which runs the required
   checks again on the merged result and then squashes it into one commit.
+- The push of that commit to `dev` runs no test again. The workflow
+  `dev results` takes the coverage reports and the test results that the
+  queue's run of the commit kept, and sends them for the commit. It also
+  fills the Go build cache that pull request jobs read. It waits until the
+  queue's run has ended: the queue merges when the required checks passed,
+  and other jobs of the run may go on.
+- The image workflow moves the `dev` tags only when the `tests` run of the
+  commit ended as a success. On `dev` that run is the queue's. When a job
+  that is not a required check failed in it, the commit merged all the same,
+  and the tags do not move: a maintainer reads the failed job, runs it again
+  when its fault is not in the change, and then runs the job
+  `promote moving tags` again.
+- A commit that reaches `dev` without the queue, as the release step's
+  merge-back does, has no such run. `dev results` fails for it and says
+  "this commit did not come through the merge queue; start `tests` for it by
+  hand". Started by hand on `dev`, the `tests` workflow does what a push run
+  does: the tests, both uploads and the cache.
 - `main` and `staging` require the same checks as `dev`, except
   `code health (size)`, whose job is not on `main` yet.
 - On a pull request from a fork, GitHub holds every run until a maintainer
@@ -26,6 +43,49 @@ the tool is a mistake and not a mystery.
   maintainer's approval", names the workflow and gives no verdict: it does
   not pass, and it does not call the waiting jobs missing. A maintainer
   approves the runs and starts it again.
+
+### What `checks ran` judges
+
+`checks ran` looks at the jobs of each workflow that had to start.
+
+- A job with no condition must have run. That holds for every job definition
+  in the workflow files that has no `if:` of its own.
+- 16 job definitions have an `if:` of their own, so they may be skipped by
+  design, and `checks ran` does not report one of them as missing. Every
+  other job is judged for absence. The table below names the 16. On a pull
+  request five of them count: Sonar's scan, the `PR build check`, `coverage upload`,
+  `test results upload` and `test results upload (extension)`. If one of
+  these does not start at all, nothing says so. The rest run only on other
+  events: the four bot jobs, the three image jobs of a push, the release
+  file job, the scorecard, the staging record and the star chart.
+- For a job with a matrix, one reported leg is enough. The required checks
+  cover the required legs by name. A leg that is not required can be missing
+  unseen.
+- A job that was skipped because a job it needs failed repeats that failure.
+  It is a note that names the failed job, and no finding. One case stays a
+  finding: a required check that was skipped behind a failed job that is not
+  required. The rules count a skipped required check as passed, and a job
+  that is not required holds no merge.
+- A job whose name is an expression alone is known only by the name GitHub
+  gives it when it is skipped.
+
+The job definitions with an `if:` of their own, by workflow file and job id. A
+job on this list that does not start gives no red:
+
+| Workflow file | Jobs with a condition |
+|---|---|
+| `bot-claim.yml` | `claim` |
+| `bot-new-issue.yml` | `new-issue` |
+| `bot-stale-claims.yml` | `stale` |
+| `bot-sync.yml` | `sync` |
+| `build-images.yml` | `pr-build`, `alias`, `build`, `promote` |
+| `release-files.yml` | `sign` |
+| `scorecard.yml` | `analysis` |
+| `sonar.yml` | `scan` |
+| `staging-promotion.yml` | `record` |
+| `star-chart.yml` | `render` |
+| `test.yml` | `coverage-upload`, `test-results-upload` |
+| `vscode-extension.yml` | `test-results-upload` |
 
 ## Checks on a pull request
 
@@ -56,8 +116,9 @@ the tool is a mistake and not a mystery.
 | `golangci-lint (proxy)`, `golangci-lint (tui)` | Go lint on the code a change adds |
 | `hadolint (dockerfiles)` | Lint of every Dockerfile. A finding does not fail it; it fails when it could not lint |
 | `sonar scan`, `SonarCloud Code Analysis` | The SonarQube Cloud analysis, and Sonar's verdict on the new code |
-| `coverage upload`, `coverage upload (extension)`, `codecov/patch`, `codecov/project` | Coverage reports sent to Codecov, and Codecov's two statuses |
-| `test results upload`, `test results upload (extension)` | The result of each test sent to Codecov, also when a test job failed. A refused upload turns only this job red. The extension's one is red too when its job stops before the tests ran: then there is no file of results to send |
+| `dev results lookup (sends nothing)` | On a pull request that changes the `dev results` workflow, the upload actions or the lookup script: the lookup and the download for the newest commit of `dev` that came through the merge queue. It sends nothing |
+| `coverage upload`, `coverage upload (extension)`, `codecov/patch`, `codecov/project` | Coverage reports sent to Codecov, and Codecov's two statuses. `coverage upload` and `test results upload` have the head commit of a pull request in their workspace, because Codecov files a report under that commit. They take the upload action from a second checkout, the commit that the workflow file comes from, in the folder `workflow-commit`: a branch that left `dev` before an action was added does not have it. A test holds this for every job that uses an action of this repository |
+| `test results upload`, `test results upload (extension)` | The result of each test sent to Codecov, also when a test job failed. A refused upload turns only this job red. When a job stopped before its tests ran there is no file of results; the upload job then says so and is not red for it |
 | `pytest (tests/perf)`, `pytest (tests/concurrency)`, `perf budget gate` | Performance and concurrency suites |
 | the four `sandbox smoke` jobs | The sandbox image runs Java, Kotlin, PHP and Ruby |
 | `codeql (javascript-typescript)`, `lint + test + build` | Analysis and build of the VS Code extension |
@@ -82,7 +143,7 @@ copy, and it does not run the change's copy in its place.
 | Tool | Where the setting is | Setting |
 |---|---|---|
 | Size check | `scripts/code_health.py`, `.github/code-health-baseline.json` | 100 lines per function, 1,500 per file. Entries on the baseline may shrink and may not grow |
-| Workflow lint | `.github/workflows/workflow-lint.yml` | zizmor v1.30.1 at its default level, with lookups on GitHub by the job's read-only token; actionlint 1.7.12 without its shellcheck and pyflakes passes, which would use whatever version the runner has. Both are release binaries held against the checksums the workflow records. A step that must stay as it is carries `# zizmor: ignore[<rule>]` with its reason |
+| Workflow lint | `.github/workflows/workflow-lint.yml` | zizmor v1.30.1 at its default level, with lookups on GitHub by the job's read-only token; actionlint 1.7.12 without its shellcheck and pyflakes passes, which would use whatever version the runner has. Both are release binaries held against the checksums the workflow records. A step that must stay as it is carries `# zizmor: ignore[<rule>]` with its reason. Five lines carry one today: the checkout of `star-chart.yml`, whose job pushes with the token; and the four lines of `test.yml` and `dev-results.yml` that use the two upload actions of this repository (`ignore[self-repository]`). zizmor asks for the form `$/...` on those four, and actionlint 1.7.12, its newest release, does not read that form yet (its issues 711 and 732). When actionlint reads it, the four lines take the new form and their marks go |
 | Go lint | `.golangci.yml` | errcheck, nilerr, unused, gocognit (15), forbidigo for `os.Getenv`, nolintlint. Judges new code only |
 | Extension lint | `extensions/vscode/eslint.config.mjs` | 100 lines per function, and 15 decision points per function, where a switch counts once. A file that holds a larger function is listed with that function's size, and the limit holds for the whole file. A listed number may go down and may not go up |
 | Coverage | `pyproject.toml` (`[tool.coverage.run]`), `scripts/production-readiness.py` | Go statement coverage per module; Python line coverage over `atlas`, `v3-service`, `geometric-lens`, `sandbox`, `scripts`; TypeScript line coverage of the extension |
@@ -91,8 +152,9 @@ copy, and it does not run the change's copy in its place.
 | SonarQube Cloud, gate | on SonarQube Cloud | The built-in "Sonar way" gate, on new code: reliability, security and maintainability rating A, duplicated lines at most 3%, security hotspots reviewed 100%. Its coverage condition has nothing to judge, because coverage is left out of the analysis. The gate reports and is not a required check |
 | CodeScene | on CodeScene | Analyses `dev` |
 | Dockerfile lint | `.github/workflows/hadolint.yml`, `scripts/dockerfile_lint.py` | hadolint v2.15.1, its release binary held against the checksum the workflow records. Dependabot does not update this version; a maintainer moves it. Every rule is on. The findings in a Dockerfile a change touches are annotations; all counts are in the job summary |
+| Hashed installs | `.github/requirements/ci.in`, `ci.txt`, `scripts/ci-lock.sh` | The pytest jobs, the lint jobs and the e2e job install from one lock that has a hash for every file, with `pip install --require-hashes`: pip refuses a file whose hash is not in the lock. The lock holds the tools and the packages of the product that the tests need. It is made by pip-compile under Python 3.12, and its header says so; Dependabot reads the header and makes the lock again the same way. Thirteen pins of `ci.in` are copies of pins in `sandbox/requirements-runtime.txt`, `sandbox/requirements-verify.txt` and `v3-service/requirements.txt`; a contract test holds each copy the same as its product file, and every line of `ci.in` against the lock. Not from the lock yet: the lens job's torch and lens packages, and the extension's `npm ci` (#335) |
 | Image scan | `.github/workflows/container-scan.yml` | Trivy, weekly and by hand, on the six images CI publishes with the tag `dev`: proxy, v3, lens, sandbox, llama (CUDA) and llama-vulkan. Critical and high findings that have a fix. It reports and does not fail. The ROCm image is built on the user's machine and is not scanned |
-| Integrity check | `scripts/integrity_check.py` | Suppression markers are read by kind of file: Go, Python, TypeScript and JavaScript, shell, workflow files, Dockerfiles. In a workflow file `continue-on-error: true` and `persist-credentials: true` are named. The script holds the lists of files that need a maintainer's approval: the files that decide what a check accepts, and the scripts a workflow runs with a credential that can write. A skip with its reason asks for approval; a size baseline that only goes down and a test renamed in place are listed for information. The forms by which a test stops running are one table for each runner (pytest, unittest, Go, vitest). A form that stops more than one test says how far it reaches: the class, the group, the file, every other test of the file, whole test files, or the number of uses of a skip marker that has a name of its own |
+| Integrity check | `scripts/integrity_check.py` | Suppression markers are read by kind of file: Go, Python, TypeScript and JavaScript, shell, workflow files, Dockerfiles. In a workflow file `continue-on-error: true` and `persist-credentials: true` are named. The script holds the lists of files that need a maintainer's approval: the files that decide what a check accepts, and the scripts a workflow runs with a credential that can write. A skip with its reason asks for approval; a size baseline that only goes down and a test renamed in place are listed for information. The forms by which a test stops running are one table for each runner (pytest, unittest, Go, vitest). A form that stops more than one test says how far it reaches: the class, the group, the file, every other test of the file, whole test files, or the number of uses of a skip marker that has a name of its own. Such a name is one that the file sets at its top level or takes from a module by an import; a reason that is given by a name is shown as the text of that name |
 
 ## Baselines on `dev`
 
@@ -138,15 +200,21 @@ How to read the coverage rows:
   date and the commit above it.
 - A check that raises mostly false alarms is switched off or changed, and the
   change is written in the tool settings table with its reason.
-- Each commit that lands on `dev` gets its own run of the `tests` and
-  `vscode-extension` workflows, and the next push does not cancel it. So the
-  coverage and the result of each test are there for every commit of `dev`.
-  On a pull request a newer commit still cancels the run of the older one.
+- The coverage and the result of each test are there for every commit of
+  `dev`: `dev results` sends them from the merge queue's run, and no push
+  cancels the run of another. The same holds for a push to `main` (`tests`)
+  and for the `vscode-extension` workflow. On a pull request a newer commit
+  still cancels the run of the older one.
 - Dependabot updates the actions and the package files. It does not update a
   tool that a workflow installs with a command: golangci-lint, hadolint, zizmor
   and actionlint. The settings table names the version of each. Look for a new
   release of each when the canary is renewed, and move the version and its
   checksum in one pull request.
+- Dependabot does not update the pins inside `.github/actions/` either. With
+  the directory `/` it reads `.github/workflows` and an `action.yml` at the
+  root, and no other folder. The two upload actions there pin the Codecov
+  action: when Dependabot moves that pin in a workflow file, move it in the
+  two action files in the same pull request.
 
 ## The replay tests
 
@@ -253,6 +321,16 @@ the hook's list, or a test file moved under a folder the hook names. A test
 that is new with the mark is listed for information. A test in the test
 suite keeps this table and the hook's list the same.
 
+- A name that a file gives to the mark (`live = pytest.mark.integration`,
+  then `@live`) counts as the mark, also when the name comes from another
+  file by an import.
+- When the settings leave out one more mark, the check names the mark and
+  counts the tests that leave the plain jobs through it, in how many files.
+  A test that an older mark had taken out already is not counted again. A
+  mark that comes back gives no finding.
+- A mark is read from code. The same words in a text, as in the cases of a
+  parametrized test, are not a mark.
+
 ## The canary
 
 A check that silently stops checking looks the same as a check that passes.
@@ -309,15 +387,14 @@ Checks with no violation, and why:
 | `dependency review` | It turns red only for a dependency with a published advisory, and none is planted |
 | the four `PR build check` jobs | A build that fails makes other jobs red for the wrong reason |
 | `integrity check` | It reports and does not fail |
-| `coverage upload`, `coverage upload (extension)`, `test results upload` | They send numbers to Codecov and judge nothing. The extension's coverage upload is skipped on the canary: the job it needs is red |
+| `checks ran` | Its violation is a job that had to run and reported nothing. A plant for that takes a job out of the run, and then the red of that job is missing on the canary. It passes there, with a note: `coverage upload (extension)` is skipped behind the failed job `lint + test + build` |
+| `coverage upload`, `coverage upload (extension)`, `test results upload`, `test results upload (extension)` | They send numbers to Codecov and judge nothing. On the canary the extension's coverage upload is skipped, because the job it needs is red, and the extension's results upload has nothing to send and says so |
+| `dev results lookup (sends nothing)` | It reads what the merge queue's run of a commit of `dev` kept. No planted file changes that. It runs only on a pull request that changes the files of the push-to-dev results |
 | the image jobs of a push (`alias image tag`, `promote moving tags`) | They are skipped on a pull request |
 
-Checks with no violation of their own that are red on the canary, and by which path:
-
-| Check | Why it is red |
-|---|---|
-| `checks ran` | Through the extension's violation. `lint + test + build` fails, so `coverage upload (extension)`, which needs that job and has no condition, is skipped, and `checks ran` names a skipped job |
-| `test results upload (extension)` | Through the same violation. `lint + test + build` stops at its lint step, so no test ran and there is no file of results to send |
+No check with no violation of its own is red on the canary today. When one
+is red through the violation of another check, it stands under `side_effects`
+in the list with the path, and this page names it here.
 
 A violation must fail every time. The time measures of the performance gate
 have none for that reason: a planted slowdown fails only on some runs. The

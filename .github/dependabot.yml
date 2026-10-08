@@ -3,7 +3,9 @@ version: 2
 # updates always target the default branch (main) and are retargeted by hand.
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # "/" is the workflows. The pins inside the composite actions of
+    # .github/actions are not read from there, so their folders are named.
+    directories: ["/", "/.github/actions/*"]
     target-branch: dev
     schedule:
       interval: weekly
@@ -12,9 +14,11 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: pip
-    # /.github/requirements holds CI's hashed tool lock (ci.txt); its ruff
-    # and mypy must move with sandbox/requirements-verify.txt, so both sit
-    # in the same group PR.
+    # /.github/requirements holds CI's hashed lock (ci.in and ci.txt). Some
+    # pins of ci.in are copies of pins in the sandbox and v3-service files
+    # (a contract test holds them the same), so both folders sit in the same
+    # group: one pull request then moves a pin in both places and makes the
+    # lock again.
     directories: ["/", "/.github/requirements"]
     target-branch: dev
     schedule:

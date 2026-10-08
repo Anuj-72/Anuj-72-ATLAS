@@ -54,6 +54,56 @@ the packaging, and a Stage 1 spike that renders the tool window.
   the plugin can be smoke-tested against each product rather than
   assuming IDEA compatibility.
 
+### Fixed: uninstall.sh --data removed the projects folder without naming it
+
+`scripts/uninstall.sh --data` (and `--all`) removes two folders: the data
+folder (`ATLAS_DATA_DIR`) and the projects folder (`ATLAS_PROJECTS_DIR`),
+where a user's own projects are. The list before its question named only the
+first. Now the list names every folder that the chosen options remove, each
+with its path, and the help text of `--data` and `--all` says the same. For
+`--models` the list says what is removed: the `*.gguf` files of the models
+folder, not the folder.
+
+A setting that is empty stops the script before its question, with the name
+of the setting, when an option that was given removes the folder it names.
+So does a setting that is not a full path or has a `.` or `..` part, and one
+that names the root folder, your home folder, the folder of this repository,
+or a folder that holds one of the two. Each removal in the script is written
+so that it fails on an empty value.
+
+### Fixed: the bot took a quoted closing line for a closing line
+
+The bot's hourly job closes an issue that a commit or a merged pull request
+on `dev` names with a closing word (`Closes`, `Fixes`, `Resolves`). It took
+such a word before an issue number anywhere in the text. A commit message
+that described another pull request, and quoted that one's closing line in a
+sentence, would have closed the issue of the other pull request.
+
+A closing word now counts only where it starts a line (spaces before it are
+fine), outside a fenced code block. More issues on the same line count as
+", closes #N" or "and fixes #N". A sentence, a quoted line, a list item and
+a line that starts with a code mark close nothing. CONTRIBUTING asks for the
+closing line "on a line of its own".
+
+The fault could not act yet: the bot runs from `main`, which does not have
+this job.
+
+### Fixed: the two upload jobs failed on a pull request whose branch is older than their action
+
+Since the upload steps moved into two actions of this repository
+(`.github/actions/`), `coverage upload` and `test results upload` failed with
+"Can't find 'action.yml'" on a pull request whose branch left `dev` before
+that change. For a pull request GitHub runs the workflow file of the merge
+commit, and these two jobs check out the head commit, because Codecov files a
+report under it. The head commit of such a branch has no `.github/actions`
+folder.
+
+The two jobs now take the action from a second checkout: the commit that the
+workflow file comes from, with only `.github/actions`, in a folder of its
+own. The head commit stays in the workspace, and Codecov is told the same
+commit as before. A new test reads every workflow: a job that checks out
+another commit than its workflow's own takes no action from that tree.
+
 ### Changed: shellcheck reads every shell script, at warning level
 
 The shellcheck gate read `scripts/*.sh` for errors only, which left out
@@ -89,6 +139,32 @@ refused with an indentation error.
 - A replacement whose indentation mixes tabs and spaces with the file's is
   refused, and the refusal says which to use.
 
+### Fixed: the bootstrap script tries a failed download again
+
+One failed download stopped the whole install, though the same download
+passed a few seconds later. The pip downloads and the Go module download of
+`scripts/atlas-bootstrap.sh` are now tried up to 3 times, with 5 seconds
+between the tries (`ATLAS_DOWNLOAD_TRIES`, `ATLAS_DOWNLOAD_WAIT_SECONDS`).
+Each new try prints one line with the step and the error of the try before.
+After the last try the script stops with that error, as before.
+
+Only a download is tried again. The Go modules are now downloaded in a step
+of their own, so a compile error of the TUI is not tried again; a pip error
+that is no network error is not, and a module that fails its checksum is not.
+
+Also fixed in the same lines: the TUI build looked for `go` only under
+`/usr/local/go/bin`, so a Go that was on the path from the system's own
+packages was not found, and the build was skipped with "go: command not
+found".
+
+### Changed: the installer keeps its downloads and logs in a private temporary folder
+
+`scripts/atlas-bootstrap.sh` makes one folder with `mktemp -d` at its start,
+and every download and every log of the run goes there. An install that
+passed removes the folder at the end. When the install failed, or a step
+warned and named its log, the folder is kept, and the last line of the output
+gives its path. A message that names a log gives the path of that file.
+
 ### Changed: the setup script writes the branch rules that are in force, and the release step is a script
 
 `scripts/setup/rulesets.sh` still wrote the rules from before the merge
@@ -109,6 +185,23 @@ on `dev`. Running it would have brought those rules back.
 - The settings audit (`scripts/setup/audit.py`) fails when a required check
   can be skipped, and reads the review rule correctly when two rulesets
   hold one.
+
+### Fixed: the contributor bot counts a claim's days from a new assignment, and waits 14 days
+
+A claim that a maintainer gave again by hand was released the next day: the
+bot counted the days from the first `/claim` comment. The days now count from
+the newest of that comment and the last time the person was assigned.
+
+The periods are longer: a reminder after 10 days without a pull request (5
+before), release after 14 (7 before). `.github/atlas-bot.yml` holds them, and
+a test keeps the numbers in CONTRIBUTING the same.
+
+A claim is kept by an open pull request of the claimant, into any branch,
+that names the issue (`Closes #N`, `Refs #N`, or any other naming). That rule
+was on `dev` already and is unchanged; its tests now hold the case of a draft
+pull request into `dev`, a closed pull request, and `Refs`.
+
+The bot runs from `main`, so nothing changes for a claim until this is there.
 
 ### Added: a driver for the held-out evaluation, with a bare-model baseline
 
@@ -131,6 +224,22 @@ of its layers.
   `--budget-s` that differs from it.
 
 The contract is in `docs/EVAL_INTERFACE.md`.
+
+### Changed: the test jobs install the product's packages from the hashed lock too
+
+The pytest jobs and the e2e job installed the sandbox's runtime packages,
+jinja2 and the tree-sitter grammars from the product's pin files, which have
+versions and no hashes. They now install them from the one hashed lock
+(`.github/requirements/ci.txt`) with `pip install --require-hashes`, as the
+tools already were.
+
+- `ci.in` holds a copy of each of these pins. A contract test holds every
+  copy the same as its product file, and every line of `ci.in` against the
+  lock, so a lock that was not made again is a failed test.
+- `scripts/ci-lock.sh` makes the lock with pip-compile under Python 3.12
+  (uv before). The lock's header names both. Dependabot reads that header
+  and makes the lock again the same way when it moves a pin.
+- Still without hashes: the lens job's torch and lens packages (#335).
 
 ### Added: the test jobs measure coverage
 
@@ -180,6 +289,33 @@ A pushed commit now has a concurrency group of its own and runs to the end.
 On a pull request a newer commit still cancels the run of the older one. The
 other workflows that start on a push keep cancelling: the result for the
 newest commit takes the place of the older ones.
+
+### Changed: a push to `dev` sends the merge queue's results and does not run the tests again
+
+A commit reaches `dev` through the merge queue, which runs the `tests`
+workflow on it. The push of that same commit ran the same 24 jobs again, at
+the time when runners are short. What the second run added was the coverage
+upload, the test results upload and the saved build cache.
+
+- The `tests` workflow no longer starts on a push to `dev`. It starts on a
+  pull request, in the merge queue, on a push to `main`, and by hand.
+- A new workflow, `dev results`, runs on a push to `dev`. One job finds the
+  merge queue's run of the commit (`scripts/queue_run.py`), waits until it
+  has ended, takes the reports it kept and sends them. One job fills the Go
+  build cache: it builds the tests with the test gate's own command and runs
+  none (`scripts/go_test_build.py`).
+- A commit that did not come through the queue has no such run. The job
+  fails for it and says to start `tests` by hand. A run that kept no report
+  fails the job too.
+- The upload steps are in two actions of this repository
+  (`.github/actions/`), which the `tests` workflow and `dev results` both
+  use.
+- The image workflow moves the `dev` tags when the `tests` run of the commit
+  passed. That run is now the queue's.
+- On a pull request that changes this path, a job tries the lookup and the
+  download and sends nothing.
+- The extension's test results job no longer turns red when the job before
+  it stopped ahead of its tests: it says that there is nothing to send.
 
 ### Changed: the SonarQube Cloud analysis runs from CI
 
@@ -318,6 +454,29 @@ files, which no CI job runs until the nightly runs exist.
 Also: a vitest test that gets a modifier in front of its name (`it.only`,
 `it.skipIf(...)`) was reported as removed beside the right finding. It is no
 longer.
+
+### Fixed: the integrity check reads the names of marks from code, and names a mark the settings newly leave out
+
+Three faults and one gap in how the integrity check reads marks:
+
+- A new `pytestmark = pytest.mark.slow` was reported as "the skip marker
+  slow: every test of this file stops running". The check had taken the line
+  `slow = pytest.mark.skip` for a skip marker of that name: the line stands
+  inside a text of another test file. The names of skip markers are now read
+  from what a file sets at its top level, and a name counts only in that
+  file or where it is imported. `pytest.mark.<name>` is never a use of such
+  a name.
+- A test with a parametrized case whose text holds `pytest.mark.integration`
+  was counted as a test with that mark. A mark is now read from code only.
+- A reason given by a name (`reason=NEEDS_PROC_REASON`) was shown as that
+  name. The text of the name is shown.
+- A mark under a name (`live = pytest.mark.integration`, then `@live`) gave
+  no finding. It now counts as the mark, also through an import.
+
+New: when the runner's settings leave out one more mark (`addopts` in
+`pyproject.toml`), the check names the mark and counts the tests that leave
+the plain test jobs through it. A test that an older mark had taken out
+already is not counted again.
 
 ### Fixed: a deletion the proxy cannot ask about no longer reads as denied by the user
 
@@ -569,6 +728,32 @@ workflows that never started and failed, though every one of them ran.
 - Each listing prints one line: how many of the expected workflows are
   listed, how many are running and how many are not listed. A listing that
   leaves out a known run is named in the log.
+
+### Changed: `checks ran` does not repeat the red of a failed job
+
+One fault in a job gave a second red in `checks ran` when another job with no
+condition needed that job and was skipped. A job that was skipped because a
+job up its `needs` chain failed is now a note that names the failed job, and
+the note is always printed. One case stays a finding: a required check that
+was skipped behind a failed job that is not required. The rules count a
+skipped required check as passed, so that check would never have run. A job
+skipped with no failed job above it is a finding as before.
+
+A job whose name is an expression alone fitted every reported name, so it
+could count as present because some other job reported. It is now known only
+by the name GitHub gives it when it is skipped. No workflow was judged wrong
+by this; the one such job has a condition.
+
+The gates page says what `checks ran` judges: every job definition with no
+condition of its own, which 16 it does not judge and why, and that one leg of
+a matrix job is enough.
+
+On the canary, `checks ran` was red through the extension's violation. It
+passes there now, so it moves in the canary's list from the checks that are
+red through another check to the checks with no violation. The canary also
+names a check with no violation that timed out or was cancelled, not only one
+that failed, and its note for a red through another check no longer says
+"with no violation of its own" twice.
 
 ### Added: replay tests that run the proxy against a recorded session
 
