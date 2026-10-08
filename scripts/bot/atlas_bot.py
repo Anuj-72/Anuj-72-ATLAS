@@ -4,9 +4,11 @@
 Commands, one per workflow in .github/workflows/bot-*.yml:
 
   claim       `/claim` or `/unclaim` as the first line of an issue comment
-  stale       daily: remind, then release, a /claim with no linked pull request
+  stale       daily: remind, then release, a /claim with no open pull request
+              by the claimant that names the issue
   sync        hourly: mirror Ready/Blocked to labels, area labels on PRs,
-              welcome first-time PR authors
+              welcome first-time PR authors, close issues whose fix
+              reached dev
   welcome     issue opened: welcome a first-time issue author
   rfc-dedupe  RFC or Feature opened: link open RFCs and Epics with similar titles
 
@@ -37,6 +39,15 @@ COMMAND = re.compile(r"^/(claim|unclaim)\s*$")
 MAINTAINER = ("OWNER", "MEMBER")
 FIRST_PR = ("FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER")
 STATUS_LABELS = {"Ready": "status/ready", "Blocked": "status/blocked"}
+# GitHub's closing keywords. They act only on the default branch (main), and
+# work merges into dev, so sync closes the issues itself.
+ISSUE_REF = re.compile(r"(?<![\w/#])#(\d+)\b")
+_CLOSES = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#(\d+)\b"
+CLOSING = re.compile(_CLOSES, re.IGNORECASE)
+# A closing line: the keyword starts the line. More issues follow only as
+# ", closes #N" or "and fixes #N"; other text on the line closes nothing.
+CLOSING_LINE = re.compile(rf"[ \t]*{_CLOSES}(?:[ \t]*(?:,|and)[ \t]*{_CLOSES})*", re.IGNORECASE)
+FENCE = re.compile(r"[ \t]*(?:```|~~~)")
 STOPWORDS = set("""about after again against also allow allows because before being
 between could does doing during each from have into just like make more most need
 needs only other over same should some such than that their them then there these
@@ -167,8 +178,30 @@ class API:
     def open_pulls(self) -> list:
         return list(self._pages(f"/repos/{self.repo}/pulls?state=open"))
 
+    def branch_commits(self, branch: str, since: str) -> list:
+        """Commits on a branch since an ISO time: [{sha, message}]."""
+        q = urllib.parse.urlencode({"sha": branch, "since": since})
+        return [{"sha": c["sha"], "message": c["commit"]["message"]}
+                for c in self._pages(f"/repos/{self.repo}/commits?{q}")]
+
+    def merged_pulls(self, branch: str, since_day: str) -> list:
+        """Pull requests merged into a branch since a date: [{number, body}]."""
+        return [{"number": i["number"], "body": i.get("body") or ""}
+                for i in self.search(f"is:pr is:merged base:{branch} merged:>={since_day}")]
+
+    def close_issue(self, number: int) -> None:
+        self._call("PATCH", f"/repos/{self.repo}/issues/{number}",
+                   {"state": "closed", "state_reason": "completed"})
+
     def pull_files(self, number: int) -> list:
         return [f["filename"] for f in self._pages(f"/repos/{self.repo}/pulls/{number}/files")]
+
+    def assigned_at(self, number: int, login: str) -> str | None:
+        """When this person was last assigned to the issue (an ISO time), by
+        the bot or by hand. None when the issue's events show no assignment."""
+        times = [e["created_at"] for e in self._pages(f"/repos/{self.repo}/issues/{number}/events")
+                 if e.get("event") == "assigned" and (e.get("assignee") or {}).get("login") == login]
+        return max(times) if times else None
 
     def linked_open_pr_authors(self, number: int) -> list:
         owner, name = self.repo.split("/")
@@ -249,6 +282,25 @@ class API:
 # --- the bot ------------------------------------------------------------------
 
 
+def closed_by(text: str) -> list:
+    """The issues that a commit message or the text of a pull request closes.
+
+    A closing keyword counts only where it starts a line, outside fenced
+    blocks. So a sentence that quotes the closing line of another change
+    closes nothing, in code marks or not, and neither does a quoted line
+    (`> Closes #7`) or a line that starts with a code mark."""
+    numbers: list = []
+    fenced = False
+    for line in (text or "").splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            found = CLOSING_LINE.match(line)
+            if found:
+                numbers += [int(n) for n in CLOSING.findall(found.group(0))]
+    return numbers
+
+
 def marker(kind: str, login: str = "") -> str:
     return f"<!-- atlas-bot:{kind}{' @' + login if login else ''} -->"
 
@@ -304,27 +356,33 @@ class Bot:
         n, c, links = issue["number"], self.cfg["claims"], self.cfg["links"]
         assignees = [a["login"] for a in issue.get("assignees") or []]
         if issue.get("state") != "open":
-            return self.api.comment(n, f"@{user} this issue is closed, so it can't be claimed.")
+            self.api.comment(n, f"@{user} this issue is closed, so it can't be claimed.")
+            return
         if user in assignees:
-            return self.api.comment(n, f"@{user} this issue is already yours.")
+            self.api.comment(n, f"@{user} this issue is already yours.")
+            return
         if assignees:
-            return self.api.comment(n, f"@{user} this issue is already claimed by "
-                                    f"@{assignees[0]}. Find another in [Start Here]({links['start_here']}).")
+            self.api.comment(n, f"@{user} this issue is already claimed by "
+                             f"@{assignees[0]}. Find another in [Start Here]({links['start_here']}).")
+            return
         item = self.api.item(self.cfg, n)
         if item is None or item["status"] != "Ready":
             where = f"its status is {item['status']}" if item and item["status"] else "it isn't on the board yet"
-            return self.api.comment(n, f"@{user} only issues marked Ready can be claimed, and {where}. "
-                                    f"Ready issues are in [Start Here]({links['start_here']}).")
+            self.api.comment(n, f"@{user} only issues marked Ready can be claimed, and {where}. "
+                             f"Ready issues are in [Start Here]({links['start_here']}).")
+            return
         if not maintainer:
             open_claims = self.api.search_count(f"is:issue is:open assignee:{user}")
             merged = self.api.search_count(f"is:pr is:merged author:{user}")
             limit = int(c["max_open"] if merged else c["max_open_first_timer"])
             if open_claims >= limit:
                 kind = "" if merged else " before your first merged pull request"
-                return self.api.comment(n, f"@{user} you can hold {limit} open claim{'s' if limit > 1 else ''}"
-                                        f"{kind}, and you have {open_claims}. Finish or `/unclaim` one first.")
+                self.api.comment(n, f"@{user} you can hold {limit} open claim{'s' if limit > 1 else ''}"
+                                 f"{kind}, and you have {open_claims}. Finish or `/unclaim` one first.")
+                return
         if not self.api.assign(n, user):
-            return self.api.comment(n, f"@{user} GitHub wouldn't assign this issue to you. A maintainer will look.")
+            self.api.comment(n, f"@{user} GitHub wouldn't assign this issue to you. A maintainer will look.")
+            return
         self.api.set_status(self.cfg, item["id"], "In Progress")
         shepherd = item["shepherd"].lstrip("@")
         who = f"Your shepherd is @{shepherd}: ask them anything. " if shepherd else ""
@@ -339,7 +397,8 @@ class Bot:
     def _unclaim(self, issue: dict, user: str) -> None:
         n = issue["number"]
         if user not in [a["login"] for a in issue.get("assignees") or []]:
-            return self.api.comment(n, f"@{user} you don't hold a claim on this issue.")
+            self.api.comment(n, f"@{user} you don't hold a claim on this issue.")
+            return
         self.api.unassign(n, user)
         item = self.api.item(self.cfg, n)
         if item and item["status"] == "In Progress":
@@ -349,6 +408,14 @@ class Bot:
     # daily
     def stale(self) -> None:
         c = self.cfg["claims"]
+        # GitHub links a pull request to an issue ("Closes #N") only when the
+        # pull request targets main, and ours target dev. So an open pull
+        # request by the claimant that names the issue also keeps the claim.
+        mentions: dict = {}
+        for pr in self.api.open_pulls():
+            text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+            for num in set(ISSUE_REF.findall(text)):
+                mentions.setdefault(int(num), set()).add((pr.get("user") or {}).get("login"))
         for it in self.api.items(self.cfg):
             if it["state"] != "open" or it["status"] != "In Progress" or not it["assignees"]:
                 continue
@@ -359,8 +426,15 @@ class Bot:
                 if not claims:
                     continue  # assigned by hand, not by /claim: not the bot's to release
                 since = parse_time(claims[-1]["created_at"])
-                if login in self.api.linked_open_pr_authors(n):
+                if (self.now - since).days < int(c["ping_after_days"]):
                     continue
+                if login in mentions.get(n, ()) or login in self.api.linked_open_pr_authors(n):
+                    continue
+                # A maintainer who assigns the claimant again, after a release
+                # or to give more time, starts the count again: the days run
+                # from the newest of the claim and the assignment.
+                assigned = self.api.assigned_at(n, login)
+                since = max(since, parse_time(assigned)) if assigned else since
                 days = (self.now - since).days
                 if days >= int(c["release_after_days"]):
                     self.api.unassign(n, login)
@@ -397,10 +471,51 @@ class Bot:
             have = {x["name"] for x in pr.get("labels") or []}
             if want - have:
                 self.api.add_labels(n, sorted(want - have))
-            if pr.get("author_association") in FIRST_PR and self._recent(pr["created_at"], days=7):
+            if self._first_pr(pr):
                 if not any(self._mine(x) and marker("welcome") in x.get("body", "")
                            for x in self.api.comments(n)):
                     self.api.comment(n, self._welcome_pr(pr["user"]["login"]))
+        self._close_fixed()
+
+    def _close_fixed(self) -> None:
+        """Close the open issues that a commit or merged pull request on the
+        work branch names in a closing line (see closed_by). The board then marks
+        them Done by itself, and the milestone names the release that ships them."""
+        d = self.cfg["done"]
+        since = self.now - dt.timedelta(days=int(d["lookback_days"]))
+        where: dict = {}
+        for c in self.api.branch_commits(d["branch"], since.strftime("%Y-%m-%dT%H:%M:%SZ")):
+            for num in closed_by(c["message"]):
+                where.setdefault(num, c["sha"][:7])
+        for pr in self.api.merged_pulls(d["branch"], since.strftime("%Y-%m-%d")):
+            for num in closed_by(pr["body"]):
+                where.setdefault(num, f"#{pr['number']}")
+        for n, ref in sorted(where.items()):
+            try:
+                issue = self.api.issue(n)
+            except RuntimeError:  # no such issue: a typo in a commit message
+                continue
+            if "pull_request" in issue or issue.get("state") != "open":
+                continue
+            if not any(self._mine(x) and marker("done") in x.get("body", "")
+                       for x in self.api.comments(n)):
+                self.api.comment(n, f"{marker('done')}\nFixed on `{d['branch']}` in {ref}. "
+                                    "It ships in the next release.")
+            self.api.close_issue(n)
+
+    def _first_pr(self, pr: dict) -> bool:
+        # author_association is not enough: under the bot's app token GitHub
+        # reported a first-time contributor's PR (#246) as something else, so
+        # also count the author's pull requests, as the issue welcome does.
+        user = pr.get("user") or {}
+        if user.get("type") == "Bot" or not self._recent(pr["created_at"], days=7):
+            return False
+        assoc = pr.get("author_association")
+        if assoc in FIRST_PR:
+            return True
+        if assoc != "NONE":  # CONTRIBUTOR, COLLABORATOR, MEMBER, OWNER: not new
+            return False
+        return self.api.search_count(f"is:pr author:{user.get('login')}") <= 1
 
     def _recent(self, stamp: str, days: int) -> bool:
         return (self.now - parse_time(stamp)).days < days
