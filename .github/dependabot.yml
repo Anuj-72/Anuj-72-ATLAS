@@ -3,7 +3,9 @@ version: 2
 # updates always target the default branch (main) and are retargeted by hand.
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # "/" is the workflows. The pins inside the composite actions of
+    # .github/actions are not read from there, so their folders are named.
+    directories: ["/", "/.github/actions/*"]
     target-branch: dev
     schedule:
       interval: weekly
