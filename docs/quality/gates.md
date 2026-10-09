@@ -120,6 +120,7 @@ job on this list that does not start gives no red:
 |---|---|
 | `checks ran` | Fails when a workflow did not start, a job with no condition was skipped or cancelled, or a required check was skipped |
 | `replay (proxy)` | The proxy, built from the change, does on each recorded session what the recording says. Runs when `proxy/` or `tests/replay/` changed, and in the merge queue |
+| `fix tests (fail without the fix)` | For a pull request with the type `fix`: runs the tests it adds or changes on the base's code and on the pull request, and names each test that passes without the fix |
 | `integrity check` | Reads the change for weakened checks: removed or skipped tests, new suppressions, changes to the files that configure checks, new documents |
 | `zizmor (workflows)`, `actionlint (workflows)` | The workflow files themselves: security mistakes and mistakes GitHub shows only at run time. A finding fails the job |
 | `golangci-lint (proxy)`, `golangci-lint (tui)` | Go lint on the code a change adds |
@@ -147,6 +148,49 @@ copy of the script gives the answer, so a change cannot choose its own base.
 The step also stops when the parent commit is not in the checkout, as in a
 checkout of one commit: without the parent it cannot read the base branch's
 copy, and it does not run the change's copy in its place.
+
+`fix tests` gives one line for the fix as a whole, the strongest that holds:
+
+| The line | What it means |
+|---|---|
+| Guarded | At least one test fails on the base and passes with the fix |
+| Not shown | Tests of the fix ran on the base and none failed. This is a finding about the fix |
+| Cannot tell | No test could run on the base: each needs code or a file the fix adds. This is the limit of the check, not a finding about the fix |
+| No test | The fix adds or changes no test |
+
+Below it, each new or changed test is in one of three classes that are not
+added together: "fails on the base" (it fails there for what the code does),
+"needs the fix's code" (on the base it cannot run as written: it does not
+build or import, names something that is not there yet, or calls a function
+in a way the base's function does not take), and "passes on the base too".
+
+- A test the fix adds that passes on the base too is a finding when no test
+  of the fix fails on the base. Beside a test that does, it is most likely a
+  control that holds what the fix must not change, and it is listed for
+  information. For a test the fix only changes it is information.
+- A test that fails on the base and with the fix reads "not judged here",
+  with the first line of its failure. The cause is often the place it runs
+  in: a test that needs docker gives another result where there is none.
+- A failure says where it was raised: in the test, in product code, or in
+  the standard library or an installed package, with the file of the
+  repository that called it.
+
+Its reach, measured on 16 fixes that are merged, each against its parent,
+with the script of commit `c461b30`: guarded 10, cannot tell 4, not
+shown 1, no test 1. Of the 6 proxy fixes among them 3 are guarded and 3 read
+"cannot tell", by the Go limit below.
+
+It cannot judge these, and says so when it meets one:
+- Go builds the tests of a package together. When a changed test file uses
+  code the fix adds, no test of the package builds on the base. Each changed
+  test file is then tried alone (up to six); a file that still does not
+  build reads "needs the fix's code" for all its tests.
+- A TypeScript or JavaScript test file, and a test under `geometric-lens/`,
+  whose packages the job does not install.
+- A test that is skipped where the job runs, and a run that does not end in
+  its time limit.
+- A fix whose guard is a changed recording or data file and no test
+  function. A fix with no new or changed test gets its own line.
 
 ## Tool settings
 
