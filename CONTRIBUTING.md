@@ -246,6 +246,24 @@ looks and runs it again. A mistake in a check is ours to fix.
 for behavior changes, conventional title, CI green, and hardware tested (or
 stated as untested).
 
+### The labels the bot puts on your pull request
+
+Each hour the bot gives every open pull request two kinds of label, beside
+the `area/*` ones. Both are computed from the change, and computed again when
+it changes; a label that is set or removed by hand is put back.
+
+| Label | When |
+|---|---|
+| `size/S`, `size/M`, `size/L`, `size/XL` | By the lines the pull request adds and removes: under 100, from 100, from 400, from 1,000. The lines of lock files, tests and documents do not count |
+| `risk:high` | The pull request changes a core path (the agent loop, the tool handlers, the guards); or it has 400 counted lines or more; or it is the author's first pull request here |
+
+`risk:high` says where a mistake would cost most, so that review time goes
+there first. It is not a mark against you or your change. A change to a
+workflow does not get it: the integrity check names such a change on the
+pull request, for a maintainer's approval. Each label says in its own
+description what it is computed from. The numbers and the list of core paths
+are in [.github/atlas-bot.yml](.github/atlas-bot.yml).
+
 ## 10. After your change merges
 
 | Branch | What it is | When your change gets there |
