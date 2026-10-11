@@ -120,6 +120,7 @@ job on this list that does not start gives no red:
 |---|---|
 | `checks ran` | Fails when a workflow did not start, a job with no condition was skipped or cancelled, or a required check was skipped |
 | `replay (proxy)` | The proxy, built from the change, does on each recorded session what the recording says. Runs when `proxy/` or `tests/replay/` changed, and in the merge queue |
+| `smoke result` | For a pull request that changes text that every request to the model carries: red until the text of the pull request has the result line of a smoke run that was made with that text. See [below](#a-change-to-text-that-the-model-reads) |
 | `fix tests (fail without the fix)` | For a pull request with the type `fix`: runs the tests it adds or changes on the base's code and on the pull request, and names each test that passes without the fix |
 | `integrity check` | Reads the change for weakened checks: removed or skipped tests, new suppressions, changes to the files that configure checks, new documents |
 | `zizmor (workflows)`, `actionlint (workflows)` | The workflow files themselves: security mistakes and mistakes GitHub shows only at run time. A finding fails the job |
@@ -133,6 +134,7 @@ job on this list that does not start gives no red:
 | `test results upload`, `test results upload (extension)` | The result of each test sent to Codecov, also when a test job failed. A refused upload turns only this job red. When a job stopped before its tests ran there is no file of results; the upload job then says so and is not red for it |
 | `pytest (tests/perf)`, `pytest (tests/concurrency)`, `perf budget gate` | Performance and concurrency suites |
 | the four `sandbox smoke` jobs | The sandbox image runs Java, Kotlin, PHP and Ruby |
+| `sandbox tests (containerized)`, `proxy and TUI tests (no model)` | The tests that need a running service and no model: 80 against the sandbox image of the change, 13 against the proxy and the TUI built from the change. A job fails when one of its tests fails, is skipped or is not collected. See [below](#tests-that-the-plain-jobs-leave-out) |
 | `codeql (javascript-typescript)`, `lint + test + build` | Analysis and build of the VS Code extension |
 | `codeql (java-kotlin)`, `ktlint + test + build` | Analysis and build of the JetBrains plugin |
 | the `PR build check` jobs | Each service image builds |
@@ -454,6 +456,72 @@ later cannot be recorded; the recording step refuses it. The way to lift
 this: the recording keeps, for each call to the sandbox, the files that call
 changed, and the stand-in puts them into the workspace at a replay.
 
+## A change to text that the model reads
+
+The replay job compares each request that the proxy sends with a recorded
+one, in full. So a change to a prompt, a tool description, the grammar or
+the schema turns `replay (proxy)` red until the recordings are made again,
+and a changed recording marks such a pull request. Two things follow:
+
+- **Text that every request carries** (the system prompt with the tool
+  descriptions, the grammar, the schema of the reply): the job
+  `smoke result` is red until the text of the pull request has the result
+  line of a smoke run that was made with that text. The job sees such a
+  change from the recordings themselves: the part has other values than
+  on the base, and none that the base's recordings had. A part that no
+  request carries any more counts, and so does a part that is new in every
+  request.
+- **Any other text** (a note, a refusal or a steer that the proxy writes in
+  one situation): the pull request adds or changes a recording that shows
+  the text in its situation. The recording is the proof, and no smoke run is
+  asked for.
+
+The smoke run is three fixed tasks of the driver, once each, with a real
+model. A maintainer starts it by hand, after reading the diff; nothing on
+GitHub starts it. Its one result line goes into the text of the pull
+request as it is:
+
+`Smoke run on <commit>: 3 of 3 sessions with no harness defect, <seconds> s; the changed text is part of every request (text <mark>).`
+
+The mark is made from the text that every request carries
+(`scripts/smoke_result.py --mark <commit>` prints it). So the line holds
+while the head of the pull request has that same text: also after a rebase,
+and after a later commit that leaves the text as it is.
+
+What the result says, and what it does not say:
+
+- The smoke result says that a session still runs with the new text: it
+  starts, the model's replies are read, the tool calls run, it ends. It is a
+  yes or a no, with the seconds. It is not a score.
+- A pass does not show that the model behaves as well as before. A claim
+  about behaviour needs a measurement of its own: two builds, enough
+  sessions, the affected sessions shown from the diff, and the rule written
+  down before the run.
+- The three tasks are fixed and are the driver's own. They are never taken
+  from held-out data, and no product text names them.
+- No text is changed to make the smoke pass. After two red smoke runs the
+  change stops and is thought over.
+- When the server is not available, the pull request says so in one line.
+  The change is then not tried with a real model before it merges; the
+  first nightly run after the server is back covers it. The replay tests
+  are no check of such a change: its recordings are written again from the
+  new text, so they pass. The line, with the mark of the text:
+  `No smoke run: the server is not available. Not tried with a real model; the first nightly run after the server is back covers this text (text <mark>).`
+
+The limits of the job:
+
+- It cannot know that a run took place. It holds that the line is there,
+  that it says 3 of 3, and that it is for the text of this head.
+- It is not a required check. A red `smoke result` is for the maintainer
+  who merges.
+- Anybody who can edit the text of the pull request can write either line.
+  A maintainer reads the text before the merge. If the job is ever made a
+  required check, the line for a server that is not available needs a sign
+  that only a maintainer can give.
+- v3-service builds prompts of its own, and no recording looks inside it.
+  For a change to one of them no smoke run is asked for: nothing can show
+  today that the three tasks send the changed text.
+
 ## Tests that the plain jobs leave out
 
 The pytest jobs run with `-m 'not integration'` (`addopts` in
@@ -466,46 +534,121 @@ hook `pytest_collection_modifyitems` in `tests/conftest.py`. The hook gives
 the mark to every test of the files it lists and to every test under
 `tests/integration/`.
 
+The marked files are in three groups, by what they need. Each group is run
+in one place.
+
 | File | Tests | What it needs | The job that runs it |
 |---|---|---|---|
+| `tests/infrastructure/test_sandbox.py` | 38 | a running sandbox service | the job `sandbox tests (containerized)` |
+| `tests/infrastructure/test_sandbox_java_kotlin.py` | 24 | a running sandbox service | the job `sandbox tests (containerized)` |
+| `tests/infrastructure/test_sandbox_ruby_php.py` | 18 | a running sandbox service | the job `sandbox tests (containerized)` |
+| `tests/infrastructure/test_tui_render.py` | 4 | the built TUI and a running proxy | the job `proxy and TUI tests (no model)` |
+| `tests/infrastructure/test_tui_commands.py` | 4 | the built TUI and a running proxy | the job `proxy and TUI tests (no model)` |
+| `tests/infrastructure/test_control_plane.py` | 5 | a running proxy | the job `proxy and TUI tests (no model)` |
 | `tests/infrastructure/test_llm.py` | 32 | a running model server | the nightly run, on the development server |
-| `tests/infrastructure/test_sandbox.py` | 38 | a running sandbox service | the nightly run, on the development server |
-| `tests/infrastructure/test_sandbox_java_kotlin.py` | 24 | a running sandbox service | the nightly run, on the development server |
-| `tests/infrastructure/test_sandbox_ruby_php.py` | 18 | a running sandbox service | the nightly run, on the development server |
-| `tests/infrastructure/test_tui_render.py` | 4 | the built TUI and a running proxy | the nightly run, on the development server |
-| `tests/infrastructure/test_tui_commands.py` | 4 | the built TUI and a running proxy | the nightly run, on the development server |
-| `tests/infrastructure/test_control_plane.py` | 5 | a running stack | the nightly run, on the development server |
 
-- That is 125 tests in 7 files. No workflow selects the mark, so no CI job
-  runs them today. `tests/integration/` holds no test.
+- That is 125 tests in 7 files: 80 for the sandbox, 13 for the proxy and the
+  TUI, 32 for the model. `tests/integration/` holds no test.
+- The groups, their files and their numbers are in one place:
+  `scripts/tests_counted.py`. A test in the test suite holds that list, the
+  hook's list, this table, the two jobs and the number of test functions in
+  the files the same.
+- A run of a group holds only when every one of its tests was collected,
+  none failed and none was skipped. pytest ends with status 0 for a run in
+  which tests were skipped, and a missing package skips a whole file with
+  no other sign: the four sandbox and model files import `httpx` with
+  `importorskip`. So no job reads the status of pytest here.
+  `scripts/tests_counted.py` reads the result file that pytest writes, and
+  the nightly run uses the same judge.
+- `sandbox tests (containerized)` builds the sandbox image from the change
+  and starts it as the stack starts it: by the `sandbox` service of the
+  compose file, with its read-only base, its tmpfs mounts, its dropped
+  capabilities and its limits. The job gives none of these itself, so a
+  change of the stack's settings is under test by itself. It waits for the
+  service's own health answer, and runs the 80 against it. The languages
+  are in the image. No test asks the runner for `javac`, `kotlinc`, `ruby`
+  or `php`: a sandbox that cannot run a language fails its tests.
+- `proxy and TUI tests (no model)` builds the proxy and the TUI from the
+  change and starts the proxy with no service behind it. The 13 ask the
+  proxy's own answers and read the TUI's own screen in a terminal. None
+  needs a model.
+- The 32 need a real model server. No job on GitHub has one; the nightly
+  run has.
+- The two jobs are not required checks.
 - The four `sandbox smoke` jobs send their own requests to the sandbox image.
   They do not run these files.
-- The four sandbox and model files import `httpx` with `importorskip`. Where
-  that package is not installed they are skipped whole, also when the mark is
-  selected: 13 tests are collected then, not 125. CI does not install
-  `httpx`. A job that runs these tests has to install it, and its report has
-  to say how many tests it collected against the 125.
-- To run them: `pytest -m integration tests/infrastructure`, on a host with
-  the stack up.
+- To run a group by hand:
+  `pytest -m integration $(python scripts/tests_counted.py --files sandbox)`
+  with `SANDBOX_URL` set to a running sandbox; `proxy` with
+  `ATLAS_PROXY_URL`; `model` on a host with the stack up.
+
+## Docker Hub and the checks
+
+14 jobs build or run an image of Docker Hub: the five of the install matrix,
+the four `sandbox smoke` jobs, `sandbox tests (containerized)` and the four
+`PR build check` jobs. When Docker Hub refuses a pull for its limit, or its
+token service does not answer, such a job is red and the change is not at
+fault. Five of them are required checks, so that red also takes a pull
+request out of the merge queue.
+
+So each of these jobs has a second source for its images, the mirror
+`mirror.gcr.io`, through one step: `.github/actions/docker-hub-mirror`, which
+runs `scripts/docker_hub_mirror.py`. The step does two things.
+
+- It sets the one key `registry-mirrors` in the settings file of the Docker
+  service and starts the service again. Every other setting stays as it is.
+  A build then asks the mirror first and Docker Hub second. When the service
+  does not come back, or does not name the mirror, the step is red and no
+  later step runs.
+- It pulls the images that the job runs with `docker run` by the mirror's own
+  name and gives them the name of Docker Hub. A runner is logged in to Docker
+  Hub, and for `docker run` the service sends that login to the mirror too,
+  which refuses it; with the mirror's own name no login goes. When the mirror
+  does not give an image, the step says so and the job pulls it from Docker
+  Hub, as it did before.
+
+What follows from it:
+
+- The install matrix runs `ubuntu:22.04`, `ubuntu:24.04`, `debian:12` and
+  `rockylinux/rockylinux:9` by tag. Those five jobs run the mirror's copy of
+  each tag, which can be older than the one of Docker Hub. The step prints
+  the digest of each image that it took from the mirror.
+- An image that a Dockerfile pins by its digest is the same image from the
+  mirror: Docker checks the digest.
+- The four `PR build check` jobs have a builder of their own. It pulls the
+  base images itself, so it has the mirror in its own settings. Its own
+  image comes from the mirror by the mirror's name; when that setup step
+  fails, a second one sets the builder up from Docker Hub.
+- GitHub pulls the image of a job's `container:` or `services:` before the
+  first step, so the step cannot help there. A test refuses such an image of
+  Docker Hub.
+- A test reads the workflow files: every job that builds or runs an image for
+  a pull request or in the merge queue has the step after its checkout and
+  before its first docker command, and the step is given the very images
+  that the job runs. The jobs that publish images or start on a schedule are
+  listed in that test, each with the condition that keeps it from a pull
+  request.
+- The step does not help on a day when the mirror and Docker Hub both give no
+  answer.
 
 ## The nightly run
 
 `scripts/nightly_run.py` is one run for the development server, in a folder
-of its own. A timer starts it each night. It is not a CI job: a check on a
-pull request cannot see a real model that got slower, and it has no stack
-for the tests above.
+of its own. A timer on the server starts it (see "The timer" below). It is
+not a CI job: a check on a pull request cannot see a real model that got
+slower, and it has no model server for the 32 tests above that need one.
 
-The nightly run is best effort. The server is one machine at home, and it is
-not always on. A night with no run is not a failure: the server was off, the
+The nightly run is best effort. The server is one machine, and it is not
+always on. A night with no run is not a failure: the server was off, the
 card was in use, or the images were not of the head yet. No check and no
 rule of this repository waits for the nightly run, and one command switches
 it off (the timer is disabled).
 
 Each night it:
 
-1. takes the head of `dev`. When that changes the script itself, the new
-   copy does the run, so a repair of the script acts in the night after its
-   merge;
+1. takes the head of `dev`. When that changes the script itself or the
+   judge beside it (`scripts/tests_counted.py`), the new copy does the run,
+   so a repair of either acts in the night after its merge;
 2. stops a stack of its own name that an earlier run left: a run that was
    killed leaves its stack, and Docker starts that stack again;
 3. pulls the `dev` images and compares the commit that each was built from
@@ -518,8 +661,9 @@ Each night it:
    services whether they are whole;
 6. runs the driver `scripts/e2e-reliability.py` with three fixed small
    tasks, once each, and keeps the seconds of each;
-7. runs the tests that the plain jobs leave out, and counts how many it
-   collected against the 125 of the table above;
+7. runs the tests that need a real model, and judges pytest's result file
+   with the judge of such runs: all 32 of them are to be collected and to
+   pass, and none is to be skipped;
 8. asks the services again, and writes one report: the commit, the digest
    of each image, what the services said, the seconds of each task, and the
    tests collected, passed, failed and skipped;
@@ -533,7 +677,7 @@ The first line of the report is its result:
 | Result | When |
 |---|---|
 | `passed` | No fault below was found |
-| `failed: ...` | A step did not end, the time limit was reached, a service was not whole after the start or at the end, the driver found a defect of the harness, a test failed, a test was skipped, the tests collected were not 125 (a missing package skips whole files without another sign), or the stack could not be stopped |
+| `failed: ...` | A step did not end, the time limit was reached, a service was not whole after the start or at the end, the driver found a defect of the harness, a test failed, a test was skipped, the tests collected were not 32 (a missing package skips whole files without another sign), or the stack could not be stopped |
 | `not run: the card was in use` | Another run held the lock of the graphics card, or a process computed on the card; then the result gives how many processes and how much memory |
 | `not run: the images are not of the head of the branch yet` | After the wait an image was still not built from the head of `dev`. Nothing more is done: the numbers would be those of another commit |
 
@@ -541,16 +685,18 @@ The first line of the report is its result:
   run. That number moves with the model and with chance; one night says
   little.
 - A skipped test fails the night, and the result gives the reasons. A
-  skipped test counts as collected, so the number 125 does not show it. The
-  tests above skip by the state of the machine that runs them: the Java,
-  Kotlin, Ruby and PHP tests when it has no `javac`, `kotlinc`, `ruby` or
-  `php` (though the code runs in the sandbox), and the 8 TUI tests when the
-  TUI is not built in the tree. On a machine with none of these, 41 of the
-  125 are skipped. So for a night that passes, the server needs the four
-  tools and the built TUI in the run's tree. That is a cost of the tests as
-  they are today. One more test compares the served model with the name in
+  skipped test counts as collected, so the number 32 does not show it. One
+  of the tests compares the served model with the name in
   `ATLAS_MODEL_NAME` and skips without it: the run reads that name from
-  `nightly.env` and gives it to the tests.
+  `nightly.env` and gives it to the tests. A comment after the value is not
+  part of the name, as compose reads the file.
+- A failed test is named in the result.
+- Counting nights, for a number such as "passed in 9 of 10 nights": a night
+  counts as passed only with the result `passed`, which needs every one of
+  the 32 tests collected, none failed and none skipped. A night that is
+  `not run`, and a night with no report (the server was off), counts
+  neither as passed nor as failed. At most one run counts for a night: the
+  first one whose result is not `not run`.
 - Whole: the health check of the lens in the compose file asks whether the
   process serves, so a stack can be healthy for Docker with a lens that
   cannot score. The run asks the proxy's `/ready` (the model server, the
@@ -568,22 +714,235 @@ The first line of the report is its result:
   send none. A user's install has a token when `atlas init` was run.
 - The run writes only inside its own folder, and it stops and removes only
   the containers of its own compose project.
-- With a token in `ATLAS_NIGHTLY_TOKEN` and `--issue N` it puts the report
-  into the text of that one issue. The text is replaced; no comment is
-  added. The token is read at that one call, no command of the run has it,
-  and it is sent to GitHub's own address only. With no token the run only
-  writes the file.
 
-What it needs on the server: a folder for the run; Docker for the user that
-runs it; a Python with `pytest` and `httpx`; the file `nightly.env` in the
-folder, with the settings of the model for that server; a timer at a fixed
-hour; and the graphics card free at that hour for the run, which has a time
-limit of 30 minutes; and, so that no test is skipped, `javac`, `kotlinc`,
-`ruby` and `php` for that user, and the built TUI in the run's tree. The
-timer stops the stack of the usual install before the run when that stack
-runs, and after the run it starts again only what it stopped, also when the
-run failed. It stops nothing else: when something else holds the card, the
-night is "not run".
+### The result on GitHub
+
+A run puts its result on GitHub as a status of the commit that ran:
+`server/nightly` on the head of `dev` that the night ran, and `server/smoke`
+on the commit of a smoke run.
+
+| Result of the run | Status |
+|---|---|
+| `passed`, with no harness defect in the three sessions and, for a night, each of its 32 tests passed, none failed and none skipped | Green |
+| `failed: ...` | Red |
+| `not run: ...` | None |
+
+- The text of a status has fixed words and numbers only: `passed` or
+  `failed`; `started` with the start time of the run in UTC, in the form
+  `2026-10-08T08:00:03Z`; the number of sessions with no harness defect;
+  and the numbers of the tests, or the mark of the text. It has no path, no
+  name of a machine, and nothing that a tool, a test or the model wrote. It
+  has no link.
+- No required check has a name that starts with `server/`. The server is
+  one machine that is not always on, so a night with no status counts
+  neither way.
+- The status is written with the key of a GitHub App of its own. The app
+  has one right, "Commit statuses", on this one repository. For each send
+  the run makes a token that is limited to this repository and to statuses.
+- The key is a file on the server, outside the folder of the run, that only
+  the user of the run can read (`--status-key`). `openssl` signs with it and
+  gets it as the path of that file: the script never reads the key. The key
+  is in no container, in no environment of a command, in no log, in no
+  report and in no status. A key file that the group or others can reach,
+  or that lies in the folder of the run, is not used: the report says so,
+  and the run goes on.
+- The script calls one fixed address, GitHub's own. It has no argument and
+  reads no variable for another one, it uses no proxy that the environment
+  names, and it does not follow an answer that points to another place.
+- Sending changes neither the result nor the exit status of a run. A status
+  that cannot go out (GitHub cannot be reached, or the key is refused or
+  not there) waits in the folder `to-send` of the run's folder. Each later
+  run and each look of the timer tries it once. After 14 days it is set
+  aside into `not-sent`. A status that went out lies in `sent`. A status
+  that is sent twice does no harm.
+- The folder `to-send` is checked like the key: it is a folder of the user
+  of the run, and nobody else can write into it. A file in it is sent only
+  then, and only when the file itself is the run's own.
+
+### The timer
+
+A timer on the server starts the script with `--tick`, every 15 minutes.
+The server only calls out: it has no open port, no tunnel and no runner for
+this. One look:
+
+1. sends each status that waits;
+2. starts nothing when the graphics card is in use;
+3. runs the night, when the hour of the night has come (`--night-hour`, in
+   UTC) and no night was started that day;
+4. or else runs the tip of one branch `smoke/<name>` that has no result
+   yet;
+5. or else does nothing, and leaves no report.
+
+- A tip has a result when the app wrote a `server/smoke` status on it. The
+  look compares the id of the account that wrote the status
+  (`--status-writer`), not a name: a status of that name by another account
+  changes nothing. A tip also has a result when the folder of the run holds
+  a run for it that made a status, or that did not take place for a reason
+  of the commit itself.
+- Before a tip runs, the look asks GitHub which account moved the branch to
+  that commit. The tip runs only when that is a person on the list of the
+  server (`--smoke-by`). Else nothing runs, one line says so, and no status
+  is written. This guard does not rest on the rules of the repository.
+- The timer runs only the repository's own code by itself. The look knows
+  who pushed a branch, not whose code the commit is. So it also asks GitHub
+  for the pull requests of the commit, and the tip runs only when it is the
+  head of an open pull request from a branch of this repository. A pull
+  request from a `smoke/` branch does not count: a person can push
+  another's commit there. The head of a pull request from another
+  repository, a commit with no pull request and the head of a closed one
+  are not run by the timer; one line says so, and no status is written.
+- The timer starts a smoke run only in the hours for smoke runs
+  (`--smoke-hours`, in UTC, as in `22-23,0-5`). With no such hours given it
+  starts none. Outside them a smoke branch waits, and the look says so. The
+  night has its own hour. The unit names the hours 6 and 7. The hours are
+  in UTC, so against a local clock they move by one hour when that clock
+  changes between summer time and winter time; the setting is one argument
+  of the unit.
+- A look that finds a process on the card that holds no lock starts
+  nothing, and the looks of the 60 minutes after it start nothing either.
+  So the usual stack is not stopped and started at every look while
+  something else holds the card.
+- The name after `smoke/` is one part of letters, digits, `.`, `_` and `-`.
+- `--smokes-a-day` bounds how many smoke runs the looks start in one day.
+  Without it the bound is 6.
+- The looks at GitHub need no key. GitHub answers 60 such calls an hour from
+  one address. A look that gets no answer starts no smoke run.
+- `--tick --look` says what is due and starts nothing. Its status is 0 when
+  a run is due and 3 when none is. A server whose usual stack holds the card
+  asks this first, and stops that stack only when a run is due.
+- The files of the timer are in `scripts/server/`. `atlas-nightly.timer`
+  starts `atlas-nightly.service` every 15 minutes. The unit starts
+  `nightly_look.sh`, which asks with `--look`. Only status 3 is "nothing
+  due"; every other status than 0 fails the unit, so a look whose settings
+  cannot be used is seen. When a run is due, the script stops the
+  containers of the usual stack that run (the compose project `atlas`),
+  starts the run, and starts those containers again, also when the run
+  failed. The unit calls the same script once more after every look, so a
+  look that was stopped in its middle leaves no stack down. That holds for
+  a restart of the server too: the file that names what was stopped lies in
+  the folder of the run, on disk. Docker does not start a container again
+  that was stopped by hand, so the first look after the restart finds the
+  file, starts the usual stack before anything else, and says so.
+- The unit has no condition and gives nothing through the environment. The
+  path of the key is an argument of the script.
+
+### The smoke run of one commit
+
+`scripts/nightly_run.py --dir <folder> --commit <full id>` runs the three
+sessions for one commit of a branch, with a real model, and nothing else. It
+is for a pull request that changes text which every request carries. A look
+of the timer starts it for the tip of a `smoke/` branch, or a maintainer
+starts it by hand on the development server. It takes the same locks as a
+night and gives the same "not run" answers, each with status 0.
+
+- It takes only what a maintainer has pushed under the name `smoke/`: the
+  commit has to be the tip of a branch `smoke/<name>` of this repository.
+  To try a commit, a maintainer reads the whole change and pushes exactly
+  that commit: `git push origin <commit>:refs/heads/smoke/<name>`. For the
+  head of an open pull request from a branch of this repository, the timer
+  then makes the run. The head of a pull request from outside is not run by
+  the timer: a maintainer who has read the whole change starts that run by
+  hand, with `--commit`. The run fetches the `smoke/` branches and no other
+  name.
+- Why not any commit of the repository: the run builds and starts what the
+  commit holds, with Docker, and a user that can use Docker can do on that
+  machine what its administrator can. The address of the repository gives
+  the head of a pull request from outside to a fetch by its id, so a fetch
+  that works shows nothing. And a branch of another name can be one that a
+  program pushes, with a change that no maintainer has read.
+- The tip, and not a commit further down the branch: one push stands for
+  one commit. No workflow starts on a push to a `smoke/` branch, and a test
+  holds that. The run deletes nothing on GitHub; its output gives the
+  command that removes the branch.
+- The commit has to stand on the head of `dev`. Then what differs from `dev`
+  is what the pull request changes. Else the answer is "not run", and the
+  way is to update the branch.
+- No file of the commit runs on the server itself. The tree of the run stays
+  at the head of `dev`. The script of the run, the driver and its modules,
+  the compose files, the script that makes the mark, the model server's
+  folder and the files that the stack mounts are those of `dev`. A commit
+  that changes one of them is "not run", and the result names the file: the
+  run would use the copy of `dev` under the name of the commit.
+- It builds the image of each service whose build folder the commit changes,
+  from a copy of that folder, and pulls the other images as built from the
+  head of `dev`. An image that it builds has a name of this run's own
+  (`localhost/atlas-nightly/...`, with the start time and the commit) and
+  never the tag `dev`. Each build has a time limit. When no build folder
+  differs, it builds nothing and says so.
+- It runs no tests. Its result goes to GitHub as the status `server/smoke`
+  on the commit.
+- At its end it removes the images that it built, by their own names, and
+  nothing else, also when a step failed. The copy of the commit's build
+  folders (`commit.tar` and `commit/`) stays in the folder of the run, with
+  its report.
+- It prints one line that starts with "Smoke run on", for the person who
+  started it. A run with a harness defect prints its line too, with the
+  number of sessions that had none. A run that failed for another reason
+  prints no line.
+- The line names the text by a mark that is made from the commit's
+  recordings, and the proxy sends that text. So when the commit's mark is
+  not the one of `dev`, the proxy has to be built from the commit. Else the
+  answer is "not run": no session would carry the text that the line names.
+  The way is to put the change of the text into the same commit as its
+  recordings.
+
+What it needs on the server:
+
+- a folder for the run, and Docker for the user that runs it;
+- a Python with `pytest` and `httpx`, and `git` and `openssl`;
+- the file `nightly.env` in the folder, with the settings of the model for
+  that server and nothing else. The key is not in it;
+- the key file of the app, outside that folder, owned by that user, with
+  mode 600;
+- a timer that starts the script with `--tick` every 15 minutes, with the
+  client id of the app (`--status-app`), the id of the account that writes
+  the app's statuses (`--status-writer`) and each person whose push to a
+  `smoke/` branch counts (`--smoke-by`);
+- the graphics card free for the run, which has a time limit of 30 minutes.
+
+The server needs no `javac`, `kotlinc`, `ruby` or `php`, no Go and no built
+TUI: the tests that needed them run in jobs on GitHub.
+
+When a look with `--look` finds a run due, the timer stops the stack of the
+usual install when that stack runs. After the run it starts again only what
+it stopped, also when the run failed. It stops nothing else: when something
+else holds the card, nothing is started.
+
+### The steps on the server
+
+Each step is typed by the user that runs the nightly run, on the server. The
+places are fixed, each under the home folder of that user, so that the unit
+needs no change.
+
+1. The folder of the run and its copy of the repository:
+   `git clone --branch dev https://github.com/inferstep/ATLAS.git ~/atlas-nightly/tree`
+2. Its Python: `python3 -m venv ~/atlas-nightly/venv`, then
+   `~/atlas-nightly/venv/bin/pip install pytest httpx`.
+3. The settings of the model: the file `~/atlas-nightly/nightly.env`, as
+   above. No key and no token goes into it.
+4. The key of the app: `mkdir -p ~/.config/atlas-nightly`, then the key as
+   the file `~/.config/atlas-nightly/status-app.pem`, then
+   `chmod 600 ~/.config/atlas-nightly/status-app.pem`. The file lies outside
+   the folder of the run, and its owner is the user that types this.
+5. The unit and the timer: `mkdir -p ~/.config/systemd/user`, then
+   `cp ~/atlas-nightly/tree/scripts/server/atlas-nightly.service ~/atlas-nightly/tree/scripts/server/atlas-nightly.timer ~/.config/systemd/user/`
+   The unit names the app by its client id (`--status-app`), the account
+   that writes its statuses (`--status-writer`), and the hours for smoke
+   runs (`--smoke-hours 6-7`).
+6. One look that starts nothing, to try the folder and the Python:
+   `~/atlas-nightly/venv/bin/python ~/atlas-nightly/tree/scripts/nightly_run.py --dir ~/atlas-nightly --tick --look`
+   It prints what is due and ends with status 0 or 3. Status 2 says which
+   setting cannot be used.
+7. The timer: `systemctl --user daemon-reload`, then
+   `systemctl --user enable --now atlas-nightly.timer`. So that it runs
+   when nobody is logged in: `loginctl enable-linger`.
+8. To see what a look did: `journalctl --user -u atlas-nightly.service`.
+   To switch the nightly run off:
+   `systemctl --user disable --now atlas-nightly.timer`.
+
+What a look needs on its path: `docker`, `git` and `openssl`. The Python is
+named by its full path. The path of a look is the user unit's own, not the
+path of a login shell; `systemctl --user show-environment` shows it.
 
 The integrity check names a change that takes a test out of the plain jobs
 this way: the mark on a test or a file that was there before, a file added to
@@ -639,6 +998,21 @@ and red for its own violation.
   on does not count. A canary on the head of `dev` is not old, whatever the
   age of its runs: they ran on the files that `dev` has today. What such a
   canary does not show is a runner or a service that changed since its runs.
+- The check also reads two things that no run of the canary shows. Each
+  required check of `dev`, `staging` and `main` has to be bound to the app
+  that it comes from: a required check that is bound to no source would
+  count a status of that name by any account that can write statuses. The
+  three branches are in the list (`ruled_branches`). A branch of that list
+  for which GitHub gives no required check at all is a finding: its ruleset
+  is gone or not active. And no required check may have a name that starts
+  with `server/`: those are the statuses of the development server, which
+  is one machine that is not always on.
+- It reads how old the newest night of the development server is: the
+  newest `server/nightly` status that the server's own account wrote on a
+  commit of `dev`. A night that started more than 14 days ago, or none in
+  that time, is a finding. While no account is set as the writer
+  (`server.writer` in the list), one line says that nothing was looked for.
+  Today the list names no account, so the nights are not looked for yet.
 
 A maintainer renews the canary once a week, and after a change to a workflow
 or to a file that configures a check:
@@ -661,8 +1035,8 @@ or a file that a violation edits has moved.
 The workflow `canary check` runs `scripts/canary.py check` each Monday at
 02:47 UTC. It only reads: it renews nothing, opens no pull request and no
 issue, and writes no comment. Its job has a token that can read the
-contents, the pull request, the check runs and the logs of the jobs, and
-nothing else.
+contents, the pull request, the check runs, the logs of the jobs and the
+statuses of a commit, and nothing else.
 
 - A red run is the report. No issue appears. GitHub sends its mail for a
   failed scheduled run to the account that last changed the `cron` line of

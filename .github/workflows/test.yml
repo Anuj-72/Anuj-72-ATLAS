@@ -520,6 +520,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      # This job builds or runs an image of Docker Hub. The Docker service
+      # asks a mirror first, so a limit or a fault of Docker Hub does not turn
+      # the job red (docs/quality/gates.md, "Docker Hub and the checks").
+      # zizmor asks for the `$/` form here. actionlint, in its newest version,
+      # does not read that form yet, so the form both read is kept.
+      - uses: ./.github/actions/docker-hub-mirror  # zizmor: ignore[self-repository]
       - name: build sandbox image
         run: docker build -t atlas-sandbox-test ./sandbox
       - name: start sandbox
@@ -545,6 +551,184 @@ jobs:
       - name: cleanup
         if: always()
         run: docker rm -f sandbox-test || true
+
+  sandbox-tests:
+    # The tests that need a running sandbox service: the group `sandbox` of
+    # scripts/tests_counted.py. The image is built from this commit, so the
+    # code of the change runs. The service is started as the stack starts it:
+    # by the `sandbox` service of docker-compose.yml, with its read-only
+    # base, its tmpfs mounts, its dropped capabilities and its limits. The
+    # job gives none of these itself, so a change of the stack's settings is
+    # under test by itself. The languages are in the image; no test asks the
+    # runner for a tool.
+    name: sandbox tests (containerized)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # This job builds or runs an image of Docker Hub. The Docker service
+      # asks a mirror first, so a limit or a fault of Docker Hub does not turn
+      # the job red (docs/quality/gates.md, "Docker Hub and the checks").
+      # zizmor asks for the `$/` form here. actionlint, in its newest version,
+      # does not read that form yet, so the form both read is kept.
+      - uses: ./.github/actions/docker-hub-mirror  # zizmor: ignore[self-repository]
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            **/requirements*.txt
+            .github/requirements/ci.txt
+
+      - name: install
+        run: |
+          # pytest, and httpx with which the tests reach the service: from
+          # the hashed lock.
+          pip install --require-hashes -r .github/requirements/ci.txt
+          pip install --no-deps -e .
+
+      - name: the settings that an install gives the compose file
+        run: |
+          # What an install has in its `.env`: the caller's user, a workspace,
+          # and the folder of the service token (here with no token in it, so
+          # the service asks for none). The compose file asks for the two
+          # names of the model for its other services; the sandbox does not
+          # read them. No limit and no mount of the sandbox is set here.
+          mkdir -p "$RUNNER_TEMP/workspace" "$RUNNER_TEMP/no-secrets"
+          {
+            echo "ATLAS_SANDBOX_UID=$(id -u)"
+            echo "ATLAS_SANDBOX_GID=$(id -g)"
+            echo "ATLAS_PROJECT_DIR=$RUNNER_TEMP/workspace"
+            echo "ATLAS_SECRETS_DIR=$RUNNER_TEMP/no-secrets"
+            echo "ATLAS_MODEL_FILE=not-read-by-the-sandbox"
+            echo "ATLAS_MODEL_NAME=not-read-by-the-sandbox"
+          } > "$RUNNER_TEMP/sandbox.env"
+
+      - name: build sandbox image
+        run: docker compose --env-file "$RUNNER_TEMP/sandbox.env" build sandbox
+
+      - name: start the sandbox as the stack starts it, and wait for its health answer
+        run: |
+          docker compose --env-file "$RUNNER_TEMP/sandbox.env" up -d --no-deps --no-build --pull never sandbox
+          # The service says itself when it serves. No fixed wait: a slow
+          # start would read as 80 failed tests.
+          for _ in $(seq 1 60); do
+            if curl -sf -m 5 -o /dev/null http://127.0.0.1:30820/health; then
+              echo "The sandbox answers."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The sandbox gave no health answer in 120 seconds, so no test was run. Fix: read its log below for why the service did not start; it is the sandbox service of docker-compose.yml, with the image built from ./sandbox of this commit."
+          docker compose --env-file "$RUNNER_TEMP/sandbox.env" logs --tail 80 sandbox
+          exit 1
+
+      - name: the sandbox tests
+        env:
+          SANDBOX_URL: http://127.0.0.1:30820
+        # The status of pytest is not the verdict: it is 0 for a run in which
+        # tests were skipped. The next step reads the result file.
+        run: |
+          # shellcheck disable=SC2046  # the files of the group, each a word of its own
+          python -m pytest -m integration $(python scripts/tests_counted.py --files sandbox) -q -rs -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/sandbox-tests.xml" || echo "pytest ended with status $?. The next step judges the result file."
+
+      - name: every sandbox test ran and passed
+        run: python scripts/tests_counted.py sandbox "$RUNNER_TEMP/sandbox-tests.xml"
+
+      - name: the log of the sandbox, when a step failed
+        if: failure()
+        run: docker compose --env-file "$RUNNER_TEMP/sandbox.env" logs --tail 120 sandbox
+
+      - name: cleanup
+        if: always()
+        run: docker compose --env-file "$RUNNER_TEMP/sandbox.env" down --volumes || true
+
+  proxy-tui-tests:
+    # The tests that need the built TUI and a running proxy: the group
+    # `proxy` of scripts/tests_counted.py. They ask the proxy's own answers
+    # and read the TUI's own screen. None needs a model, so the proxy runs
+    # here with no service behind it.
+    name: proxy and TUI tests (no model)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: '1.26.6'
+          # No cache: the two builds take less time than restoring one.
+          cache: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            **/requirements*.txt
+            .github/requirements/ci.txt
+
+      - name: install
+        run: |
+          pip install --require-hashes -r .github/requirements/ci.txt
+          pip install --no-deps -e .
+
+      - name: build the proxy and the TUI
+        run: |
+          (cd proxy && go build -o "$RUNNER_TEMP/atlas-proxy" .)
+          # The TUI tests start this file.
+          (cd tui && go build -o atlas-tui .)
+
+      - name: start the proxy and wait for its answer
+        env:
+          ATLAS_PROXY_PORT: "18090"
+          ATLAS_KEEP_LLAMA_WARM: "0"
+          ATLAS_SERVICE_TOKEN_FILE: /nonexistent
+          # No service is behind the proxy: nothing listens on port 9.
+          ATLAS_INFERENCE_URL: http://127.0.0.1:9
+          ATLAS_SANDBOX_URL: http://127.0.0.1:9
+          ATLAS_LENS_URL: http://127.0.0.1:9
+          ATLAS_V3_URL: http://127.0.0.1:9
+        run: |
+          nohup "$RUNNER_TEMP/atlas-proxy" > "$RUNNER_TEMP/proxy.log" 2>&1 &
+          # Any answer shows that the proxy serves. With no service behind it
+          # the answer is "not ready", which is what these tests need.
+          for _ in $(seq 1 30); do
+            if curl -s -m 5 -o /dev/null http://127.0.0.1:18090/ready; then
+              echo "The proxy answers."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The proxy gave no answer in 30 seconds, so no test was run. Fix: read its log below for why it did not start; it is built from ./proxy of this commit."
+          tail -n 80 "$RUNNER_TEMP/proxy.log"
+          exit 1
+
+      - name: the proxy and TUI tests
+        env:
+          ATLAS_PROXY_URL: http://127.0.0.1:18090
+        # The status of pytest is not the verdict; the next step reads the
+        # result file.
+        run: |
+          # shellcheck disable=SC2046  # the files of the group, each a word of its own
+          python -m pytest -m integration $(python scripts/tests_counted.py --files proxy) -q -rs -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/proxy-tests.xml" || echo "pytest ended with status $?. The next step judges the result file."
+
+      - name: every proxy and TUI test ran and passed
+        run: python scripts/tests_counted.py proxy "$RUNNER_TEMP/proxy-tests.xml"
+
+      - name: the log of the proxy, when a step failed
+        if: failure()
+        run: tail -n 120 "$RUNNER_TEMP/proxy.log"
 
   coverage-upload:
     name: coverage upload
