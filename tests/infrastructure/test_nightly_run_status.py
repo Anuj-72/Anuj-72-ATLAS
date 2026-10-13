@@ -404,7 +404,7 @@ def server(tmp_path, monkeypatch):
 def settings(night, *more):
     """The settings of a look on a server that has the key, one person whose push counts, and every hour for a smoke run."""
     return nightly.parse(["--dir", str(night.dir), "--lock", str(night.lock), "--tick", "--smoke-by", "a-maintainer",
-                          "--smoke-hours", "0-23", *night.with_the_key(), *more])
+                          "--smoke-hours", "0-23", *night.with_the_key(), *night.room(), *more])
 
 
 def to_send(commit=HEAD, **changes):
@@ -867,6 +867,14 @@ def test_the_tip_of_a_smoke_branch_is_due_when_a_listed_person_moved_the_branch_
     assert asked == ["ls-remote", "--heads", "https://github.com/inferstep/ATLAS.git", "refs/heads/smoke/*"]
     # In its hour the night comes first.
     assert nightly.what_is_due(settings(night), EIGHT)[0] == "night"
+
+
+def test_with_too_little_room_on_dockers_disk_the_tip_of_a_smoke_branch_is_not_due_either(server):
+    night, github = server
+    a_smoke_is_there(night, github)
+    mode, commit, why = nightly.what_is_due(settings(night, "--room-gb", "99999"), NOON)
+    assert (mode, commit) == (None, None)
+    assert why.startswith("nothing is started: too little room on Docker's disk (") and why.endswith(" GB free, 99999 GB needed)")
     # The name of a person is the same name in other letters.
     github.plan["activity"] = {"refs/heads/smoke/a-change": by("A-Maintainer")}
     assert nightly.what_is_due(settings(night), NOON)[0] == "one commit"
@@ -960,7 +968,7 @@ def test_with_no_hours_for_smoke_runs_the_timer_starts_none_and_outside_them_a_b
     night, github = server
     a_smoke_is_there(night, github)
     with_no_hours = nightly.parse(["--dir", str(night.dir), "--lock", str(night.lock), "--tick", "--smoke-by", "a-maintainer",
-                                   *night.with_the_key()])
+                                   *night.with_the_key(), *night.room()])
     assert with_no_hours.smoke_hours == frozenset()
     assert nightly.what_is_due(with_no_hours, NOON) == (None, None, NO_HOURS)
     # The night has its own hour: it does not wait for the hours of the smoke runs.
@@ -1072,7 +1080,7 @@ def test_without_a_writer_or_a_list_of_persons_no_smoke_branch_is_looked_for(ser
     night, github = server
     a_smoke_is_there(night, github)
     given = {"--status-key": str(night.key), "--status-app": APP, "--status-writer": str(WRITER), "--smoke-by": "a-maintainer"}
-    args = nightly.parse(["--dir", str(night.dir), "--lock", str(night.lock), "--tick",
+    args = nightly.parse(["--dir", str(night.dir), "--lock", str(night.lock), "--tick", *night.room(),
                           *[word for name, value in given.items() if name != left_out for word in (name, value)]])
     assert nightly.what_is_due(args, NOON) == (None, None, NO_SETTINGS)
     assert github.seen == []
