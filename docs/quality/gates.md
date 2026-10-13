@@ -574,6 +574,12 @@ in one place.
   TUI, 32 for the model, and 1 that asks a real Docker engine what it
   removes with an image's name by digest. `tests/integration/` holds no
   test.
+- GitHub's runner has Docker 28.0.4 with the storage driver overlay2, not
+  the image store of containerd. So on GitHub that one test proves that
+  the guard keeps the name by digest: with the guard taken out it fails on
+  the answer of the code itself, on any store. What Docker itself does on
+  the store of containerd, the kind that the development server has, was
+  shown by tries on a developer's machine.
 - The groups, their files and their numbers are in one place:
   `scripts/tests_counted.py`. A test in the test suite holds that list, the
   hook's list, this table, the two jobs and the number of test functions in
@@ -833,12 +839,27 @@ this. One look:
 
 - The room: a look that would start a run first reads the free room of
   Docker's disk, at Docker's own folder and at the folder of containerd.
-  With less than `--room-gb` (20 GB when it is not given) it starts nothing
-  and says `nothing is started: too little room on Docker's disk (<n> GB
-  free, <m> GB needed)`. The usual stack is then not stopped, and no status
-  is written. `--docker-folder` names another folder to read. The number
-  20: one whole set of the five images was about 4 GB compressed and 13 GB
-  unpacked when this was written, and an image store can keep both.
+  With too little it starts nothing and says `nothing is started: too
+  little room on Docker's disk (<n> GB free, <m> GB needed)`. The usual
+  stack is then not stopped, and no status is written. `--docker-folder`
+  names another folder to read.
+- The look wants two numbers, and each is a setting:
+  - `--reserve-gb`, 5 GB when it is not given, before every run. It is for
+    what the containers of the stack write and for an image that grew. It
+    is a choice, not a measure.
+  - `--first-set-gb`, 17 GB when it is not given, on top of the reserve,
+    while the run has not written down a pull for each of the five images
+    (`night-images.json`). The measure: the five images were 4.18 GB
+    compressed in the registry and 12.9 GB unpacked when this was written,
+    and the image store of containerd keeps both. A server that has some
+    of their layers already needs less. Compare the layers of the
+    registry's images with the layers of the images on the server, and
+    give the smaller number as `--first-set-gb` in the server's copy of
+    the unit.
+  - The look reads `night-images.json` for this and does not ask Docker.
+    When the run's own images were removed by hand, remove that file too.
+    Without that the look wants the reserve only, and the night pulls a
+    whole set.
 - A tip has a result when the app wrote a `server/smoke` status on it. The
   look compares the id of the account that wrote the status
   (`--status-writer`), not a name: a status of that name by another account
@@ -876,6 +897,11 @@ this. One look:
 - `--tick --look` says what is due and starts nothing. Its status is 0 when
   a run is due and 3 when none is. A server whose usual stack holds the card
   asks this first, and stops that stack only when a run is due.
+- A look decides with the script that the last run left in the tree: only
+  a run moves the tree to the head of `dev`. So a change to what a look
+  decides does not reach a server whose looks start nothing. Move the tree
+  by hand then: `git -C ~/atlas-nightly/tree fetch origin dev`, then
+  `git -C ~/atlas-nightly/tree checkout --detach FETCH_HEAD`.
 - The files of the timer are in `scripts/server/`. `atlas-nightly.timer`
   starts `atlas-nightly.service` every 15 minutes. The unit starts
   `nightly_look.sh`, which asks with `--look`. Only status 3 is "nothing
