@@ -193,7 +193,13 @@ jobs:
           # Makes the test gate write an LCOV report, the raw data and the
           # test results there.
           ATLAS_COVERAGE_DIR: ${{ runner.temp }}/coverage
-        run: python scripts/production-readiness.py --only python-tests --pytest-path "${{ matrix.subset }}"
+        # tests/infrastructure is the long subset: its tests run in four
+        # processes at once, one for each CPU of the runner. Every test still
+        # runs once, and the result file holds every test. The other subsets
+        # take seconds and stay in one process.
+        run: >-
+          python scripts/production-readiness.py --only python-tests --pytest-path "${{ matrix.subset }}"
+          --pytest-workers "${{ matrix.subset == 'tests/infrastructure' && 4 || 1 }}"
 
       - name: coverage total
         if: ${{ !cancelled() }}
@@ -644,6 +650,10 @@ jobs:
       - name: build the proxy and the TUI
         run: |
           (cd proxy && go build -o "$RUNNER_TEMP/atlas-proxy" .)
+          # Go fetches the TUI's modules first, with no cache (none would act in
+          # the merge queue). A download that breaks off in its middle is tried
+          # once more; a second failure fails the step with Go's own words.
+          (cd tui && { go mod download || { echo "The download of the TUI's modules broke off. It is tried once more."; go mod download; }; })
           # The TUI tests start this file.
           (cd tui && go build -o atlas-tui .)
 
