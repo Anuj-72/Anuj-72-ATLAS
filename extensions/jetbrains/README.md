@@ -72,6 +72,8 @@ A port of `extensions/vscode/src/session/`, with the TUI as the reference where 
 
 **The connection comes from the environment.** `ATLAS_PROXY_URL` (default `http://127.0.0.1:8090`) and `ATLAS_SERVICE_TOKEN_FILE`, the same variables the TUI and `atlas doctor` use, read in one place (`client/AtlasConnection.kt`). The settings UI and secure token storage are Stage 5; until then the tool window shows the URL it is talking to, and the token is read from the file `atlas init` writes rather than from any setting.
 
+**Two hazards the settings stage inherits**, raised in review of this pull request and left for Stage 5 rather than fixed here. `AtlasConnection` is a `data class` with no `toString()` override, so the one Kotlin generates prints `token` in full: nothing logs a connection today, but a stack trace, a debugger view or a single `"$connection"` interpolated into a log line would put the service token there. And `FALLBACK_TOKEN_FILE` (`secrets/service-token`) is a relative path, so it resolves against the working directory the IDE was started from, not against the install the token sits beside — the ambiguity `ATLAS_SERVICE_TOKEN_FILE` exists to remove, and one a sandbox run started elsewhere meets as "no token configured". Stage 5 answers both: the URL and the token become settings, and the token moves to the platform's credential store.
+
 ## Tests
 
 `./gradlew test` runs the suites in one JUnit Platform run: the `BasePlatformTestCase` tool-window test (via the vintage engine) and the JVM suites (Jupiter). Only the tool-window test needs an IDE; none of the others needs a proxy:
