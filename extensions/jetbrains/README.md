@@ -131,16 +131,19 @@ then holds the result against the committed file. The header inside the lock fil
 build, including the four IDE downloads, and writes the same lock for everything the gate
 builds.
 
-A version that moves in `build.gradle.kts` has to carry the renewed lock with it. Dependabot's
-Gradle updater runs `--write-locks` itself when a lock file is present, so one of its version
-bumps is expected to carry the change; when it does not, the CI lock step is what says so.
+A version that moves in `build.gradle.kts` has to carry the renewed lock with it. GitHub's
+changelog of 24 June 2025 is that Dependabot can read and update `gradle.lockfile` in addition
+to `build.gradle`, by default and with no command named; when one of its version bumps arrives
+without the renewed lock, the CI lock step is what says so.
 
 **What is not locked.** The configurations of the `runIde`-family tasks are outside the lock,
 so which IDE build a sandbox run downloads is not fixed by it; the OS-specific installer never
 reaches the lock file in any case, which records the OS-less line `idea:idea:2026.1.3`.
 `verifyPlugin` and publishing have configurations of their own that are not locked either.
-Locking has been built and renewed on Linux only — the platform bump in stage 6 needs a lock
-that a macOS and a Windows machine can build from, and neither has been tried.
+Locking has been built and renewed on Linux and on macOS 15.5 (arm64, OpenJDK 21), where the
+strict gate passes with 62 tests and `--write-locks` writes the same lock file byte for byte.
+Windows is still untried, and the platform bump in stage 6 needs a lock that a Windows machine
+can build from as well.
 
 ## Smoke-test status
 

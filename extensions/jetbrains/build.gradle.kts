@@ -178,8 +178,9 @@ configurations.configureEach {
 }
 
 dependencyLocking {
-    // Strict, so a configuration above that the gate no longer resolves fails
-    // the build instead of quietly falling out of the lock.
+    // Strict: a configuration named above that is resolved and has no line in
+    // the lock file fails the build. A listed configuration that is never
+    // resolved is not checked, and keeps the lines it has.
     lockMode = LockMode.STRICT
     // The five coroutines modules are excluded from every Ktor delivery above,
     // and resolving a configuration's files still resolves them. The strict
