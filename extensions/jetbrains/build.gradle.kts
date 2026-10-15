@@ -1,3 +1,4 @@
+import org.gradle.api.artifacts.dsl.LockMode
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
@@ -36,17 +37,21 @@ val serializationVersion = "1.11.0"
 // them through, not just the -core one. A second copy inside the plugin jar
 // shadows the platform's, which is how a plugin ends up with two
 // incompatible coroutine runtimes.
-val platformProvided =
+val platformCoroutines =
     listOf(
         "org.jetbrains.kotlinx:kotlinx-coroutines-bom",
         "org.jetbrains.kotlinx:kotlinx-coroutines-core",
         "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm",
         "org.jetbrains.kotlinx:kotlinx-coroutines-jdk8",
         "org.jetbrains.kotlinx:kotlinx-coroutines-slf4j",
-        "org.jetbrains.kotlin:kotlin-stdlib",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk7",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk8",
     )
+val platformProvided =
+    platformCoroutines +
+        listOf(
+            "org.jetbrains.kotlin:kotlin-stdlib",
+            "org.jetbrains.kotlin:kotlin-stdlib-jdk7",
+            "org.jetbrains.kotlin:kotlin-stdlib-jdk8",
+        )
 
 fun DependencyHandler.proxyClient(notation: String) {
     add("implementation", notation) {
@@ -114,6 +119,77 @@ dependencies {
         bundledModule("intellij.platform.jewel.markdown.ideLafBridgeStyling")
         testFramework(TestFrameworkType.Platform)
     }
+}
+
+// Dependency locking. The platform the plugin compiles against, the coroutines
+// it must share with the IDE and the Ktor pin above are all versions this build
+// may not move by accident, so they are fixed in gradle.lockfile.
+//
+// Locking is turned on for the configurations the gate resolves and for no
+// others, because strict mode fails a locked configuration that has no lock
+// state. Measured on this tree: with every resolvable configuration locked,
+// resolving `annotationProcessor` or `intellijPlatformLocal` -- neither of which
+// the gate touches, and both of which some other task does -- fails with
+// "Locking strict mode: Configuration ':annotationProcessor' is locked but does
+// not have lock state." A wider scope therefore breaks the per-product run tasks
+// and the verifier on a lock the gate has written, and a lock that only the
+// `dependencies` task could complete is one that pulls four IDE distributions
+// (see the README).
+//
+// The 26 names below are exactly the configurations
+// `ktlintCheck test verifyPluginProjectConfiguration buildPlugin` resolves: the
+// configurations named in gradle.lockfile, plus the seven it records as empty.
+// A dependency or plugin that makes the gate resolve one more configuration
+// has to add its name here, or that configuration is left out of the lock.
+val gatedConfigurations =
+    listOf(
+        "compileClasspath",
+        "runtimeClasspath",
+        "testCompileClasspath",
+        "testRuntimeClasspath",
+        "ktlint",
+        "ktlintReporter",
+        "ktlintRuleset",
+        "kotlinBuildToolsApiClasspath",
+        "kotlinCompilerPluginClasspathMain",
+        "kotlinCompilerPluginClasspathTest",
+        "kotlinScriptDefExtensions",
+        "testKotlinScriptDefExtensions",
+        "intellijPlatformClasspath",
+        "intellijPlatformComposedJar",
+        "intellijPlatformDependency",
+        "intellijPlatformJavaCompiler",
+        "intellijPlatformSandboxRuntimeClasspath",
+        "intellijPlatformTestClasspath",
+        "intellijPlatformTestRuntimeClasspath",
+        "intellijPlatformTestRuntimeFixClasspath",
+        "intellijPlatformTestSandboxRuntimeClasspath",
+        "intellijPlatformBackendPluginModuleDependencies",
+        "intellijPlatformPlugin",
+        "intellijPlatformPluginComposedModule",
+        "intellijPlatformPluginModule",
+        "jetbrainsRuntime",
+    )
+
+configurations.configureEach {
+    if (name in gatedConfigurations) {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+dependencyLocking {
+    // Strict: a configuration named above that is resolved and has no line in
+    // the lock file fails the build. A listed configuration that is never
+    // resolved is not checked, and keeps the lines it has.
+    lockMode = LockMode.STRICT
+    // The five coroutines modules are excluded from every Ktor delivery above,
+    // and resolving a configuration's files still resolves them. The strict
+    // check then demands a lock line for each, which --write-locks never writes
+    // because the modules are not in the dependency graph: without this, one
+    // --write-locks produces a lock the next strict build rejects. Ignored
+    // modules are left out of the lock file and out of the check, so they may
+    // move; nothing else may.
+    ignoredDependencies.addAll(platformCoroutines)
 }
 
 intellijPlatform {

@@ -49,5 +49,21 @@ jobs:
       # verifyPluginProjectConfiguration checks the sinceBuild/untilBuild
       # pair and the Kotlin API level against the target platform, so it
       # runs before the build rather than after a bad plugin is packaged.
+      #
+      # Dependency locking is on for the configurations this command
+      # resolves (build.gradle.kts), so this step fails when
+      # gradle.lockfile is behind what the build asks for. Measured: with
+      # one locked module's line removed from the lock file, this command
+      # fails with "Resolved 'x' which is not part of the dependency lock
+      # state".
       - name: gate
         run: ./gradlew --no-daemon ktlintCheck test verifyPluginProjectConfiguration buildPlugin
+
+      # The lock file is held against the one command that renews it, so a
+      # lock file that the build would write differently -- a hand-edited
+      # one, or one written by a build that resolved another set of
+      # configurations -- lands here rather than on a maintainer's machine.
+      - name: lock
+        run: |
+          ./gradlew --no-daemon --write-locks ktlintCheck test verifyPluginProjectConfiguration buildPlugin
+          git diff --exit-code -- gradle.lockfile
