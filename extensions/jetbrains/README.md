@@ -92,6 +92,56 @@ All commands run from `extensions/jetbrains/`:
 
 The four run tasks download a full IDE on first use, which is large and slow. They exist so the plugin can be smoke-tested against each product rather than assuming IDEA compatibility.
 
+## Dependency locking
+
+Every version the plugin is built and tested against is fixed in `gradle.lockfile`.
+`build.gradle.kts` turns locking on, in strict mode, for the 26 configurations the gate
+resolves — 26 of the 101 resolvable configurations of this build — so a version that moves
+without a change to the lock file fails the build instead of being resolved quietly.
+
+**The scope is those 26 configurations and no others, and that is deliberate.** Strict mode
+fails a locked configuration that has no lock state, so a wider scope breaks tasks this gate
+does not run. Measured on this tree with every resolvable configuration locked, resolving
+`annotationProcessor` or `intellijPlatformLocal` — neither is resolved here, both are
+resolved by other tasks — fails with `Locking strict mode: Configuration ':annotationProcessor'
+is locked but does not have lock state.` Anything that makes the gate resolve one more
+configuration has to name it in `gatedConfigurations` in `build.gradle.kts`; left out of that
+list, it is left out of the lock.
+
+**Five modules are ignored rather than locked:** `kotlinx-coroutines-bom`, `-core`,
+`-core-jvm`, `-jdk8` and `-slf4j`. The build excludes them from every Ktor delivery (see [Why
+Ktor is pinned to 3.4.3](#why-ktor-is-pinned-to-343)), and resolving a configuration's files
+still resolves them, so the strict check demands a lock line for each — a line `--write-locks`
+never writes, because the modules are not in the dependency graph. Without the ignore, one
+`--write-locks` produces a lock the next strict build rejects with `Resolved
+'org.jetbrains.kotlinx:kotlinx-coroutines-…' which is not part of the dependency lock state`.
+The excluded Kotlin stdlib modules are not ignored: they are in the graph, so they are locked
+like everything else.
+
+**To renew the lock, run the gate form:**
+
+```bash
+./gradlew --no-daemon --write-locks ktlintCheck test verifyPluginProjectConfiguration buildPlugin
+```
+
+That resolves every locked configuration and writes `gradle.lockfile` without pulling the four
+IDE distributions, which is why it is also the form the CI step runs: it renews the lock and
+then holds the result against the committed file. The header inside the lock file itself names
+`:dependencies --write-locks` instead — that resolves every resolvable configuration of the
+build, including the four IDE downloads, and writes the same lock for everything the gate
+builds.
+
+A version that moves in `build.gradle.kts` has to carry the renewed lock with it. Dependabot's
+Gradle updater runs `--write-locks` itself when a lock file is present, so one of its version
+bumps is expected to carry the change; when it does not, the CI lock step is what says so.
+
+**What is not locked.** The configurations of the `runIde`-family tasks are outside the lock,
+so which IDE build a sandbox run downloads is not fixed by it; the OS-specific installer never
+reaches the lock file in any case, which records the OS-less line `idea:idea:2026.1.3`.
+`verifyPlugin` and publishing have configurations of their own that are not locked either.
+Locking has been built and renewed on Linux only — the platform bump in stage 6 needs a lock
+that a macOS and a Windows machine can build from, and neither has been tried.
+
 ## Smoke-test status
 
 Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the tool window can be checked in that product by hand. These are manual runs, not tests, and none of them is wired into CI.
