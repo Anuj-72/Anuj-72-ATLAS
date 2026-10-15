@@ -851,7 +851,7 @@ func (s *runState) exitGates(ctx *AgentContext, userMessage, claimText string) (
 	// file that never parsed and was never run, reported as success (audit
 	// finding: warned state must be a terminal integrity condition, not a
 	// rewrite throttle).
-	for p := range s.pendingWarnedRun {
+	for _, p := range sortedKeys(s.pendingWarnedRun) {
 		if s.repairOpenFor(ctx, p) {
 			// The repair gate owns a file that still does not parse.
 			continue

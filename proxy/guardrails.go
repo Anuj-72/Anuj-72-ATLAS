@@ -1026,13 +1026,13 @@ func staleServingJob(ctx *AgentContext) (jobID, path string) {
 	if ctx == nil {
 		return "", ""
 	}
-	for id, jobCmd := range ctx.BackgroundJobs {
+	for _, id := range sortedKeys(ctx.BackgroundJobs) {
 		started, ok := ctx.BackgroundJobStarted[id]
 		if !ok {
 			continue
 		}
 		for _, p := range changedPathsForCoverage(ctx) {
-			if !commandNamesPath(jobCmd, p) {
+			if !commandNamesPath(ctx.BackgroundJobs[id], p) {
 				continue
 			}
 			if info, err := os.Stat(p); err == nil && info.ModTime().After(started) {
@@ -1416,7 +1416,7 @@ func driftedSinceVerification(ctx *AgentContext, verified map[string]string) str
 	if ctx == nil {
 		return ""
 	}
-	for p := range ctx.SessionWrites {
+	for _, p := range sortedKeys(ctx.SessionWrites) {
 		want, seen := verified[p]
 		if !seen {
 			return p
