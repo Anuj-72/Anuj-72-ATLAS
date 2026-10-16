@@ -116,7 +116,7 @@ class PermissionFlowTest {
             val flow = PermissionFlow(allowed, ui, this)
 
             flow.handleRequest(poster, "sess-1", request("edit_file"))
-            settle()
+            letTheLaunchedWorkRun()
 
             // TUI convention: auto-allow posts scope "once", not "session".
             assertEquals(
@@ -153,7 +153,7 @@ class PermissionFlowTest {
         assertEquals(tool, pending.request.toolName, name)
 
         assertTrue(pending.settle(choice), name)
-        settle()
+        letTheLaunchedWorkRun()
 
         assertEquals(
             listOf(PermissionDecisionRequest("sess-1", "call-$tool", decision, scope)),
@@ -177,7 +177,7 @@ class PermissionFlowTest {
 
             assertTrue(pending.settle(PermissionChoice.ALLOW_ONCE))
             assertFalse(pending.settle(PermissionChoice.DENY))
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(1, poster.decisions.size)
             assertEquals(PermissionDecision.ALLOW, poster.decisions.single().decision)
@@ -198,7 +198,7 @@ class PermissionFlowTest {
             assertEquals(DismissReason.DENIED_REMOTE, (ui.events.last() as UiEvent.Dismiss).reason)
 
             assertFalse(pending.settle(PermissionChoice.ALLOW_ONCE))
-            settle()
+            letTheLaunchedWorkRun()
             assertEquals(0, poster.decisions.size)
         }
 
@@ -231,7 +231,7 @@ class PermissionFlowTest {
             assertTrue(dismissals.all { it.reason == DismissReason.TURN_ENDED })
 
             assertFalse(first.settle(PermissionChoice.ALLOW_ONCE))
-            settle()
+            letTheLaunchedWorkRun()
             assertEquals(0, poster.decisions.size)
         }
 
@@ -248,7 +248,7 @@ class PermissionFlowTest {
 
             assertFalse(flow.settleById(9999, PermissionChoice.DENY))
             assertTrue(flow.settleById(second.id, PermissionChoice.ALLOW_ONCE))
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(
                 listOf(
@@ -273,7 +273,7 @@ class PermissionFlowTest {
 
             flow.handleRequest(poster, "sess-8", request("write_file"))
             ui.prompts.single().settle(PermissionChoice.ALLOW_ONCE)
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(UiEvent.PostError("write_file", boom), ui.events.last())
         }
@@ -287,7 +287,7 @@ class PermissionFlowTest {
             val flow = PermissionFlow(linkedSetOf("edit_file"), ui, this)
 
             flow.handleRequest(poster, "sess-9", request("edit_file"))
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(UiEvent.PostError("edit_file", boom), ui.events.last())
         }
@@ -305,7 +305,7 @@ class PermissionFlowTest {
 
         flow.handleRequest(poster, "s", deletion("c1", marked))
         ui.prompts.single().settle(PermissionChoice.ALLOW_SESSION)
-        settle()
+        letTheLaunchedWorkRun()
 
         assertEquals(PermissionDecision.ALLOW, poster.decisions[0].decision, name)
         assertEquals(PermissionScope.ONCE, poster.decisions[0].scope, name)

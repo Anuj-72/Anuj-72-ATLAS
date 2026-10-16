@@ -151,14 +151,14 @@ class ChatSessionTest {
             fixture.client.hangAfter = 0
 
             val running = launch { fixture.session.send("write it") }
-            settle()
+            letTheLaunchedWorkRun()
             val pending =
                 fixture.session.state.value.pending
                     .single()
             assertEquals("write_file", pending.request.toolName)
 
             fixture.session.answer(pending.id, PermissionChoice.ALLOW_SESSION)
-            settle()
+            letTheLaunchedWorkRun()
 
             // The decision has to go back on the turn's own session id, or the
             // proxy has no pending request to route it to.
@@ -194,19 +194,19 @@ class ChatSessionTest {
 
             // Turn 1: the user allows edit_file for the session.
             val first = launch { fixture.session.send("edit it") }
-            settle()
+            letTheLaunchedWorkRun()
             val pending =
                 fixture.session.state.value.pending
                     .single()
             fixture.session.answer(pending.id, PermissionChoice.ALLOW_SESSION)
-            settle()
+            letTheLaunchedWorkRun()
             fixture.session.cancel()
             first.join()
 
             // Turn 2: the same tool is now on the allowlist, so there is no
             // prompt and the proxy is told the answer instead.
             val second = launch { fixture.session.send("edit it again") }
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(
                 listOf(PermissionScope.SESSION, PermissionScope.ONCE),
@@ -267,7 +267,7 @@ class ChatSessionTest {
             assertEquals(0, fixture.entries.size)
 
             val running = launch { fixture.session.send("first") }
-            settle()
+            letTheLaunchedWorkRun()
             assertTrue(fixture.session.state.value.running)
             fixture.session.send("second")
 
@@ -294,12 +294,12 @@ class ChatSessionTest {
             fixture.client.hangAfter = 0
 
             val running = launch { fixture.session.send("delete it") }
-            settle()
+            letTheLaunchedWorkRun()
             assertEquals(1, fixture.session.state.value.pending.size)
 
             fixture.session.cancel()
             running.join()
-            settle()
+            letTheLaunchedWorkRun()
 
             assertFalse(fixture.session.state.value.running)
             assertEquals(emptyList<PendingPermission>(), fixture.session.state.value.pending)

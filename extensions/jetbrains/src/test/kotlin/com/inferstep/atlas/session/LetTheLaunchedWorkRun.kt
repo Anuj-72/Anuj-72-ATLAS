@@ -17,7 +17,7 @@ package com.inferstep.atlas.session
 import kotlinx.coroutines.delay
 
 /** How long the launched work is given. Every wait in these suites is this one. */
-private const val SETTLE_MS = 50L
+private const val LAUNCHED_WORK_MS = 50L
 
 /**
  * Give the work a test launched a chance to run: a turn reaching its first
@@ -25,5 +25,9 @@ private const val SETTLE_MS = 50L
  *
  * Not a synchronisation primitive — the flow does not await a decision POST, so
  * there is nothing to join on; this is the wait that stands in for that.
+ *
+ * The name is the wait, not the prompt: `PendingPermission.settle` already
+ * means "answer this request", and a suite answers a prompt on the line before
+ * it waits.
  */
-internal suspend fun settle() = delay(SETTLE_MS)
+internal suspend fun letTheLaunchedWorkRun() = delay(LAUNCHED_WORK_MS)

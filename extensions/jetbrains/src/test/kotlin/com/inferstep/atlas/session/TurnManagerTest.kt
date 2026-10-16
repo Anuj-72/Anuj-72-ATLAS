@@ -225,7 +225,7 @@ class TurnManagerTest {
 
             val first = launch { turns.runOneTurn(client, "slow") }
             // Let the first turn reach its first suspension point.
-            settle()
+            letTheLaunchedWorkRun()
             assertTrue(turns.busy)
 
             assertThrows(IllegalStateException::class.java) {
@@ -255,7 +255,7 @@ class TurnManagerTest {
                 }
             turn.join()
             // The POST /cancel is fire-and-forget.
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(listOf("text"), seen.map { it.type })
             assertEquals(listOf(client.requests.single().sessionId), client.cancelled)
@@ -278,7 +278,7 @@ class TurnManagerTest {
             val turns = TurnManager(scope = this)
 
             turns.cancel()
-            settle()
+            letTheLaunchedWorkRun()
 
             assertEquals(emptyList<String>(), client.cancelled)
         }
