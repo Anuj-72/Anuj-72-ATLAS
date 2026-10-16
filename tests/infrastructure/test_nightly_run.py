@@ -229,7 +229,8 @@ class Night:
         (root / "bin").mkdir()
         (root / "stand-ins").mkdir()
         self.dir.mkdir()
-        (self.dir / "nightly.env").write_text("ATLAS_MODEL_FILE=model.gguf\nATLAS_MODEL_NAME=model\nATLAS_PROXY_PORT=8090\n")
+        (self.dir / "nightly.env").write_text("ATLAS_MODEL_FILE=model.gguf\nATLAS_MODEL_NAME=model\nATLAS_PROXY_PORT=8090\n"
+                                              f"ATLAS_LENS_MODELS={root / 'lens-files'}\n")
         # The key lies outside the folder of the run, and only the user of the run can read it.
         self.key = root / "keys of the server" / "status-app.pem"
         self.key.parent.mkdir()
@@ -411,7 +412,7 @@ def test_the_stack_of_the_run_has_no_service_token(tmp_path):
     assert [call for call in night.calls() if "ATLAS_SERVICE_TOKEN_FILE" in call["env"]] == []
     driver = (ROOT / "scripts" / "e2e-reliability.py").read_text(encoding="utf-8")
     assert "Authorization" not in driver, (
-        "the driver now sends a token. Then the stack of the nightly run can have one: see write_settings in "
+        "the driver now sends a token. Then the stack of the nightly run can have one: see check_settings in "
         "scripts/nightly_run.py, which refuses a token file today.")
 
 
@@ -796,7 +797,7 @@ def test_without_the_servers_settings_file_the_run_fails_before_it_starts_a_stac
 ])
 def test_the_name_of_the_model_is_read_from_the_servers_settings_file(tmp_path, settings, name):
     night = Night(tmp_path)
-    (night.dir / "nightly.env").write_text(settings)
+    (night.dir / "nightly.env").write_text(settings + f"ATLAS_LENS_MODELS={tmp_path / 'lens-files'}\n")
     night.run()
     assert night.report["result"] == "passed", night.report["result"]
     tests = next(call for call in night.calls() if call["args"][:2] == ["-m", "pytest"])
@@ -812,6 +813,20 @@ def test_a_settings_file_with_no_name_of_the_model_stops_the_run_before_the_stac
     assert night.done.returncode == 1
     assert "nightly.env has no line `ATLAS_MODEL_NAME=<name>`" in night.report["result"] and "Fix: add the line" in night.report["result"]
     assert "stack up" not in night.did() and "driver" not in night.did()
+
+
+@pytest.mark.parametrize("line", ["", "ATLAS_LENS_MODELS=./geometric-lens/geometric_lens/models\n", "ATLAS_LENS_MODELS=~/lens\n"],
+                         ids=["no line", "a relative folder", "a folder that compose does not expand"])
+def test_a_settings_file_with_no_full_path_of_the_lens_files_fails_the_run_before_the_stack(tmp_path, line):
+    # The run's own copy of the repository has no cost_field.pt, so a lens that reads that copy cannot score.
+    night = Night(tmp_path)
+    (night.dir / "nightly.env").write_text("ATLAS_MODEL_FILE=model.gguf\nATLAS_MODEL_NAME=model\n" + line)
+    night.run()
+    assert night.done.returncode == 1
+    assert night.report["result"].startswith("failed: the run's settings name no folder of lens files as a full path "
+                                             "(ATLAS_LENS_MODELS in "), night.report["result"]
+    assert "Fix: add the line with the folder that the usual lens mounts" in night.report["result"]
+    assert "image pull" not in night.did() and "stack up" not in night.did()
 
 
 @pytest.mark.parametrize("folder", ["relative/folder", "{root}/not-there"])
@@ -1060,6 +1075,24 @@ def test_a_left_stack_that_cannot_be_stopped_fails_the_run_before_anything_is_pu
     assert night.done.returncode == 1
     assert night.report["result"].startswith("failed: the stop of the stack that an earlier run left: status 1")
     assert "image pull" not in night.did() and "stack up" not in night.did()
+
+
+@pytest.mark.parametrize("settings, step, says, last", [
+    # The stop needs no lens folder, so the left stack does not keep the card until the line is added.
+    ("ATLAS_MODEL_FILE=model.gguf\nATLAS_MODEL_NAME=model\n", "read the settings of the server",
+     "the run's settings name no folder of lens files as a full path", ["look", "stack down"]),
+    # Compose reads no file of the stack without the name of the model, so no stop can go without it: the run says so.
+    ("ATLAS_MODEL_FILE=model.gguf\n", "stop a stack that an earlier run left",
+     "has no line `ATLAS_MODEL_NAME=<name>`", ["git rev-parse", "look"]),
+], ids=["no lens folder", "no name of the model"])
+def test_a_left_stack_is_stopped_before_the_settings_are_read_when_its_stop_can_go(tmp_path, settings, step, says, last):
+    night = Night(tmp_path, left=["0a1b2c3d4e5f"])
+    (night.dir / "nightly.env").write_text(settings)
+    night.run()
+    assert night.done.returncode == 1
+    assert night.report["step"] == step
+    assert says in night.report["result"], night.report["result"]
+    assert night.did()[-2:] == last
 
 
 def test_a_left_stack_is_stopped_also_in_a_night_whose_images_are_stale(tmp_path):
