@@ -2,7 +2,7 @@
 
 A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop with no agent logic in the plugin itself.
 
-**Status: Stage 2 — the ATLAS protocol/client layer.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 adds the Kotlin client for the atlas-proxy HTTP API and nothing else: the tool window still renders the Stage 1 stub, deliberately unwired from the client until sessions arrive. Chat, permissions, diffs and workspace integration are later stages.
+**Status: Stage 3 — sessions, chat and permissions.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wires the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Diffs, workspace integration and settings are later stages.
 
 ## Spike results
 
@@ -51,17 +51,46 @@ The plugin must use the platform's coroutines: shipping a second copy inside the
 
 That same incompatibility is why the tests declare no coroutines dependency of their own: the `test` task runs against the platform's coroutines, exactly as the plugin does in the IDE. A second, newer copy on the test classpath would have hidden the bug above instead of catching it.
 
+## The chat (Stage 3)
+
+```
+src/main/kotlin/com/inferstep/atlas/session/TurnManager.kt     # one turn: session id, history, allowlist, cancel
+src/main/kotlin/com/inferstep/atlas/session/PermissionFlow.kt  # the open prompts and their answers
+src/main/kotlin/com/inferstep/atlas/session/ChatSession.kt     # the transcript and the controls
+src/main/kotlin/com/inferstep/atlas/session/DoneOutcome.kt     # done.status and done.reason, as the banner shows them
+src/main/kotlin/com/inferstep/atlas/session/ToolSummary.kt     # the one-line answer a tool chip shows
+src/main/kotlin/com/inferstep/atlas/ui/AtlasChatPanel.kt       # the panel: a renderer of ChatSession's state
+```
+
+A port of `extensions/vscode/src/session/`, with the TUI as the reference where the two disagree. None of `session/` imports `com.intellij` or Compose, so the whole conversation is exercised under plain JUnit and the panel only lays it out — and `ProtocolIsolationTest` now enforces that for this package as well as `protocol/` and `client/`.
+
+**Every turn declares a task contract.** `task_contract.task_mode` is `work` (the workspace should change) or `question` (nothing should), and it is a control the user operates — nothing reads the message text, so the same sentence can be sent either way. The obligation lists (`expected_outputs`, `verification`) stay absent: someone typing into a chat box has told the plugin nothing structured about which files must exist or which command must run, and the API refuses a `question` that declares them. This is the same rule the repo's contract test states for the other clients: absence is reserved for external and legacy callers, so an owned client always declares a mode.
+
+**History and the session allowlist live on the client.** Each turn mints a fresh 24-character hex `session_id`, sends the rolling transcript (the most recent 40 entries, assistant turns re-wrapped in the `{"type":"text","content":…}` envelope the TUI uses) and re-sends `session_allowed_tools`, because the proxy does not persist either. A deleted file counts as one request: `delete_file` is never approved for the session, and its card offers no session-wide button.
+
+**Cancellation stops the stream first.** `cancel()` aborts the local SSE request, which is the mechanism that actually ends the turn, and posts `/cancel` as a backstop. The panel's Cancel button routes there; a cancelled turn keeps whatever text it had produced in the history it replays.
+
+**The connection comes from the environment.** `ATLAS_PROXY_URL` (default `http://127.0.0.1:8090`) and `ATLAS_SERVICE_TOKEN_FILE`, the same variables the TUI and `atlas doctor` use, read in one place (`client/AtlasConnection.kt`). The settings UI and secure token storage are Stage 5; until then the tool window shows the URL it is talking to, and the token is read from the file `atlas init` writes rather than from any setting.
+
+**Two hazards the settings stage inherits**, raised in review of this pull request and left for Stage 5 rather than fixed here. `AtlasConnection` is a `data class` with no `toString()` override, so the one Kotlin generates prints `token` in full: nothing logs a connection today, but a stack trace, a debugger view or a single `"$connection"` interpolated into a log line would put the service token there. And `FALLBACK_TOKEN_FILE` (`secrets/service-token`) is a relative path, so it resolves against the working directory the IDE was started from, not against the install the token sits beside — the ambiguity `ATLAS_SERVICE_TOKEN_FILE` exists to remove, and one a sandbox run started elsewhere meets as "no token configured". Stage 5 answers both: the URL and the token become settings, and the token moves to the platform's credential store.
+
 ## Tests
 
-`./gradlew test` runs two suites in one JUnit Platform run: the existing `BasePlatformTestCase` tool-window test (via the vintage engine) and the Stage 2 protocol/client suite (Jupiter). The protocol suite needs no IDE and no proxy:
+`./gradlew test` runs the suites in one JUnit Platform run: the `BasePlatformTestCase` tool-window test (via the vintage engine) and the JVM suites (Jupiter). Only the tool-window test needs an IDE; none of the others needs a proxy:
 
 | Class | What it covers |
 |---|---|
 | `SseTest` | comments, chunk splits at every byte boundary, multi-byte characters, >1MB frames, malformed frames, CRLF, the `[DONE]` sentinel, the end-of-stream flush |
-| `TypesTest` | wire names and modes, absent optionals staying absent, unknown fields and unknown event types, the documented `done.status` rule, the six-code error set |
+| `TypesTest` | wire names and modes, absent optionals staying absent, unknown fields and unknown event types, the documented `done.status` rule, the six-code error set, and the task contract |
 | `RealStreamTest` | a recorded real proxy turn, replayed at chunk sizes 1, 7, 64 and 1024 |
-| `ProtocolIsolationTest` | the layer imports nothing from `com.intellij` |
+| `ProtocolIsolationTest` | the three IDE-free packages (`protocol`, `client`, `session`) import nothing from `com.intellij` |
 | `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, 401 and non-JSON envelopes, a dropped connection, and every optional endpoint |
+| `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, and an install with no token |
+| `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
+| `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
+| `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset |
+| `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
+| `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 
 The fixture (`MockProxy`) is a real server on `com.sun.net.httpserver`, so the transport is exercised for real — which is also what makes a Ktor bump past the pin fail here rather than in an IDE.
 
@@ -156,6 +185,8 @@ Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the
 | `runWebStorm` | WebStorm 2026.1 | no |
 | `runGoLand` | GoLand 2026.1 | no |
 
+The Stage 3 chat has **not been launched in any of them**: the panel, its streaming, its prompt cards and its Cancel button are covered by the JVM tests above and by nothing else. A `runPyCharm` session against a live proxy is the check that would close that gap, and it has not been run yet.
+
 The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
 
 ## Kotlin style
@@ -169,9 +200,9 @@ Kotlin is intentionally **not** covered by `scripts/code_health.py`, which scans
 ```
 build.gradle.kts        # plugin module: IPGP, bundled Compose/Jewel, Ktor, Kotlin toolchain, ktlint
 settings.gradle.kts     # root project
-src/main/kotlin/        # Compose tool window, the protocol layer, the proxy client
+src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer
 src/main/resources/     # META-INF/plugin.xml
-src/test/kotlin/        # tool-window test, protocol/client suite, mock proxy
+src/test/kotlin/        # tool-window test, protocol/client suite, session suite, mock proxy
 src/test/resources/     # the recorded real proxy turn
 .editorconfig           # ktlint rules (single source)
 ```

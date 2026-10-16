@@ -28,6 +28,33 @@ class TypesTest {
         assertTrue(encoded.contains("\"session_id\":\"client-1\""), encoded)
         assertFalse(encoded.contains("history"), encoded)
         assertFalse(encoded.contains("session_allowed_tools"), encoded)
+        assertFalse(encoded.contains("task_contract"), encoded)
+    }
+
+    @Test
+    fun `a task contract sends the mode and not the obligations nobody declared`() {
+        val request =
+            AgentRequest(
+                message = "what does solve.py do?",
+                workingDir = ".",
+                sessionId = "s",
+                taskContract = TaskContract(TaskMode.QUESTION),
+            )
+
+        val encoded = AtlasJson.encodeToString(AgentRequest.serializer(), request)
+
+        assertTrue(encoded.contains("\"task_contract\":{\"task_mode\":\"question\"}"), encoded)
+        // A question that declares outputs or commands is refused with 400, so
+        // an empty obligation list would be worse than no field at all.
+        assertFalse(encoded.contains("expected_outputs"), encoded)
+        assertFalse(encoded.contains("verification"), encoded)
+        assertEquals(
+            request,
+            AtlasJson.decodeFromString(
+                AgentRequest.serializer(),
+                AtlasJson.encodeToString(AgentRequest.serializer(), request),
+            ),
+        )
     }
 
     @Test
