@@ -15,7 +15,6 @@ import com.inferstep.atlas.protocol.TaskMode
 import com.inferstep.atlas.protocol.assistantHistoryContent
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
@@ -29,6 +28,9 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 private const val WORKSPACE = "/tmp/ws"
 
@@ -39,6 +41,14 @@ private fun text(content: String): ChatEvent =
 /** The `done` event with the given summary. */
 private fun done(summary: String): ChatEvent =
     decode("""{"type":"done","data":{"summary":${quote(summary)}}}""")
+
+/** The `error` event, which is a turn that produced no text. */
+private fun errorFrame(message: String): ChatEvent =
+    decode("""{"type":"error","data":{"error":${quote(message)}}}""")
+
+/** A `tool_call`, the shape a turn that ran a tool has. */
+private fun toolCallFrame(tool: String): ChatEvent =
+    decode("""{"type":"tool_call","data":{"name":${quote(tool)},"args":{},"turn":1}}""")
 
 private fun decode(frame: String): ChatEvent =
     AtlasJson.decodeFromString(ChatEvent.serializer(), frame)
@@ -73,6 +83,18 @@ private class FakeTurnClient(
         cancelled += sessionId
         return true
     }
+}
+
+/**
+ * One turn of [message], awaited to completion, with the conventional
+ * permission mode, task mode and workspace. A case that is about one of those
+ * values changing calls [TurnManager.runTurn] with it itself.
+ */
+private suspend fun TurnManager.runOneTurn(
+    client: FakeTurnClient,
+    message: String,
+) {
+    runTurn(client, message, PermissionMode.DEFAULT, TaskMode.WORK, WORKSPACE).collect {}
 }
 
 class TurnManagerTest {
@@ -135,154 +157,27 @@ class TurnManagerTest {
             val client = FakeTurnClient(listOf(done("")))
             val turns = TurnManager(scope = this)
 
-            turns
-                .runTurn(
-                    client,
-                    "one",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "two",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            turns.runOneTurn(client, "one")
+            turns.runOneTurn(client, "two")
 
             assertNotEquals(client.requests[0].sessionId, client.requests[1].sessionId)
         }
 
-    @Test
-    fun `replays history with the assistant text re-wrapped in the text envelope`() =
-        runBlocking {
-            val client = FakeTurnClient(listOf(text("Hello "), text("world"), done("")))
-            val turns = TurnManager(scope = this)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("histories")
+    fun `replays the turn before as history, one entry per side`(
+        name: String,
+        frames: List<ChatEvent>,
+        want: List<String>,
+    ) = runBlocking {
+        val client = FakeTurnClient(frames)
+        val turns = TurnManager(scope = this)
 
-            turns
-                .runTurn(
-                    client,
-                    "greet me",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "again",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+        turns.runOneTurn(client, "first")
+        turns.runOneTurn(client, "second")
 
-            assertEquals(
-                listOf(
-                    "user|greet me",
-                    "assistant|${assistantHistoryContent("Hello world")}",
-                ),
-                client.requests[1].history?.map { "${it.role}|${it.content}" },
-            )
-        }
-
-    @Test
-    fun `records no assistant entry for a text-free turn`() =
-        runBlocking {
-            val client =
-                FakeTurnClient(listOf(decode("""{"type":"error","data":{"error":"boom"}}""")))
-            val turns = TurnManager(scope = this)
-
-            turns
-                .runTurn(
-                    client,
-                    "do it",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "retry",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-
-            // History sent on turn N covers turns before it; turn 1 produced no text.
-            assertEquals(
-                listOf("user|do it"),
-                client.requests[1].history?.map { "${it.role}|${it.content}" },
-            )
-        }
-
-    @Test
-    fun `uses the done summary as the assistant entry on a tool-shaped turn`() =
-        runBlocking {
-            val client =
-                FakeTurnClient(
-                    listOf(
-                        decode(
-                            """{"type":"tool_call","data":{"name":"edit_file","args":{},"turn":1}}""",
-                        ),
-                        done("Fixed the off-by-one in pagination."),
-                    ),
-                )
-            val turns = TurnManager(scope = this)
-
-            turns
-                .runTurn(
-                    client,
-                    "fix it",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "next",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-
-            assertEquals(
-                assistantHistoryContent("Fixed the off-by-one in pagination."),
-                client.requests[1]
-                    .history
-                    ?.last()
-                    ?.content,
-            )
-        }
-
-    @Test
-    fun `prefers streamed text over the done summary`() =
-        runBlocking {
-            val client =
-                FakeTurnClient(listOf(text("the streamed answer"), done("a trailing summary")))
-            val turns = TurnManager(scope = this)
-
-            turns.runTurn(client, "go", PermissionMode.DEFAULT, TaskMode.WORK, WORKSPACE).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "next",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-
-            assertEquals(
-                assistantHistoryContent("the streamed answer"),
-                client.requests[1]
-                    .history
-                    ?.last()
-                    ?.content,
-            )
-        }
+        assertEquals(want, client.requests[1].history?.map { "${it.role}|${it.content}" }, name)
+    }
 
     @Test
     fun `caps history at the most recent $HISTORY_LIMIT entries`() =
@@ -291,19 +186,8 @@ class TurnManagerTest {
             val turns = TurnManager(scope = this)
 
             // 25 turns x 2 entries = 50 recorded, which is over the cap.
-            repeat(25) { index ->
-                turns
-                    .runTurn(client, "msg $index", PermissionMode.DEFAULT, TaskMode.WORK, WORKSPACE)
-                    .collect {}
-            }
-            turns
-                .runTurn(
-                    client,
-                    "final",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            repeat(25) { index -> turns.runOneTurn(client, "msg $index") }
+            turns.runOneTurn(client, "final")
 
             val history =
                 client.requests
@@ -325,22 +209,8 @@ class TurnManagerTest {
             turns.sessionAllowedTools += "edit_file"
             turns.sessionAllowedTools += "write_file"
 
-            turns
-                .runTurn(
-                    client,
-                    "one",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
-            turns
-                .runTurn(
-                    client,
-                    "two",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            turns.runOneTurn(client, "one")
+            turns.runOneTurn(client, "two")
 
             assertEquals(listOf("edit_file", "write_file"), client.requests[0].sessionAllowedTools)
             assertEquals(listOf("edit_file", "write_file"), client.requests[1].sessionAllowedTools)
@@ -353,27 +223,13 @@ class TurnManagerTest {
             client.hangAfter = 0
             val turns = TurnManager(scope = this)
 
-            val first =
-                launch {
-                    turns
-                        .runTurn(
-                            client,
-                            "slow",
-                            PermissionMode.DEFAULT,
-                            TaskMode.WORK,
-                            WORKSPACE,
-                        ).collect {}
-                }
+            val first = launch { turns.runOneTurn(client, "slow") }
             // Let the first turn reach its first suspension point.
-            delay(50)
+            settle()
             assertTrue(turns.busy)
 
             assertThrows(IllegalStateException::class.java) {
-                runBlocking {
-                    turns
-                        .runTurn(client, "second", PermissionMode.DEFAULT, TaskMode.WORK, WORKSPACE)
-                        .collect {}
-                }
+                runBlocking { turns.runOneTurn(client, "second") }
             }
 
             turns.cancel()
@@ -398,8 +254,8 @@ class TurnManagerTest {
                         }
                 }
             turn.join()
-            // The POST /cancel is fire-and-forget; let the launched coroutine run.
-            delay(50)
+            // The POST /cancel is fire-and-forget.
+            settle()
 
             assertEquals(listOf("text"), seen.map { it.type })
             assertEquals(listOf(client.requests.single().sessionId), client.cancelled)
@@ -408,14 +264,7 @@ class TurnManagerTest {
             // The next turn replays the partial text: a cancelled turn still
             // counts as an assistant turn.
             client.hangAfter = null
-            turns
-                .runTurn(
-                    client,
-                    "next",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            turns.runOneTurn(client, "next")
             assertEquals(
                 listOf("user|go", "assistant|${assistantHistoryContent("half an ans")}"),
                 client.requests[1].history?.map { "${it.role}|${it.content}" },
@@ -429,7 +278,7 @@ class TurnManagerTest {
             val turns = TurnManager(scope = this)
 
             turns.cancel()
-            delay(20)
+            settle()
 
             assertEquals(emptyList<String>(), client.cancelled)
         }
@@ -441,25 +290,49 @@ class TurnManagerTest {
             val turns = TurnManager(scope = this)
             turns.sessionAllowedTools += "edit_file"
 
-            turns
-                .runTurn(
-                    client,
-                    "one",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            turns.runOneTurn(client, "one")
             turns.reset()
-            turns
-                .runTurn(
-                    client,
-                    "two",
-                    PermissionMode.DEFAULT,
-                    TaskMode.WORK,
-                    WORKSPACE,
-                ).collect {}
+            turns.runOneTurn(client, "two")
 
             assertNull(client.requests[1].history)
             assertNull(client.requests[1].sessionAllowedTools)
         }
+
+    companion object {
+        @JvmStatic
+        fun histories(): List<Arguments> {
+            val toolTurnSummary = "Fixed the off-by-one in pagination."
+            return listOf(
+                Arguments.of(
+                    "streamed text is re-wrapped in the assistant envelope",
+                    listOf(text("Hello "), text("world"), done("")),
+                    listOf("user|first", "assistant|${assistantHistoryContent("Hello world")}"),
+                ),
+                Arguments.of(
+                    "a turn that produced no text records no assistant entry",
+                    listOf(errorFrame("boom")),
+                    listOf("user|first"),
+                ),
+                Arguments.of(
+                    "a tool-shaped turn takes the done summary",
+                    listOf(
+                        toolCallFrame("edit_file"),
+                        done(toolTurnSummary),
+                    ),
+                    listOf(
+                        "user|first",
+                        "assistant|${assistantHistoryContent(toolTurnSummary)}",
+                    ),
+                ),
+                Arguments.of(
+                    "streamed text wins over a trailing done summary",
+                    listOf(text("the streamed answer"), done("a trailing summary")),
+                    listOf(
+                        "user|first",
+                        "assistant|${assistantHistoryContent("the streamed answer")}",
+                    ),
+                ),
+            )
+        }
+    }
 }

@@ -9,7 +9,6 @@ import com.inferstep.atlas.protocol.PermissionDecision
 import com.inferstep.atlas.protocol.PermissionDecisionRequest
 import com.inferstep.atlas.protocol.PermissionRequestPayload
 import com.inferstep.atlas.protocol.PermissionScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -18,6 +17,9 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 private fun request(
     tool: String,
@@ -104,10 +106,6 @@ private class FakeUi : PermissionUi {
         get() = events.filterIsInstance<UiEvent.Prompt>().map { it.pending }
 }
 
-/** The decision POSTs are fire-and-forget; give the launched coroutines a turn
- * on the runBlocking dispatcher before asserting on them. */
-private suspend fun settle() = delay(20)
-
 class PermissionFlowTest {
     @Test
     fun `auto-answers allow-once for a session-allowed tool, with no prompt`() =
@@ -135,93 +133,37 @@ class PermissionFlowTest {
             assertEquals(listOf(UiEvent.AutoAllow("edit_file")), ui.events)
         }
 
-    @Test
-    fun `prompts for an unlisted tool and posts allow-once`() =
-        runBlocking {
-            val poster = FakePoster()
-            val ui = FakeUi()
-            val allowed = linkedSetOf<String>()
-            val flow = PermissionFlow(allowed, ui, this)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("answers")
+    fun `posts what the user picked, and only allow-for-session touches the list`(
+        name: String,
+        tool: String,
+        choice: PermissionChoice,
+        decision: PermissionDecision,
+        scope: PermissionScope,
+        onTheList: Boolean,
+    ) = runBlocking {
+        val poster = FakePoster()
+        val ui = FakeUi()
+        val allowed = linkedSetOf<String>()
+        val flow = PermissionFlow(allowed, ui, this)
 
-            flow.handleRequest(poster, "sess-1", request("write_file"))
-            assertEquals(1, ui.events.size)
-            val pending = ui.prompts.single()
-            assertEquals("write_file", pending.request.toolName)
+        flow.handleRequest(poster, "sess-1", request(tool))
+        val pending = ui.prompts.single()
+        assertEquals(tool, pending.request.toolName, name)
 
-            assertTrue(pending.settle(PermissionChoice.ALLOW_ONCE))
-            settle()
+        assertTrue(pending.settle(choice), name)
+        settle()
 
-            assertEquals(
-                listOf(
-                    PermissionDecisionRequest(
-                        "sess-1",
-                        "call-write_file",
-                        PermissionDecision.ALLOW,
-                        PermissionScope.ONCE,
-                    ),
-                ),
-                poster.decisions,
-            )
-            // Allow-once must not touch the session allowlist.
-            assertEquals(0, allowed.size)
-            assertEquals(PermissionChoice.ALLOW_ONCE, pending.choice)
-            assertEquals(
-                DismissReason.ANSWERED,
-                (ui.events.last() as UiEvent.Dismiss).reason,
-            )
-        }
-
-    @Test
-    fun `allow-session adds to the allowlist and posts scope session`() =
-        runBlocking {
-            val poster = FakePoster()
-            val ui = FakeUi()
-            val allowed = linkedSetOf<String>()
-            val flow = PermissionFlow(allowed, ui, this)
-
-            flow.handleRequest(poster, "sess-2", request("structural_edit"))
-            ui.prompts.single().settle(PermissionChoice.ALLOW_SESSION)
-            settle()
-
-            assertTrue(allowed.contains("structural_edit"))
-            assertEquals(
-                listOf(
-                    PermissionDecisionRequest(
-                        "sess-2",
-                        "call-structural_edit",
-                        PermissionDecision.ALLOW,
-                        PermissionScope.SESSION,
-                    ),
-                ),
-                poster.decisions,
-            )
-        }
-
-    @Test
-    fun `deny posts deny-once and leaves the allowlist alone`() =
-        runBlocking {
-            val poster = FakePoster()
-            val ui = FakeUi()
-            val allowed = linkedSetOf<String>()
-            val flow = PermissionFlow(allowed, ui, this)
-
-            flow.handleRequest(poster, "sess-3", request("run_command"))
-            ui.prompts.single().settle(PermissionChoice.DENY)
-            settle()
-
-            assertEquals(
-                listOf(
-                    PermissionDecisionRequest(
-                        "sess-3",
-                        "call-run_command",
-                        PermissionDecision.DENY,
-                        PermissionScope.ONCE,
-                    ),
-                ),
-                poster.decisions,
-            )
-            assertEquals(0, allowed.size)
-        }
+        assertEquals(
+            listOf(PermissionDecisionRequest("sess-1", "call-$tool", decision, scope)),
+            poster.decisions,
+            name,
+        )
+        assertEquals(choice, pending.choice, name)
+        assertEquals(DismissReason.ANSWERED, (ui.events.last() as UiEvent.Dismiss).reason, name)
+        assertEquals(onTheList, allowed.contains(tool), name)
+    }
 
     @Test
     fun `first answer wins — the second settle is a no-op`() =
@@ -350,30 +292,31 @@ class PermissionFlowTest {
             assertEquals(UiEvent.PostError("edit_file", boom), ui.events.last())
         }
 
-    @Test
-    fun `never approves a deletion for the session, marked or not`() =
-        runBlocking {
-            listOf(true, false).forEach { marked ->
-                val allowed = linkedSetOf<String>()
-                val ui = FakeUi()
-                val poster = FakePoster()
-                val flow = PermissionFlow(allowed, ui, this)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("deletions")
+    fun `never approves a deletion for the session, marked or not`(
+        name: String,
+        marked: Boolean,
+    ) = runBlocking {
+        val allowed = linkedSetOf<String>()
+        val ui = FakeUi()
+        val poster = FakePoster()
+        val flow = PermissionFlow(allowed, ui, this)
 
-                flow.handleRequest(poster, "s", deletion("c1", marked))
-                ui.prompts.single().settle(PermissionChoice.ALLOW_SESSION)
-                settle()
+        flow.handleRequest(poster, "s", deletion("c1", marked))
+        ui.prompts.single().settle(PermissionChoice.ALLOW_SESSION)
+        settle()
 
-                assertEquals(PermissionDecision.ALLOW, poster.decisions[0].decision)
-                assertEquals(PermissionScope.ONCE, poster.decisions[0].scope)
-                assertFalse(allowed.contains("delete_file"))
+        assertEquals(PermissionDecision.ALLOW, poster.decisions[0].decision, name)
+        assertEquals(PermissionScope.ONCE, poster.decisions[0].scope, name)
+        assertFalse(allowed.contains("delete_file"), name)
 
-                // Even an allowlist entry from elsewhere answers nothing.
-                allowed += "delete_file"
-                flow.handleRequest(poster, "s", deletion("c2", marked))
-                assertEquals(2, ui.prompts.size)
-                assertTrue(ui.events.none { it is UiEvent.AutoAllow })
-            }
-        }
+        // Even an allowlist entry from elsewhere answers nothing.
+        allowed += "delete_file"
+        flow.handleRequest(poster, "s", deletion("c2", marked))
+        assertEquals(2, ui.prompts.size, name)
+        assertTrue(ui.events.none { it is UiEvent.AutoAllow }, name)
+    }
 
     @Test
     fun `commandOf returns the whole command and nothing for a call that runs none`() {
@@ -384,5 +327,43 @@ class PermissionFlowTest {
         assertEquals(long, commandOf(JsonObject(mapOf("command" to JsonPrimitive(long)))))
         assertNull(commandOf(JsonObject(mapOf("path" to JsonPrimitive("a.py")))))
         assertNull(commandOf(null))
+    }
+
+    companion object {
+        @JvmStatic
+        fun answers(): List<Arguments> =
+            listOf(
+                Arguments.of(
+                    "allow once answers the prompt and posts allow once",
+                    "write_file",
+                    PermissionChoice.ALLOW_ONCE,
+                    PermissionDecision.ALLOW,
+                    PermissionScope.ONCE,
+                    false,
+                ),
+                Arguments.of(
+                    "allow for session adds the tool to the session list",
+                    "structural_edit",
+                    PermissionChoice.ALLOW_SESSION,
+                    PermissionDecision.ALLOW,
+                    PermissionScope.SESSION,
+                    true,
+                ),
+                Arguments.of(
+                    "deny answers with a deny and leaves the list alone",
+                    "run_command",
+                    PermissionChoice.DENY,
+                    PermissionDecision.DENY,
+                    PermissionScope.ONCE,
+                    false,
+                ),
+            )
+
+        @JvmStatic
+        fun deletions(): List<Arguments> =
+            listOf(
+                Arguments.of("a deletion the proxy marks one_time_only", true),
+                Arguments.of("a delete_file the proxy did not mark", false),
+            )
     }
 }

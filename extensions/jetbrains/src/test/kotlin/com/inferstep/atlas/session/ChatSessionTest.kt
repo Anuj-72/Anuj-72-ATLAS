@@ -13,17 +13,18 @@ import com.inferstep.atlas.protocol.PermissionScope
 import com.inferstep.atlas.protocol.TaskContract
 import com.inferstep.atlas.protocol.TaskMode
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 private fun event(frame: String): ChatEvent =
     AtlasJson.decodeFromString(ChatEvent.serializer(), frame)
@@ -87,28 +88,21 @@ private class SessionFixture(
 }
 
 class ChatSessionTest {
-    @Test
-    fun `streams assistant text into one entry and ends on the done banner`() =
-        runBlocking {
-            val fixture =
-                SessionFixture(
-                    listOf(
-                        textFrame("Here is "),
-                        textFrame("the plan."),
-                        doneFrame("""{"summary":"Plan ready.","status":"completed"}"""),
-                    ),
-                )
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("streams")
+    fun `reads a stream into the transcript and ends the turn`(
+        name: String,
+        message: String,
+        frames: List<ChatEvent>,
+        want: List<TranscriptEntry>,
+    ) = runBlocking {
+        val fixture = SessionFixture(frames)
 
-            fixture.session.send("plan it")
+        fixture.session.send(message)
 
-            assertEquals(3, fixture.entries.size)
-            assertEquals(TranscriptEntry.User(1, "plan it"), fixture.entries[0])
-            assertEquals(TranscriptEntry.Assistant(2, "Here is the plan."), fixture.entries[1])
-            val done = fixture.entries[2] as TranscriptEntry.Done
-            assertEquals("completed", done.outcome.status)
-            assertEquals("Plan ready.", done.outcome.text)
-            assertFalse(fixture.session.state.value.running)
-        }
+        assertEquals(want, fixture.entries, name)
+        assertFalse(fixture.session.state.value.running, name)
+    }
 
     @Test
     fun `shows tool calls with the output summary and the call's outcome`() =
@@ -139,38 +133,6 @@ class ChatSessionTest {
         }
 
     @Test
-    fun `renders an error event as an error notice`() =
-        runBlocking {
-            val fixture =
-                SessionFixture(listOf(event("""{"type":"error","data":{"error":"lens down"}}""")))
-
-            fixture.session.send("go")
-
-            assertEquals(TranscriptEntry.Notice(2, "lens down", isError = true), fixture.entries[1])
-        }
-
-    @Test
-    fun `keeps progress events out of the transcript`() =
-        runBlocking {
-            val fixture =
-                SessionFixture(
-                    listOf(
-                        event("""{"type":"llm_token","data":{"text":"thinking"}}"""),
-                        event(
-                            """{"type":"v3_phase","data":{"stage":"phase2","detail":"allocating"}}""",
-                        ),
-                        event("""{"type":"plan_loaded","data":{"steps":[],"verify_step":"s1"}}"""),
-                        doneFrame("""{"summary":"done"}"""),
-                    ),
-                )
-
-            fixture.session.send("go")
-
-            assertEquals(2, fixture.entries.size)
-            assertTrue(fixture.entries[1] is TranscriptEntry.Done)
-        }
-
-    @Test
     fun `shows a prompt for the request and posts the answer`() =
         runBlocking {
             val fixture =
@@ -178,7 +140,8 @@ class ChatSessionTest {
                     listOf(
                         event(
                             """{"type":"permission_request","data":{"tool_name":"write_file",""" +
-                                """"args":{"path":"app.py"},"message":"write app.py?","tool_call_id":"c1"}}""",
+                                """"args":{"path":"app.py"},"message":"write app.py?",""" +
+                                """"tool_call_id":"c1"}}""",
                         ),
                         doneFrame("""{"summary":"stopped","status":"incomplete"}"""),
                     ),
@@ -188,14 +151,14 @@ class ChatSessionTest {
             fixture.client.hangAfter = 0
 
             val running = launch { fixture.session.send("write it") }
-            delay(50)
+            settle()
             val pending =
                 fixture.session.state.value.pending
                     .single()
             assertEquals("write_file", pending.request.toolName)
 
             fixture.session.answer(pending.id, PermissionChoice.ALLOW_SESSION)
-            delay(30)
+            settle()
 
             // The decision has to go back on the turn's own session id, or the
             // proxy has no pending request to route it to.
@@ -231,19 +194,19 @@ class ChatSessionTest {
 
             // Turn 1: the user allows edit_file for the session.
             val first = launch { fixture.session.send("edit it") }
-            delay(50)
+            settle()
             val pending =
                 fixture.session.state.value.pending
                     .single()
             fixture.session.answer(pending.id, PermissionChoice.ALLOW_SESSION)
-            delay(30)
+            settle()
             fixture.session.cancel()
             first.join()
 
             // Turn 2: the same tool is now on the allowlist, so there is no
             // prompt and the proxy is told the answer instead.
             val second = launch { fixture.session.send("edit it again") }
-            delay(50)
+            settle()
 
             assertEquals(
                 listOf(PermissionScope.SESSION, PermissionScope.ONCE),
@@ -304,7 +267,7 @@ class ChatSessionTest {
             assertEquals(0, fixture.entries.size)
 
             val running = launch { fixture.session.send("first") }
-            delay(50)
+            settle()
             assertTrue(fixture.session.state.value.running)
             fixture.session.send("second")
 
@@ -323,25 +286,23 @@ class ChatSessionTest {
                     listOf(
                         event(
                             """{"type":"permission_request","data":{"tool_name":"delete_file",""" +
-                                """"args":{"path":"important.db"},"tool_call_id":"c3","one_time_only":true}}""",
+                                """"args":{"path":"important.db"},"tool_call_id":"c3",""" +
+                                """"one_time_only":true}}""",
                         ),
                     ),
                 )
             fixture.client.hangAfter = 0
 
             val running = launch { fixture.session.send("delete it") }
-            delay(50)
+            settle()
             assertEquals(1, fixture.session.state.value.pending.size)
 
             fixture.session.cancel()
             running.join()
-            delay(30)
+            settle()
 
             assertFalse(fixture.session.state.value.running)
-            assertTrue(
-                fixture.session.state.value.pending
-                    .isEmpty(),
-            )
+            assertEquals(emptyList<PendingPermission>(), fixture.session.state.value.pending)
             val last = fixture.entries.last()
             assertTrue(last is TranscriptEntry.Notice, fixture.entries.toString())
             assertEquals("Turn cancelled.", (last as TranscriptEntry.Notice).text)
@@ -349,7 +310,7 @@ class ChatSessionTest {
         }
 
     @Test
-    fun `reset clears the transcript and keeps the chosen modes`() =
+    fun `reset clears the transcript and the history, and keeps the chosen modes`() =
         runBlocking {
             val fixture =
                 SessionFixture(listOf(textFrame("hi"), doneFrame("""{"summary":"done"}""")))
@@ -360,11 +321,68 @@ class ChatSessionTest {
 
             assertEquals(emptyList<TranscriptEntry>(), fixture.entries)
             assertEquals(TaskMode.QUESTION, fixture.session.state.value.taskMode)
-            assertNull(
-                fixture.client.requests
-                    .lastOrNull()
-                    ?.history
-                    ?.firstOrNull(),
-            )
+
+            // The turn after the reset is the one that shows the history is
+            // gone: it would carry turn 1's entries back to the proxy.
+            fixture.session.send("again")
+
+            assertEquals(2, fixture.client.requests.size)
+            val second = fixture.client.requests[1]
+            assertEquals("again", second.message)
+            assertNull(second.history)
         }
+
+    companion object {
+        @JvmStatic
+        fun streams(): List<Arguments> =
+            listOf(
+                Arguments.of(
+                    "deltas collect into one assistant entry, then the banner",
+                    "plan it",
+                    listOf(
+                        textFrame("Here is "),
+                        textFrame("the plan."),
+                        doneFrame("""{"summary":"Plan ready.","status":"completed"}"""),
+                    ),
+                    listOf(
+                        TranscriptEntry.User(1, "plan it"),
+                        TranscriptEntry.Assistant(2, "Here is the plan."),
+                        TranscriptEntry.Done(
+                            3,
+                            DoneOutcome("Plan ready.", "completed", "completed", "", "completed"),
+                        ),
+                    ),
+                ),
+                Arguments.of(
+                    "an error event becomes an error notice",
+                    "go",
+                    listOf(event("""{"type":"error","data":{"error":"lens down"}}""")),
+                    listOf(
+                        TranscriptEntry.User(1, "go"),
+                        TranscriptEntry.Notice(2, "lens down", isError = true),
+                    ),
+                ),
+                Arguments.of(
+                    "progress events never reach the transcript",
+                    "go",
+                    listOf(
+                        event("""{"type":"llm_token","data":{"text":"thinking"}}"""),
+                        event(
+                            """{"type":"v3_phase","data":{"stage":"phase2","detail":"allocating"}}""",
+                        ),
+                        event(
+                            """{"type":"plan_loaded","data":{"steps":[],"verify_step":"s1"}}""",
+                        ),
+                        doneFrame("""{"summary":"done"}"""),
+                    ),
+                    listOf(
+                        TranscriptEntry.User(1, "go"),
+                        TranscriptEntry.Done(
+                            2,
+                            DoneOutcome("done", "incomplete", "incomplete", "", "incomplete"),
+                        ),
+                    ),
+                ),
+            )
+    }
 }

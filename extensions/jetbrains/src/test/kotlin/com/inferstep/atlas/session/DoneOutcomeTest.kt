@@ -5,6 +5,9 @@ package com.inferstep.atlas.session
 import com.inferstep.atlas.protocol.DonePayload
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 class DoneOutcomeTest {
     @Test
@@ -30,6 +33,20 @@ class DoneOutcomeTest {
         )
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("banners")
+    fun `names the banner each status gets, and invents no style of its own`(
+        name: String,
+        status: String,
+        label: String,
+        cls: String,
+    ) {
+        val outcome = doneOutcome(DonePayload(status = status))
+
+        assertEquals(label, outcome.label, name)
+        assertEquals(cls, outcome.cls, name)
+    }
+
     @Test
     fun `reads a missing status as incomplete, as the API doc says`() {
         val outcome = doneOutcome(DonePayload(summary = "from an older proxy"))
@@ -37,25 +54,6 @@ class DoneOutcomeTest {
         assertEquals("incomplete", outcome.status)
         assertEquals("incomplete", outcome.cls)
         assertEquals("", outcome.reason)
-    }
-
-    @Test
-    fun `gives each known status its own class`() {
-        val classes =
-            listOf("completed", "incomplete", "stopped", "timed_out", "failed").map { status ->
-                doneOutcome(DonePayload(status = status)).cls
-            }
-
-        assertEquals(5, classes.toSet().size)
-        assertEquals("timed out", doneOutcome(DonePayload(status = "timed_out")).label)
-    }
-
-    @Test
-    fun `never turns an unknown status into a style name`() {
-        val outcome = doneOutcome(DonePayload(status = """x" onclick="y"""))
-
-        assertEquals("other", outcome.cls)
-        assertEquals("""x" onclick="y""", outcome.label)
     }
 
     @Test
@@ -70,5 +68,23 @@ class DoneOutcomeTest {
             ),
             doneOutcome(null),
         )
+    }
+
+    companion object {
+        @JvmStatic
+        fun banners(): List<Arguments> =
+            listOf(
+                Arguments.of("a completed run", "completed", "completed", "completed"),
+                Arguments.of("an incomplete run", "incomplete", "incomplete", "incomplete"),
+                Arguments.of("a stopped run", "stopped", "stopped", "stopped"),
+                Arguments.of("a timed-out run", "timed_out", "timed out", "timed_out"),
+                Arguments.of("a failed run", "failed", "failed", "failed"),
+                Arguments.of(
+                    "a status this client has never seen",
+                    """x" onclick="y""",
+                    """x" onclick="y""",
+                    "other",
+                ),
+            )
     }
 }
