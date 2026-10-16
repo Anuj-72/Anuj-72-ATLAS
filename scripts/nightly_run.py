@@ -171,7 +171,8 @@ CARD_HELD, QUIET_MINUTES = "card-held-with-no-lock", 60
 # The name of a smoke branch that the timer runs: one part after `smoke/`, of letters, digits, `.`, `_` and `-`.
 SMOKE_BRANCH = re.compile(r"smoke/[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # The steps of a run, as the report names the one that a run ended in. A status names a step only from this list.
-STEPS = ("start", "take the head of the branch", "stop a stack that an earlier run left", "pull the images",
+STEPS = ("start", "take the head of the branch", "stop a stack that an earlier run left", "read the settings of the server",
+         "pull the images",
          "wait for the images of the head", "take the lock of the card", "read what the card holds", "start the stack",
          "ask the services whether they are whole", "the smoke run", "the tests that need a real model",
          "ask the services again", "done", "look for the commit at the tip of a smoke branch",
@@ -216,6 +217,9 @@ QUESTIONS = {"the proxy's /ready": ("atlas-proxy", "http://localhost:8090/ready"
              "the lens's /health": ("geometric-lens", "http://localhost:8099/health")}
 # The parts of the proxy's answer, and what each is called in a result.
 PROXY_PARTS = {"inference": "the model server", "lens_ready": "the lens", "sandbox": "the sandbox", "v3": "v3-service"}
+# The same parts by a short fixed name, for a status on GitHub: it has room for few words, and takes none that a
+# service wrote.
+SHORT_NAMES = {"inference": "model", "lens_ready": "lens", "sandbox": "sandbox", "v3": "v3"}
 
 
 class StepFailed(Exception):
@@ -374,6 +378,8 @@ def stop_a_left_stack(args) -> str:
                 ["docker", "ps", "--all", "--quiet", "--filter", f"label=com.docker.compose.project={PROJECT}"], 60).split()
     if not left:
         return "none"
+    # Compose reads no file of the stack without the name of the model, so no stop can go without it either.
+    model_name(args)
     write_settings(args)
     must("the stop of the stack that an earlier run left", [*compose(args), "down", "--volumes", "--remove-orphans"], 300)
     return f"{len(left)} container(s) of an earlier run were stopped first"
@@ -422,6 +428,8 @@ def before_the_card(args, report: dict, first_start: bool) -> None:
         raise NewScript
     now_in(report, "stop a stack that an earlier run left")
     report["left_stack"] = stop_a_left_stack(args)
+    now_in(report, "read the settings of the server")
+    check_settings(args)
     images_of_the_head(args, report)
 
 
@@ -464,16 +472,22 @@ def as_compose_reads(value: str) -> str:
     return re.split(r"\s#", value, maxsplit=1)[0].strip()
 
 
-def model_name(args) -> str:
-    """The name of the model of this server, from <dir>/nightly.env. One of the tests compares the served model with
-    it, and skips without it."""
+def setting(args, key: str) -> str:
+    """The last value of a key in <dir>/nightly.env as compose reads it, or nothing when the file gives the key none."""
     base = args.dir / "nightly.env"
     if not base.is_file():
         raise StepFailed(f"{base} is not there. It holds the settings of the model for this server (ATLAS_MODELS_DIR, "
                          "ATLAS_MODEL_FILE, ATLAS_MODEL_NAME and the sizes). Fix: write it once, from the .env of the "
                          "stack that runs on this server.")
-    given = re.findall(r"^[ \t]*(?:export[ \t]+)?ATLAS_MODEL_NAME[ \t]*=(.*)$", base.read_text(encoding="utf-8"), re.M)
-    name = as_compose_reads(given[-1]) if given else ""
+    given = re.findall(rf"^[ \t]*(?:export[ \t]+)?{key}[ \t]*=(.*)$", base.read_text(encoding="utf-8"), re.M)
+    return as_compose_reads(given[-1]) if given else ""
+
+
+def model_name(args) -> str:
+    """The name of the model of this server, from <dir>/nightly.env. One of the tests compares the served model with
+    it, and skips without it."""
+    base = args.dir / "nightly.env"
+    name = setting(args, "ATLAS_MODEL_NAME")
     if not name:
         raise StepFailed(f"{base} has no line `ATLAS_MODEL_NAME=<name>`. The model server does not start without the name "
                          "of its model, and a test compares the served model with it. Fix: add the line, from the .env "
@@ -481,17 +495,37 @@ def model_name(args) -> str:
     return name
 
 
-def write_settings(args) -> dict:
-    """Write <dir>/run.env: the server's own settings for the model, then this run's ports, folders and image tag."""
-    base = args.dir / "nightly.env"
+def check_lens_folder(args) -> None:
+    """The folder of the lens's files has to be a full path in <dir>/nightly.env. The run's own copy of the repository
+    has no cost_field.pt (git leaves `*.pt` out), and compose reads a relative folder inside that copy, so the lens of
+    the stack would have no model to score with."""
+    folder = setting(args, "ATLAS_LENS_MODELS")
+    if not Path(folder).is_absolute():
+        raise StepFailed(f"the run's settings name no folder of lens files as a full path (ATLAS_LENS_MODELS in "
+                         f"{args.dir / 'nightly.env'}), so the lens of the stack would have no model to score with. Fix: "
+                         "add the line with the folder that the usual lens mounts, as the page docs/quality/gates.md "
+                         "gives it in the steps on the server.")
+
+
+def check_settings(args) -> None:
+    """The settings of the server that the run's stack needs, read once before an image is pulled.
+
+    A left stack is stopped before this: its stop needs none of these but the name of the model.
+    """
     model_name(args)
-    for name in ("workspace/_reliability", "secrets", "no-deploy-record"):
-        (args.dir / name).mkdir(parents=True, exist_ok=True)
+    check_lens_folder(args)
     token = args.dir / "secrets" / "service-token"
     if token.exists():
         raise StepFailed(f"{token} is there. With a token file the services of the stack ask for the token, and the "
                          "driver and the tests send none, so every session and most tests would be refused. Fix: "
                          "remove that file.")
+
+
+def write_settings(args) -> dict:
+    """Write <dir>/run.env: the server's own settings for the model, then this run's ports, folders and image tag."""
+    base = args.dir / "nightly.env"
+    for name in ("workspace/_reliability", "secrets", "no-deploy-record"):
+        (args.dir / name).mkdir(parents=True, exist_ok=True)
     # The proxy and the sandbox mount the same workspace, so both run as the user of this run.
     own = {**PORTS, "ATLAS_IMAGE_TAG": TAG, "ATLAS_PROJECT_DIR": str(args.dir / "workspace"),
            "ATLAS_SECRETS_DIR": str(args.dir / "secrets"), "ATLAS_PROXY_UID": os.getuid(), "ATLAS_PROXY_GID": os.getgid(),
@@ -821,6 +855,8 @@ def before_the_card_for_a_commit(args, report: dict, folder: Path, first_start: 
     carried_by_the_sessions(report)
     now_in(report, "stop a stack that an earlier run left")
     report["left_stack"] = stop_a_left_stack(args)
+    now_in(report, "read the settings of the server")
+    check_settings(args)
     now_in(report, "pull the images")
     report["images"] = pull_images(args, report, [service for service in IMAGES if service not in report["changed_services"]])
     report["stale"] = stale_images(report["images"], head)
@@ -969,11 +1005,27 @@ def what_failed(report: dict) -> str:
     return "a service was not whole at the end" if report.get("not_whole_at_the_end") else "see the report on the server"
 
 
+def parts_not_whole(answers: dict) -> list:
+    """The parts that the services' answers at the start say are not whole, by their short fixed names."""
+    if not answers:
+        return []
+    proxy = (answers.get("the proxy's /ready") or {}).get("answer")
+    if not isinstance(proxy, dict):
+        parts = ["proxy"]
+    else:
+        parts = [SHORT_NAMES[part] for part in PROXY_PARTS if proxy.get(part) is not True]
+    if (answers.get("the lens's /ready") or {}).get("status") != 200 and SHORT_NAMES["lens_ready"] not in parts:
+        parts.append(SHORT_NAMES["lens_ready"])
+    return parts
+
+
 def numbers_of(report: dict) -> list:
     """What a status says about the sessions and the tests of a run, in fixed words and numbers."""
     tasks, tests = report.get("tasks") or [], report.get("tests") or {}
     if len(tasks) != len(TASKS):
-        return [f"ended in the step: {report.get('step') if report.get('step') in STEPS else 'not named'}"]
+        step = report.get("step") if report.get("step") in STEPS else "not named"
+        parts = parts_not_whole((report.get("services") or {}).get("at the start") or {})
+        return [f"ended in the step: {step}"] + ([f"not whole: {', '.join(parts)}"] if parts else [])
     said = [f"{sum(1 for task in tasks if not task.get('defects'))} of {len(TASKS)} sessions with no harness defect"]
     if report["mode"] == "one commit":
         return said + [f"text {report['mark']}" if re.fullmatch(r"[0-9a-f]{12}", str(report.get("mark"))) else "text not marked"]
