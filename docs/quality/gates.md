@@ -628,10 +628,12 @@ in one place.
   and starts it as the stack starts it: by the `sandbox` service of the
   compose file, with its read-only base, its tmpfs mounts, its dropped
   capabilities and its limits. The job gives none of these itself, so a
-  change of the stack's settings is under test by itself. It waits for the
-  service's own health answer, and runs the 80 against it. The languages
-  are in the image. No test asks the runner for `javac`, `kotlinc`, `ruby`
-  or `php`: a sandbox that cannot run a language fails its tests.
+  change of the stack's settings is under test by itself. The build
+  downloads tools from servers outside GitHub, so a build that fails is
+  tried once more. It waits for the service's own health answer, and runs
+  the 80 against it. The languages are in the image. No test asks the
+  runner for `javac`, `kotlinc`, `ruby` or `php`: a sandbox that cannot run
+  a language fails its tests.
 - `proxy and TUI tests (no model)` builds the proxy and the TUI from the
   change and starts the proxy with no service behind it. The 13 ask the
   proxy's own answers and read the TUI's own screen in a terminal. None
@@ -712,9 +714,10 @@ it off (the timer is disabled).
 Each night it:
 
 1. takes the head of `dev`. When that changes the script itself or one of
-   the two files beside it (`scripts/tests_counted.py`, the judge, and
-   `scripts/nightly_images.py`, the images), the new copy does the run, so a
-   repair of one of them acts in the night after its merge;
+   the three files beside it (`scripts/tests_counted.py`, the judge,
+   `scripts/nightly_images.py`, the images, and `scripts/nightly_statuses.py`,
+   the sending of the statuses), the new copy does the run, so a repair of
+   one of them acts in the night after its merge;
 2. stops a stack of its own name that an earlier run left: a run that was
    killed leaves its stack, and Docker starts that stack again;
 3. takes the `dev` images of the registry under names of its own. It reads
@@ -1162,10 +1165,13 @@ and red for its own violation.
   is one machine that is not always on.
 - It reads how old the newest night of the development server is: the
   newest `server/nightly` status that the server's own account wrote on a
-  commit of `dev`. A night that started more than 14 days ago, or none in
-  that time, is a finding. While no account is set as the writer
+  commit of `dev`. When the newest night started 3 or more days ago, or
+  there is none in the last 15 days, one line of notes says for how many
+  nights there was none; it is never a finding, as the nightly run is best
+  effort. While no account is set as the writer
   (`server.writer` in the list), one line says that nothing was looked for.
-  Today the list names no account, so the nights are not looked for yet.
+  The list names the account of the app that writes the server's statuses,
+  `atlas-server-results[bot]`, so the nights are looked for.
 
 A maintainer renews the canary once a week, and after a change to a workflow
 or to a file that configures a check:
