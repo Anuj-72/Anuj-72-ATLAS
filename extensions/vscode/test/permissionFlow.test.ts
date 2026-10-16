@@ -56,8 +56,12 @@ function fakeUi(): PermissionUi & { events: UiEvent[] } {
 	};
 }
 
-/** Let queued microtasks (fire-and-forget POST .catch chains) run. */
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+/**
+ * Let the work the code launched run: the queued microtasks behind a
+ * fire-and-forget decision POST. Named for the wait, not the prompt:
+ * `PendingPermission.settle()` already means "answer this request".
+ */
+const letTheLaunchedWorkRun = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('PermissionFlow', () => {
 	it('auto-answers allow/once for a session-allowed tool, no prompt', async () => {
@@ -67,7 +71,7 @@ describe('PermissionFlow', () => {
 		const flow = new PermissionFlow(allowed, ui);
 
 		flow.handleRequest(poster, 'sess-1', request('edit_file'));
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		// TUI convention: auto-allow posts scope "once", not "session".
 		expect(poster.decisions).toEqual([
@@ -89,7 +93,7 @@ describe('PermissionFlow', () => {
 		expect(pending.request.tool_name).toBe('write_file');
 
 		expect(pending.settle('allow-once')).toBe(true);
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(poster.decisions).toEqual([
 			{ session_id: 'sess-1', tool_call_id: 'call-write_file', decision: 'allow', scope: 'once' },
@@ -108,7 +112,7 @@ describe('PermissionFlow', () => {
 
 		flow.handleRequest(poster, 'sess-2', request('structural_edit'));
 		ui.events[0].pending!.settle('allow-session');
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(allowed.has('structural_edit')).toBe(true);
 		expect(poster.decisions).toEqual([
@@ -124,7 +128,7 @@ describe('PermissionFlow', () => {
 
 		flow.handleRequest(poster, 'sess-3', request('run_command'));
 		ui.events[0].pending!.settle('deny');
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(poster.decisions).toEqual([
 			{ session_id: 'sess-3', tool_call_id: 'call-run_command', decision: 'deny', scope: 'once' },
@@ -142,7 +146,7 @@ describe('PermissionFlow', () => {
 
 		expect(pending.settle('allow-once')).toBe(true);
 		expect(pending.settle('deny')).toBe(false);
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(poster.decisions).toHaveLength(1);
 		expect(poster.decisions[0].decision).toBe('allow');
@@ -161,7 +165,7 @@ describe('PermissionFlow', () => {
 		expect(ui.events.at(-1)).toMatchObject({ kind: 'dismiss', reason: 'denied-remote' });
 
 		expect(pending.settle('allow-once')).toBe(false);
-		await settle();
+		await letTheLaunchedWorkRun();
 		expect(poster.decisions).toHaveLength(0);
 	});
 
@@ -187,7 +191,7 @@ describe('PermissionFlow', () => {
 		expect(dismissals.every((e) => e.reason === 'turn-ended')).toBe(true);
 
 		expect(first.settle('allow-once')).toBe(false);
-		await settle();
+		await letTheLaunchedWorkRun();
 		expect(poster.decisions).toHaveLength(0);
 	});
 
@@ -202,7 +206,7 @@ describe('PermissionFlow', () => {
 
 		expect(flow.settleById(9999, 'deny')).toBe(false);
 		expect(flow.settleById(second.id, 'allow-once')).toBe(true);
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(poster.decisions).toEqual([
 			{ session_id: 'sess-7', tool_call_id: 'call-2', decision: 'allow', scope: 'once' },
@@ -217,7 +221,7 @@ describe('PermissionFlow', () => {
 
 		flow.handleRequest(poster, 'sess-8', request('write_file'));
 		ui.events[0].pending!.settle('allow-once');
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(ui.events.at(-1)).toMatchObject({ kind: 'post-error', toolName: 'write_file', error: boom });
 	});
@@ -229,7 +233,7 @@ describe('PermissionFlow', () => {
 		const flow = new PermissionFlow(new Set(['edit_file']), ui);
 
 		flow.handleRequest(poster, 'sess-9', request('edit_file'));
-		await settle();
+		await letTheLaunchedWorkRun();
 
 		expect(ui.events.at(-1)).toMatchObject({ kind: 'post-error', toolName: 'edit_file', error: boom });
 	});
@@ -259,7 +263,7 @@ describe('deletions are approved one file at a time', () => {
 			const first = ui.events.find((e) => e.kind === 'prompt')?.pending;
 			expect(first).toBeDefined();
 			first?.settle('allow-session');
-			await settle();
+			await letTheLaunchedWorkRun();
 			expect(poster.decisions[0]).toMatchObject({ decision: 'allow', scope: 'once' });
 			expect(allowed.has('delete_file')).toBe(false);
 
