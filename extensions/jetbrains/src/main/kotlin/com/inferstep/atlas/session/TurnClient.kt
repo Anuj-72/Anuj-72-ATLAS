@@ -11,6 +11,7 @@ import com.inferstep.atlas.client.AtlasClient
 import com.inferstep.atlas.protocol.AgentRequest
 import com.inferstep.atlas.protocol.ChatEvent
 import com.inferstep.atlas.protocol.PermissionDecisionRequest
+import com.inferstep.atlas.protocol.WorkspaceResponse
 import kotlinx.coroutines.flow.Flow
 
 /** One agent turn, streaming. Satisfied by [AtlasTurnClient]. */
@@ -24,17 +25,18 @@ interface TurnClient {
 }
 
 /**
- * Adapts [AtlasClient] to the two surfaces the session layer drives: [TurnClient]
- * and [PermissionPoster].
+ * Adapts [AtlasClient] to the surfaces the session layer drives: [TurnClient],
+ * [PermissionPoster], and the [WorkspaceProbe] the workspace check asks.
  *
  * The HTTP client stays a thin port of the VS Code one and knows nothing about
- * turns, history or permissions; this is the one place that knows they fit
- * together.
+ * turns, history, permissions or diffs; this is the one place that knows they
+ * fit together.
  */
 class AtlasTurnClient(
     private val client: AtlasClient,
 ) : TurnClient,
-    PermissionPoster {
+    PermissionPoster,
+    WorkspaceProbe {
     override fun agentTurn(request: AgentRequest): Flow<ChatEvent> = client.agentTurn(request)
 
     override suspend fun cancelTurn(sessionId: String): Boolean = client.cancelTurn(sessionId)
@@ -42,4 +44,6 @@ class AtlasTurnClient(
     override suspend fun postPermissionDecision(decision: PermissionDecisionRequest) {
         client.postPermissionDecision(decision)
     }
+
+    override suspend fun workspace(): WorkspaceResponse? = client.getWorkspace()
 }

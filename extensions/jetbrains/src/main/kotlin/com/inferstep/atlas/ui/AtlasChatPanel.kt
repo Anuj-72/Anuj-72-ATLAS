@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,13 +36,17 @@ import com.inferstep.atlas.client.AtlasClient
 import com.inferstep.atlas.client.AtlasConnection
 import com.inferstep.atlas.protocol.PermissionMode
 import com.inferstep.atlas.protocol.TaskMode
+import com.inferstep.atlas.session.AppliedChange
 import com.inferstep.atlas.session.AtlasTurnClient
 import com.inferstep.atlas.session.ChatSession
 import com.inferstep.atlas.session.ChatUiState
+import com.inferstep.atlas.session.EditPrediction
+import com.inferstep.atlas.session.LocalWorkspace
 import com.inferstep.atlas.session.PendingPermission
 import com.inferstep.atlas.session.PermissionChoice
 import com.inferstep.atlas.session.TranscriptEntry
 import com.inferstep.atlas.session.commandOf
+import com.inferstep.atlas.session.diffTitle
 import com.inferstep.atlas.session.isOneTimeOnly
 import com.intellij.openapi.project.Project
 import kotlinx.coroutines.CoroutineScope
@@ -69,13 +74,23 @@ fun atlasChatPanel(
     val connection = remember { AtlasConnection.fromEnvironment() }
     val client = remember { AtlasClient(connection.url, connection.token) }
     val adapter = remember { AtlasTurnClient(client) }
-    val session = remember { ChatSession(adapter, adapter, scope, workingDir) }
+    // The session reads local files to build diffs; the refresh callback is
+    // what tells the IDE's VFS about a file the proxy just wrote.
+    val workspace =
+        remember(workingDir) {
+            LocalWorkspace(workingDir) { relative -> refreshWorkspacePath(workingDir, relative) }
+        }
+    val session = remember { ChatSession(adapter, adapter, scope, workingDir, workspace, adapter) }
     val state by session.state.collectAsState()
 
     // The Ktor client owns a connection pool; close it with the panel.
     DisposableEffect(client) {
         onDispose { client.close() }
     }
+
+    // Ask which folder the proxy edits, once, so a misaligned install is
+    // visible before the first edit lands somewhere the user cannot see.
+    LaunchedEffect(session) { session.checkWorkspace() }
 
     Column(
         modifier =
@@ -86,8 +101,8 @@ fun atlasChatPanel(
     ) {
         Text("ATLAS — ${connection.url}")
         modeControls(state, session)
-        transcript(state, Modifier.fillMaxWidth().weight(1f))
-        pendingPrompts(state, session)
+        transcript(state, project, Modifier.fillMaxWidth().weight(1f))
+        pendingPrompts(state, session, project)
         composer(state, session, scope)
     }
 }
@@ -148,6 +163,7 @@ private fun choiceChip(
 @Composable
 private fun transcript(
     state: ChatUiState,
+    project: Project,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -155,13 +171,16 @@ private fun transcript(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         state.entries.forEach { entry ->
-            transcriptRow(entry)
+            transcriptRow(entry, project)
         }
     }
 }
 
 @Composable
-private fun transcriptRow(entry: TranscriptEntry) {
+private fun transcriptRow(
+    entry: TranscriptEntry,
+    project: Project,
+) {
     when (entry) {
         is TranscriptEntry.User -> {
             Text("You: ${entry.text}")
@@ -173,6 +192,11 @@ private fun transcriptRow(entry: TranscriptEntry) {
 
         is TranscriptEntry.Tool -> {
             Text(toolLine(entry))
+            // The exact change the call made, when the snapshot and the disk
+            // state could both be read here. A read-only tool has none.
+            entry.change?.let { change ->
+                actionText("View change") { showAppliedChange(project, change) }
+            }
         }
 
         is TranscriptEntry.Notice -> {
@@ -226,9 +250,10 @@ private fun doneLine(entry: TranscriptEntry.Done): String {
 private fun pendingPrompts(
     state: ChatUiState,
     session: ChatSession,
+    project: Project,
 ) {
     state.pending.forEach { prompt ->
-        permissionCard(prompt, session)
+        permissionCard(prompt, state.previews[prompt.id], session, project)
     }
 }
 
@@ -242,7 +267,9 @@ private fun pendingPrompts(
 @Composable
 private fun permissionCard(
     prompt: PendingPermission,
+    preview: EditPrediction?,
     session: ChatSession,
+    project: Project,
 ) {
     val request = prompt.request
     val heading = request.message.ifEmpty { "${request.toolName} needs approval" }
@@ -254,6 +281,19 @@ private fun permissionCard(
         }
         commandOf(request.args)?.let { command ->
             Text(command)
+        }
+        // The prediction is computed from the file as it is now, which is the
+        // only moment it can be shown: after the call the file has changed.
+        preview?.let { predicted ->
+            actionText("View diff") {
+                AtlasDiffViewer.show(
+                    project,
+                    predicted.diffTitle(request.toolName),
+                    predicted.path,
+                    predicted.left,
+                    predicted.right,
+                )
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             actionText("Allow once") {
@@ -314,6 +354,33 @@ private fun sendAction(
     actionText("Send") {
         onSent()
         scope.launch { session.send(draft) }
+    }
+}
+
+/** The exact change a finished file op made, or the server's diff text when
+ * there is nothing local to compare against. */
+private fun showAppliedChange(
+    project: Project,
+    change: AppliedChange,
+) {
+    if (change.after != null) {
+        AtlasDiffViewer.show(
+            project,
+            change.title(),
+            change.path,
+            change.before.orEmpty(),
+            change.after,
+        )
+    } else {
+        change.serverPreview?.let { preview ->
+            AtlasDiffViewer.show(
+                project,
+                change.serverPreviewTitle(),
+                change.path,
+                "",
+                preview,
+            )
+        }
     }
 }
 

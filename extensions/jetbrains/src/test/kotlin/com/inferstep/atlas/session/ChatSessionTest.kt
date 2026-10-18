@@ -12,6 +12,7 @@ import com.inferstep.atlas.protocol.PermissionMode
 import com.inferstep.atlas.protocol.PermissionScope
 import com.inferstep.atlas.protocol.TaskContract
 import com.inferstep.atlas.protocol.TaskMode
+import com.inferstep.atlas.protocol.WorkspaceResponse
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -75,13 +76,50 @@ private class RecordingPoster : PermissionPoster {
     }
 }
 
+/** A workspace the tests script directly: no file IO, and every read and
+ * refresh is visible to the assertions. */
+private class FakeWorkspace(
+    override val root: String? = "/tmp/ws",
+) : Workspace {
+    val files = mutableMapOf<String, String>()
+    val stats = mutableMapOf<String, PathStat>()
+    val changed = mutableListOf<String>()
+
+    /** The contents successive reads return, per path; the last one repeats.
+     * This is how a test says "the proxy wrote while the call was in flight"
+     * without depending on when an event is emitted relative to its
+     * collection: the snapshot read sees entry one, the post-call read entry
+     * two. */
+    val reads = mutableMapOf<String, ArrayDeque<String?>>()
+
+    override fun readText(relativePath: String): String? {
+        val queued = reads[relativePath]
+        if (queued != null && queued.isNotEmpty()) {
+            val next = queued.removeFirst()
+            if (queued.isEmpty()) {
+                queued.addLast(next)
+            }
+            return next
+        }
+        return files[relativePath]
+    }
+
+    override fun stat(relativePath: String): PathStat = stats[relativePath] ?: PathStat(false)
+
+    override fun changed(relativePath: String) {
+        changed += relativePath
+    }
+}
+
 private class SessionFixture(
     frames: List<ChatEvent>,
+    val workspace: FakeWorkspace = FakeWorkspace(),
+    probe: WorkspaceProbe = WorkspaceProbe { null },
 ) {
     val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
     val client = RecordingClient(frames)
     val poster = RecordingPoster()
-    val session = ChatSession(client, poster, scope, "/tmp/ws")
+    val session = ChatSession(client, poster, scope, "/tmp/ws", workspace, probe)
 
     val entries: List<TranscriptEntry>
         get() = session.state.value.entries
@@ -330,6 +368,190 @@ class ChatSessionTest {
             val second = fixture.client.requests[1]
             assertEquals("again", second.message)
             assertNull(second.history)
+        }
+
+    @Test
+    fun `captures the exact change a successful file op made`() =
+        runBlocking {
+            val workspace = FakeWorkspace()
+            val fixture =
+                SessionFixture(
+                    listOf(
+                        event(
+                            """{"type":"tool_call","data":{"name":"write_file",""" +
+                                """"args":{"path":"a.py","content":"new"},"turn":1}}""",
+                        ),
+                        event(
+                            """{"type":"tool_result","data":{"tool":"write_file",""" +
+                                """"success":true,"data":{"ok":true}}}""",
+                        ),
+                    ),
+                    workspace,
+                )
+            // Snapshot read, then post-call read: the proxy wrote in between.
+            workspace.reads["a.py"] = ArrayDeque(listOf("old", "new"))
+
+            fixture.session.send("write it")
+
+            // The last entry is the mismatch notice (the scripted workspace has
+            // no stats), so the change is read off the result row itself.
+            val result = fixture.entries.filterIsInstance<TranscriptEntry.Tool>().last()
+            assertEquals(AppliedChange("a.py", "old", "new"), result.change)
+            // And the IDE is told, so a new file shows up without waiting for
+            // its own VFS refresh.
+            assertEquals(listOf("a.py"), workspace.changed)
+        }
+
+    @Test
+    fun `a prompt for a file edit carries the predicted change until it is answered`() =
+        runBlocking {
+            val workspace = FakeWorkspace()
+            workspace.files["app.py"] = "old"
+            val fixture =
+                SessionFixture(
+                    listOf(
+                        event(
+                            """{"type":"permission_request","data":{"tool_name":"write_file",""" +
+                                """"args":{"path":"app.py","content":"new"},""" +
+                                """"message":"write app.py?","tool_call_id":"c1"}}""",
+                        ),
+                        doneFrame("""{"summary":"stopped","status":"incomplete"}"""),
+                    ),
+                    workspace,
+                )
+            fixture.client.hangAfter = 0
+
+            val running = launch { fixture.session.send("write it") }
+            letTheLaunchedWorkRun()
+
+            val pending =
+                fixture.session.state.value.pending
+                    .single()
+            assertEquals(
+                EditPrediction("app.py", EditPredictionKind.FILE, "old", "new", false),
+                fixture.session.state.value.previews[pending.id],
+            )
+
+            fixture.session.answer(pending.id, PermissionChoice.ALLOW_ONCE)
+            letTheLaunchedWorkRun()
+
+            // The card is gone, so its prediction goes with it.
+            assertEquals(emptyMap<Long, EditPrediction>(), fixture.session.state.value.previews)
+
+            fixture.session.cancel()
+            running.join()
+        }
+
+    @Test
+    fun `a denied call's failed result does not leave its snapshot for the next file op`() =
+        runBlocking {
+            val workspace = FakeWorkspace()
+            workspace.files["a.py"] = "old-a"
+            workspace.reads["b.py"] = ArrayDeque(listOf("old-b", "new-b"))
+            val fixture =
+                SessionFixture(
+                    listOf(
+                        event(
+                            """{"type":"tool_call","data":{"name":"write_file",""" +
+                                """"args":{"path":"a.py","content":"x"},"turn":1}}""",
+                        ),
+                        event(
+                            """{"type":"permission_denied","data":{"tool":"write_file"}}""",
+                        ),
+                        // The proxy answers a denied call with this failed
+                        // result, in the same block that streams the denial.
+                        event(
+                            """{"type":"tool_result","data":{"tool":"write_file",""" +
+                                """"success":false,"error":"denied","data":null}}""",
+                        ),
+                        event(
+                            """{"type":"tool_call","data":{"name":"write_file",""" +
+                                """"args":{"path":"b.py","content":"y"},"turn":2}}""",
+                        ),
+                        event(
+                            """{"type":"tool_result","data":{"tool":"write_file",""" +
+                                """"success":true,"data":{"ok":true}}}""",
+                        ),
+                    ),
+                    workspace,
+                )
+
+            fixture.session.send("go")
+
+            // The denied a.py call's failed result consumed its snapshot, so
+            // the successful result pairs with b.py — not with a.py, which the
+            // proxy never wrote.
+            val result = fixture.entries.filterIsInstance<TranscriptEntry.Tool>().last()
+            assertEquals(AppliedChange("b.py", "old-b", "new-b"), result.change)
+        }
+
+    @Test
+    fun `warns when a successful file op is nowhere on local disk`() =
+        runBlocking {
+            val fixture =
+                SessionFixture(
+                    listOf(
+                        event(
+                            """{"type":"tool_call","data":{"name":"write_file",""" +
+                                """"args":{"path":"a.py","content":"x"},"turn":1}}""",
+                        ),
+                        event(
+                            """{"type":"tool_result","data":{"tool":"write_file",""" +
+                                """"success":true,"data":{"ok":true}}}""",
+                        ),
+                        doneFrame("""{"summary":"ok"}"""),
+                    ),
+                    FakeWorkspace(), // the file never appears here
+                )
+
+            fixture.session.send("write it")
+
+            val notice =
+                fixture.entries
+                    .filterIsInstance<TranscriptEntry.Notice>()
+                    .single()
+            assertTrue(notice.text.contains("a different directory"), notice.text)
+            assertFalse(notice.isError)
+        }
+
+    @Test
+    fun `says when the proxy edits another folder, and stays quiet when it agrees`() =
+        runBlocking {
+            val misaligned =
+                SessionFixture(
+                    listOf(doneFrame("""{"summary":"x"}""")),
+                    FakeWorkspace(root = "/home/isaac/demo2"),
+                    probe =
+                        WorkspaceProbe {
+                            WorkspaceResponse(
+                                projectDir = "/home/isaac/snake-game",
+                            )
+                        },
+                )
+
+            misaligned.session.checkWorkspace()
+
+            val notice = misaligned.entries.single() as TranscriptEntry.Notice
+            assertTrue(notice.text.contains("/home/isaac/snake-game"), notice.text)
+
+            val aligned =
+                SessionFixture(
+                    listOf(doneFrame("""{"summary":"x"}""")),
+                    FakeWorkspace(root = "/home/isaac/demo2"),
+                    probe = WorkspaceProbe { WorkspaceResponse(projectDir = "/home/isaac/demo2") },
+                )
+            aligned.session.checkWorkspace()
+            assertEquals(0, aligned.entries.size)
+
+            // An older proxy without the route, or one that cannot name an
+            // absolute path, must produce no warning at all.
+            val noRoute =
+                SessionFixture(
+                    listOf(doneFrame("""{"summary":"x"}""")),
+                    probe = WorkspaceProbe { null },
+                )
+            noRoute.session.checkWorkspace()
+            assertEquals(0, noRoute.entries.size)
         }
 
     companion object {

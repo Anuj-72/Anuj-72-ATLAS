@@ -1,10 +1,15 @@
 // The chat, as state: the transcript, the open permission prompts, the two
 // controls the user operates (permission mode and Work/Question), and the
-// send/cancel/reset actions over [TurnManager] and [PermissionFlow].
+// send/cancel/reset actions over [TurnManager] and [PermissionFlow]. Since
+// Stage 4 it also holds what the diff view needs: the predicted change a
+// permission prompt may show, the exact change a finished file op made, and
+// the verdicts of the workspace-mismatch check.
 //
 // Free of com.intellij and of Compose, so the whole conversation — streaming
-// text, tool chips, the done banner, answered prompts — is exercised under
-// plain JUnit. The tool window is a renderer of [ChatUiState] and nothing else.
+// text, tool chips, the done banner, answered prompts, applied diffs — is
+// exercised under plain JUnit. The tool window is a renderer of [ChatUiState]
+// and nothing else: it reads the diffs out of this state and hands them to the
+// IDE's diff viewer.
 package com.inferstep.atlas.session
 
 import com.inferstep.atlas.protocol.ChatEvent
@@ -24,6 +29,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 private const val TEXT_EVENT = "text"
 private const val TOOL_CALL_EVENT = "tool_call"
@@ -32,6 +40,35 @@ private const val PERMISSION_REQUEST_EVENT = "permission_request"
 private const val PERMISSION_DENIED_EVENT = "permission_denied"
 private const val DONE_EVENT = "done"
 private const val ERROR_EVENT = "error"
+
+/** The one tool whose result carries a server-computed unified diff. */
+private const val EDIT_FILE_TOOL = "edit_file"
+
+private const val MISMATCH_NOTICE =
+    "ATLAS reported a file change that this workspace does not show. The proxy is " +
+        "editing a different directory, so its changes are landing where you cannot see them."
+
+/**
+ * The exact change a successful file-write tool call made.
+ *
+ * [before] is the file's text captured at tool_call time (null when it did not
+ * exist here), [after] the text on disk once the call returned. Either side can
+ * be null, and [serverPreview] is the fallback for the one case with nothing
+ * local to show: edit_file's server-computed diff, used when the file is not
+ * readable in this workspace.
+ */
+data class AppliedChange(
+    val path: String,
+    val before: String?,
+    val after: String?,
+    val serverPreview: String? = null,
+) {
+    /** What the IDE's diff tab is called. */
+    fun title(): String = "ATLAS: $path (applied)"
+
+    /** The fallback view's title: one side is the server's diff text. */
+    fun serverPreviewTitle(): String = "ATLAS: $path (server preview)"
+}
 
 /**
  * One line of the conversation.
@@ -61,6 +98,8 @@ sealed interface TranscriptEntry {
         val summary: String?,
         /** Null while the call is still running. */
         val success: Boolean?,
+        /** The exact change to offer as a diff, when there is one to show. */
+        val change: AppliedChange? = null,
     ) : TranscriptEntry
 
     /** Something the client says about itself, never the model's words. */
@@ -85,6 +124,10 @@ data class ChatUiState(
     /** What the next turn declares: work (default) or question. */
     val taskMode: TaskMode = TaskMode.WORK,
     val permissionMode: PermissionMode = PermissionMode.DEFAULT,
+    /** Predicted changes for the open prompts, keyed by prompt id. A prompt
+     * with no entry either is not a file edit or has nothing predictable to
+     * show — the card then offers no diff. */
+    val previews: Map<Long, EditPrediction> = emptyMap(),
 )
 
 /**
@@ -100,6 +143,12 @@ class ChatSession(
     private val scope: CoroutineScope,
     /** The client's workspace root, sent as `working_dir`. */
     private val workingDir: String,
+    /** The local view of that root: reads for diffs, stats for the mismatch
+     * check. The default is the plain filesystem one, which is what the tests
+     * want; the panel passes one that also refreshes the IDE's VFS. */
+    private val workspace: Workspace = LocalWorkspace(workingDir),
+    /** GET /workspace, asked once when the panel appears. */
+    private val probe: WorkspaceProbe = WorkspaceProbe { null },
 ) : PermissionUi {
     private val turns = TurnManager(scope)
     private val permissions = PermissionFlow(turns.sessionAllowedTools, this, scope)
@@ -108,6 +157,18 @@ class ChatSession(
 
     /** The transcript and controls, as the panel renders them. */
     val state: StateFlow<ChatUiState> = mutableState.asStateFlow()
+
+    /** Pre-edit file states awaiting their tool_result, FIFO per tool name —
+     * tool_result carries only the tool name, the same matching scheme the
+     * reference clients use. */
+    private val snapshots = mutableMapOf<String, ArrayDeque<EditSnapshot>>()
+
+    /** Warns once when a successful file op leaves no trace on local disk. */
+    private val mismatch =
+        MismatchDetector(
+            stat = workspace::stat,
+            onMismatch = { append(TranscriptEntry.Notice(nextId++, MISMATCH_NOTICE)) },
+        )
 
     private var nextId = 1L
     private var cancelRequested = false
@@ -131,6 +192,30 @@ class ChatSession(
         choice: PermissionChoice,
     ) {
         permissions.settleById(id, choice)
+    }
+
+    /**
+     * Ask the proxy which host directory it edits and say so when it is not the
+     * one this window has open.
+     *
+     * A mismatch the proxy can name exactly (GET /workspace, #244) is worth
+     * telling the user about before a turn: either they point the IDE at that
+     * folder or they run `atlas workspace align` themselves. Every failure is
+     * silent — an older proxy without the route must not produce a warning.
+     */
+    suspend fun checkWorkspace() {
+        val report = probe.workspace() ?: return
+        val alignment = workspaceAlignment(report.projectDir, workspace.root)
+        if (alignment != WorkspaceAlignment.MISALIGNED) {
+            return
+        }
+        append(
+            TranscriptEntry.Notice(
+                nextId++,
+                "ATLAS is editing ${report.projectDir}, not ${workspace.root} — changes it " +
+                    "makes will land outside this window.",
+            ),
+        )
     }
 
     /**
@@ -187,7 +272,11 @@ class ChatSession(
             if (cancelRequested && !sawDone) {
                 append(TranscriptEntry.Notice(nextId++, "Turn cancelled."))
             }
-            mutableState.update { it.copy(running = false, pending = emptyList()) }
+            snapshots.clear()
+            mismatch.reset()
+            mutableState.update {
+                it.copy(running = false, pending = emptyList(), previews = emptyMap())
+            }
         }
     }
 
@@ -200,15 +289,22 @@ class ChatSession(
         turns.cancel()
     }
 
-    /** Start a fresh conversation: drop the transcript, the history and the
-     * session-approved tools. */
+    /** Start a fresh conversation: drop the transcript, the history, the
+     * session-approved tools and every captured diff. */
     fun reset() {
         if (turns.busy) {
             return
         }
         turns.reset()
+        snapshots.clear()
+        mismatch.reset()
         mutableState.update {
-            it.copy(entries = emptyList(), pending = emptyList(), running = false)
+            it.copy(
+                entries = emptyList(),
+                pending = emptyList(),
+                running = false,
+                previews = emptyMap(),
+            )
         }
     }
 
@@ -217,7 +313,23 @@ class ChatSession(
     // ------------------------------------------------------------------
 
     override fun onPrompt(pending: PendingPermission) {
-        mutableState.update { it.copy(pending = it.pending + pending) }
+        // The prediction is computed here because this is the only place that
+        // knows the prompt's id, which is the key the card reads it back by.
+        val request = pending.request
+        val target = editTargetPath(request.toolName, request.args)
+        val current = target?.let { workspace.readText(it) }
+        val preview = target?.let { predictEdit(request.toolName, request.args, current) }
+        mutableState.update { state ->
+            state.copy(
+                pending = state.pending + pending,
+                previews =
+                    if (preview == null) {
+                        state.previews
+                    } else {
+                        state.previews + (pending.id to preview)
+                    },
+            )
+        }
     }
 
     override fun onDismiss(
@@ -225,7 +337,10 @@ class ChatSession(
         reason: DismissReason,
     ) {
         mutableState.update { state ->
-            state.copy(pending = state.pending.filterNot { it === pending })
+            state.copy(
+                pending = state.pending.filterNot { it === pending },
+                previews = state.previews - pending.id,
+            )
         }
     }
 
@@ -247,34 +362,18 @@ class ChatSession(
     }
 
     /** Apply one stream event to the transcript. */
-    private fun apply(event: ChatEvent) {
+    private suspend fun apply(event: ChatEvent) {
         when (event.type) {
             TEXT_EVENT -> {
                 appendText(event.payloadOrNull<TextPayload>()?.content.orEmpty())
             }
 
             TOOL_CALL_EVENT -> {
-                val call = event.payloadOrNull<ToolCallPayload>()
-                append(
-                    TranscriptEntry.Tool(
-                        id = nextId++,
-                        name = call?.name.orEmpty(),
-                        summary = null,
-                        success = null,
-                    ),
-                )
+                appendToolCall(event)
             }
 
             TOOL_RESULT_EVENT -> {
-                val result = event.payloadOrNull<ToolResultPayload>()
-                append(
-                    TranscriptEntry.Tool(
-                        id = nextId++,
-                        name = result?.tool.orEmpty(),
-                        summary = summarizeToolResult(result?.tool.orEmpty(), result?.data),
-                        success = result?.success,
-                    ),
-                )
+                appendToolResult(event)
             }
 
             PERMISSION_REQUEST_EVENT -> {
@@ -284,9 +383,13 @@ class ChatSession(
             }
 
             PERMISSION_DENIED_EVENT -> {
-                permissions.handleDenied(
-                    event.payloadOrNull<PermissionDeniedPayload>()?.tool.orEmpty(),
-                )
+                // The proxy answers a denial with permission_denied and then a
+                // tool_result whose success is false (proxy/agent.go), so that
+                // result is what consumes the snapshot and the pre-op stat,
+                // exactly as for a call that failed. A stream that ends before
+                // it leaves nothing behind: the turn's finally clears both.
+                val tool = event.payloadOrNull<PermissionDeniedPayload>()?.tool.orEmpty()
+                permissions.handleDenied(tool)
             }
 
             DONE_EVENT -> {
@@ -317,6 +420,77 @@ class ChatSession(
         }
     }
 
+    /** A tool call: its chip, the pre-call snapshot and the pre-op stat. */
+    private fun appendToolCall(event: ChatEvent) {
+        val call = event.payloadOrNull<ToolCallPayload>()
+        val name = call?.name.orEmpty()
+        append(
+            TranscriptEntry.Tool(
+                id = nextId++,
+                name = name,
+                summary = null,
+                success = null,
+            ),
+        )
+        // Snapshot the target now (before permission/execution) so a successful
+        // result can show the exact applied change. At tool_call time rather
+        // than permission time: accept-edits and yolo turns never raise a
+        // permission_request.
+        editTargetPath(name, call?.args)?.let { target ->
+            snapshots
+                .getOrPut(name) { ArrayDeque() }
+                .addLast(EditSnapshot(target, workspace.readText(target)))
+        }
+        mismatch.recordToolCall(name, call?.args)
+    }
+
+    /** A tool result: the chip's outcome, the applied change, the VFS refresh
+     * and the post-op check. A failed result takes its queues and shows no
+     * change — there is nothing on disk to verify. */
+    private suspend fun appendToolResult(event: ChatEvent) {
+        val result = event.payloadOrNull<ToolResultPayload>()
+        val tool = result?.tool.orEmpty()
+        val change = appliedChange(tool, result)
+        append(
+            TranscriptEntry.Tool(
+                id = nextId++,
+                name = tool,
+                summary = summarizeToolResult(tool, result?.data),
+                success = result?.success,
+                change = change,
+            ),
+        )
+        if (change != null) {
+            // The proxy wrote through its bind mount; tell the IDE so a new file
+            // shows up without waiting for its own refresh.
+            workspace.changed(change.path)
+        }
+        mismatch.recordToolResult(tool, result?.success == true)
+    }
+
+    /**
+     * Consume the snapshot for a finished tool_result and, when there is
+     * something to show, capture the on-disk state and register the change.
+     *
+     * Read immediately: the proxy writes before emitting the result, and a
+     * later read could already include the NEXT edit to the same file.
+     */
+    private fun appliedChange(
+        tool: String,
+        result: ToolResultPayload?,
+    ): AppliedChange? {
+        val snapshot = snapshots[tool]?.removeFirstOrNull() ?: return null
+        if (result?.success != true) {
+            return null
+        }
+        val after = workspace.readText(snapshot.path)
+        val preview = if (tool == EDIT_FILE_TOOL) serverDiffPreview(result.data) else null
+        if (after == null && preview == null) {
+            return null // nothing viewable (likely a workspace mismatch)
+        }
+        return AppliedChange(snapshot.path, snapshot.before, after, preview)
+    }
+
     /** Trail a delta onto the streaming assistant entry, or start one. */
     private fun appendText(delta: String) {
         if (delta.isEmpty()) {
@@ -337,4 +511,16 @@ class ChatSession(
     private fun append(entry: TranscriptEntry) {
         mutableState.update { it.copy(entries = it.entries + entry) }
     }
+
+    /** The file state captured at tool_call time. */
+    private data class EditSnapshot(
+        val path: String,
+        val before: String?,
+    )
+}
+
+/** `edit_file`'s server-computed unified diff, when the result carries one. */
+private fun serverDiffPreview(data: JsonElement?): String? {
+    val value = (data as? JsonObject)?.get("diff_preview") as? JsonPrimitive ?: return null
+    return if (value.isString) value.content.ifEmpty { null } else null
 }

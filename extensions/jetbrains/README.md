@@ -2,7 +2,7 @@
 
 A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop with no agent logic in the plugin itself.
 
-**Status: Stage 3 — sessions, chat and permissions.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wires the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Diffs, workspace integration and settings are later stages.
+**Status: Stage 4 — diffs, VFS and workspace integration.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wired the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Stage 4 adds diff review and the workspace checks around it: the change a file-writing call is predicted to make, the exact change it made, and a warning when the proxy is editing a different folder. Settings are Stage 5, hardening and release Stage 6.
 
 ## Spike results
 
@@ -70,9 +70,69 @@ A port of `extensions/vscode/src/session/`, with the TUI as the reference where 
 
 **Cancellation stops the stream first.** `cancel()` aborts the local SSE request, which is the mechanism that actually ends the turn, and posts `/cancel` as a backstop. The panel's Cancel button routes there; a cancelled turn keeps whatever text it had produced in the history it replays.
 
-**The connection comes from the environment.** `ATLAS_PROXY_URL` (default `http://127.0.0.1:8090`) and `ATLAS_SERVICE_TOKEN_FILE`, the same variables the TUI and `atlas doctor` use, read in one place (`client/AtlasConnection.kt`). The settings UI and secure token storage are Stage 5; until then the tool window shows the URL it is talking to, and the token is read from the file `atlas init` writes rather than from any setting.
+**The connection comes from the environment.** `ATLAS_PROXY_URL` (default `http://127.0.0.1:8090`) and `ATLAS_SERVICE_TOKEN_FILE`, the same variables the TUI and `atlas doctor` use, read in one place (`client/AtlasConnection.kt`). The settings UI and secure token storage are Stage 5; until then the tool window shows the URL it is talking to, and the token is read from the file `atlas init` writes rather than from any setting. The diff review and the workspace checks that Stage 4 adds are described under [The diffs and the workspace](#the-diffs-and-the-workspace-stage-4).
 
 **Two hazards the settings stage inherits**, raised in review of this pull request and left for Stage 5 rather than fixed here. `AtlasConnection` is a `data class` with no `toString()` override, so the one Kotlin generates prints `token` in full: nothing logs a connection today, but a stack trace, a debugger view or a single `"$connection"` interpolated into a log line would put the service token there. And `FALLBACK_TOKEN_FILE` (`secrets/service-token`) is a relative path, so it resolves against the working directory the IDE was started from, not against the install the token sits beside — the ambiguity `ATLAS_SERVICE_TOKEN_FILE` exists to remove, and one a sandbox run started elsewhere meets as "no token configured". Stage 5 answers both: the URL and the token become settings, and the token moves to the platform's credential store.
+
+## The diffs and the workspace (Stage 4)
+
+```
+src/main/kotlin/com/inferstep/atlas/session/EditPreview.kt        # the change a prompt can predict
+src/main/kotlin/com/inferstep/atlas/session/Workspace.kt          # reads, stats, and the GET /workspace verdict
+src/main/kotlin/com/inferstep/atlas/session/WorkspaceMismatch.kt  # the passive post-edit mismatch check
+src/main/kotlin/com/inferstep/atlas/ui/AtlasDiffViewer.kt         # the IDE's own side-by-side diff
+```
+
+A port of `extensions/vscode/src/session/editPreview.ts` and
+`extensions/vscode/src/workspace/`, with the IDE half replaced by the platform's
+own diff. Everything that decides what to show is in `session/`, so it runs
+under plain JUnit; `ui/AtlasDiffViewer.kt` only opens the window.
+
+**A change is shown twice, from two different sources.** Before a write is
+approved, the card can offer the *predicted* change: `predictEdit` computes it
+from the file as it is now — `write_file`, `insert_after` and `replace_lines`
+exactly, `edit_file` exactly when `old_str` matches, and `structural_edit` as a
+best-effort splice labelled approximate, because tree-sitter is the server-side
+authority. After the call returns, the tool row offers the *exact* change
+instead: `ChatSession` snapshots the target at `tool_call` time and diffs that
+snapshot against the file on disk, which also compensates for an approximate
+prediction. When the file is not readable in this workspace — the mismatch case
+below — `edit_file`'s server-computed `diff_preview` is shown instead.
+
+**The diff itself is the platform's.** `AtlasDiffViewer` builds a
+`SimpleDiffRequest` from the two texts and hands it to `DiffManager`, so the
+panes are the IDE's own diff viewer, with its theme and its whitespace and
+collapse actions. The target's file name picks the `FileType`, so both sides get
+the IDE's syntax highlighting; an extension the IDE does not know degrades to
+plain text rather than failing.
+
+**The proxy's writes reach the IDE's VFS.** On a bind-mounted install
+IntelliJ's own watcher usually notices first, but the plugin still refreshes the
+changed path after every successful file op, so a file the session just created
+turns up even when nothing else is watching that directory.
+
+**A wrong folder is said out loud**, by two checks — one exact, one passive:
+
+- At panel start, `checkWorkspace` asks `GET /workspace` and compares the host
+  path the proxy reports with the folder this window has open. A host path that
+  does not cover it is worth interrupting for: every later edit lands where the
+  user is not looking. An older proxy without the route, a relative path, or no
+  folder open all read as "can't tell", never as a mismatch.
+- After each successful file op, `MismatchDetector` compares a pre-op stat with
+  a post-op one: a write must exist, a delete must not, a move must be at its
+  destination. An unchanged mtime is inconclusive rather than a mismatch,
+  because a coarse-mtime filesystem can stamp a real change with the same time.
+  One contradiction is enough to warn once for the session.
+
+`atlas workspace align` — the CLI that moves the containers' binds — is
+deliberately **not** wired up. v1 is parity with the VS Code client's protocol,
+session and permission behaviour, and the answer on #35 was to leave align for a
+later stage, so the plugin can say the folder is wrong but not fix it.
+
+**Not seen on screen.** No diff has been opened in an IDE here. The session
+suites cover the predictions, the snapshots and both workspace checks;
+`AtlasDiffViewer` and the VFS refresh are covered by nothing except the
+`runPyCharm` smoke run, which this stage has not had either.
 
 ## Tests
 
@@ -88,7 +148,10 @@ A port of `extensions/vscode/src/session/`, with the TUI as the reference where 
 | `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, and an install with no token |
 | `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
 | `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
-| `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset |
+| `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, and both workspace checks |
+| `EditPreviewTest` | the tools that name a path, then one table per tool: write_file, edit_file (exact, approximate, replace_all as a boolean, literal `$`), the python and html structural_edit splices, insert_after and replace_lines, and every case that is not previewable |
+| `WorkspaceMismatchTest` | the paths a file op touches, the verdict for each kind of write/edit/delete/move, and the detector as one table of short sessions: FIFO pairing, the one-shot warning, silence on a failed or inconclusive op, and the failed result that answers a denial |
+| `WorkspaceTest` | reads and stats inside the root, an absolute path or a `..` escape refused, a missing or empty root reading nothing, and the alignment verdict for each pair of host paths |
 | `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
 | `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 
@@ -185,7 +248,7 @@ Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the
 | `runWebStorm` | WebStorm 2026.1 | no |
 | `runGoLand` | GoLand 2026.1 | no |
 
-The Stage 3 chat has **not been launched in any of them**: the panel, its streaming, its prompt cards and its Cancel button are covered by the JVM tests above and by nothing else. A `runPyCharm` session against a live proxy is the check that would close that gap, and it has not been run yet.
+Neither the Stage 3 chat nor the Stage 4 diffs have been **launched in any of them**: the panel, its streaming, its prompt cards, its Cancel button and the diff window are covered by the JVM tests above and by nothing else. A `runPyCharm` session against a live proxy, with an edit allowed and its diff opened, is the check that would close that gap, and it has not been run yet.
 
 The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
 
@@ -200,9 +263,10 @@ Kotlin is intentionally **not** covered by `scripts/code_health.py`, which scans
 ```
 build.gradle.kts        # plugin module: IPGP, bundled Compose/Jewel, Ktor, Kotlin toolchain, ktlint
 settings.gradle.kts     # root project
-src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer
+src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer,
+                        # the diff prediction and workspace checks, and the IDE diff opener
 src/main/resources/     # META-INF/plugin.xml
-src/test/kotlin/        # tool-window test, protocol/client suite, session suite, mock proxy
+src/test/kotlin/        # tool-window test, protocol/client suite, session and workspace suites, mock proxy
 src/test/resources/     # the recorded real proxy turn
 .editorconfig           # ktlint rules (single source)
 ```
