@@ -6,8 +6,9 @@
     <description><![CDATA[
         Use the ATLAS agent from your JetBrains IDE. The ATLAS tool window
         holds a streaming chat against a local atlas-proxy, with inline
-        approval for the tool calls the proxy asks about. Diffs, workspace
-        integration and settings are later stages.
+        approval for the tool calls the proxy asks about, a side-by-side
+        diff of every file change, and a warning when the proxy is editing
+        a different folder. Settings are a later stage.
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
