@@ -369,47 +369,11 @@ class ChatSession(
             }
 
             TOOL_CALL_EVENT -> {
-                val call = event.payloadOrNull<ToolCallPayload>()
-                val name = call?.name.orEmpty()
-                append(
-                    TranscriptEntry.Tool(
-                        id = nextId++,
-                        name = name,
-                        summary = null,
-                        success = null,
-                    ),
-                )
-                // Snapshot the target now (before permission/execution) so a
-                // successful result can show the exact applied change. At
-                // tool_call time rather than permission time: accept-edits and
-                // yolo turns never raise a permission_request.
-                editTargetPath(name, call?.args)?.let { target ->
-                    snapshots
-                        .getOrPut(name) { ArrayDeque() }
-                        .addLast(EditSnapshot(target, workspace.readText(target)))
-                }
-                mismatch.recordToolCall(name, call?.args)
+                appendToolCall(event)
             }
 
             TOOL_RESULT_EVENT -> {
-                val result = event.payloadOrNull<ToolResultPayload>()
-                val tool = result?.tool.orEmpty()
-                val change = appliedChange(tool, result)
-                append(
-                    TranscriptEntry.Tool(
-                        id = nextId++,
-                        name = tool,
-                        summary = summarizeToolResult(tool, result?.data),
-                        success = result?.success,
-                        change = change,
-                    ),
-                )
-                if (change != null) {
-                    // The proxy wrote through its bind mount; tell the IDE so a
-                    // new file shows up without waiting for its own refresh.
-                    workspace.changed(change.path)
-                }
-                mismatch.recordToolResult(tool, result?.success == true)
+                appendToolResult(event)
             }
 
             PERMISSION_REQUEST_EVENT -> {
@@ -419,13 +383,13 @@ class ChatSession(
             }
 
             PERMISSION_DENIED_EVENT -> {
+                // The proxy answers a denial with permission_denied and then a
+                // tool_result whose success is false (proxy/agent.go), so that
+                // result is what consumes the snapshot and the pre-op stat,
+                // exactly as for a call that failed. A stream that ends before
+                // it leaves nothing behind: the turn's finally clears both.
                 val tool = event.payloadOrNull<PermissionDeniedPayload>()?.tool.orEmpty()
                 permissions.handleDenied(tool)
-                // A denied call gets no tool_result, so every FIFO keyed on the
-                // tool name has to consume its entry here or the next allowed
-                // call of the same tool pairs with stale state.
-                snapshots[tool]?.removeFirstOrNull()
-                mismatch.recordDenied(tool)
             }
 
             DONE_EVENT -> {
@@ -454,6 +418,54 @@ class ChatSession(
                 Unit
             }
         }
+    }
+
+    /** A tool call: its chip, the pre-call snapshot and the pre-op stat. */
+    private fun appendToolCall(event: ChatEvent) {
+        val call = event.payloadOrNull<ToolCallPayload>()
+        val name = call?.name.orEmpty()
+        append(
+            TranscriptEntry.Tool(
+                id = nextId++,
+                name = name,
+                summary = null,
+                success = null,
+            ),
+        )
+        // Snapshot the target now (before permission/execution) so a successful
+        // result can show the exact applied change. At tool_call time rather
+        // than permission time: accept-edits and yolo turns never raise a
+        // permission_request.
+        editTargetPath(name, call?.args)?.let { target ->
+            snapshots
+                .getOrPut(name) { ArrayDeque() }
+                .addLast(EditSnapshot(target, workspace.readText(target)))
+        }
+        mismatch.recordToolCall(name, call?.args)
+    }
+
+    /** A tool result: the chip's outcome, the applied change, the VFS refresh
+     * and the post-op check. A failed result takes its queues and shows no
+     * change — there is nothing on disk to verify. */
+    private suspend fun appendToolResult(event: ChatEvent) {
+        val result = event.payloadOrNull<ToolResultPayload>()
+        val tool = result?.tool.orEmpty()
+        val change = appliedChange(tool, result)
+        append(
+            TranscriptEntry.Tool(
+                id = nextId++,
+                name = tool,
+                summary = summarizeToolResult(tool, result?.data),
+                success = result?.success,
+                change = change,
+            ),
+        )
+        if (change != null) {
+            // The proxy wrote through its bind mount; tell the IDE so a new file
+            // shows up without waiting for its own refresh.
+            workspace.changed(change.path)
+        }
+        mismatch.recordToolResult(tool, result?.success == true)
     }
 
     /**

@@ -1,16 +1,15 @@
 // The mismatch heuristic: which calls are watched, what each kind of change
 // proves, and when the detector stays quiet.
 //
-// The verdicts are a table because every row is the same question asked with
-// other stats; the detector cases are separate, because each one drives a
-// sequence of calls against a scripted filesystem and the sequence is the test.
+// Both halves are tables: every row is the same question asked with other
+// inputs — two stats for a verdict; for the detector, a short scripted session
+// of calls, results and stats, and whether it warns.
 package com.inferstep.atlas.session
 
 import com.inferstep.atlas.protocol.AtlasJson
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
@@ -61,167 +60,162 @@ class WorkspaceMismatchTest {
         assertEquals(want, fileOpVerdict(kind, pre, post, preDest, postDest), name)
     }
 
-    @Test
-    fun `does not fire when the write shows up locally`() =
-        runBlocking {
-            val harness = Harness()
+    /** One step of a session: a call, its result, a stat the test changes
+     * between the two, or the end of a turn. A row is a whole session, not a
+     * single call — the steps come in the order a stream sends them. */
+    sealed interface Step {
+        data class Call(
+            val tool: String,
+            val args: String,
+        ) : Step
 
-            harness.detector.recordToolCall("write_file", args("""{"path":"a.py","content":"x"}"""))
-            harness.stats["a.py"] = at(1) // the file appeared
-            harness.detector.recordToolResult("write_file", success = true)
+        data class Result(
+            val tool: String,
+            val success: Boolean,
+        ) : Step
 
-            assertEquals(0, harness.fired)
-        }
+        data class Stat(
+            val path: String,
+            val value: PathStat,
+        ) : Step
 
-    @Test
-    fun `fires once when a successful write never lands locally`() =
-        runBlocking {
-            val harness = Harness()
-
-            harness.detector.recordToolCall("write_file", args("""{"path":"a.py","content":"x"}"""))
-            harness.detector.recordToolResult("write_file", success = true)
-            assertEquals(1, harness.fired)
-
-            // A second contradiction stays silent — the warning is one-shot.
-            harness.detector.recordToolCall("write_file", args("""{"path":"b.py","content":"y"}"""))
-            harness.detector.recordToolResult("write_file", success = true)
-
-            assertEquals(1, harness.fired)
-        }
-
-    @Test
-    fun `ignores a failed result, which applied nothing to verify`() =
-        runBlocking {
-            val harness = Harness()
-
-            harness.detector.recordToolCall("write_file", args("""{"path":"a.py","content":"x"}"""))
-            harness.detector.recordToolResult("write_file", success = false)
-
-            assertEquals(0, harness.fired)
-        }
-
-    @Test
-    fun `matches results to calls FIFO per tool name`() =
-        runBlocking {
-            val harness = Harness()
-            harness.stats["a.py"] = at(1)
-            harness.stats["b.py"] = at(1)
-
-            harness.detector.recordToolCall("edit_file", args("""{"path":"a.py"}"""))
-            harness.detector.recordToolCall("edit_file", args("""{"path":"b.py"}"""))
-            harness.stats["a.py"] = at(2) // the first edit landed
-            harness.stats.remove("b.py") // the second target vanished — a real contradiction
-
-            harness.detector.recordToolResult("edit_file", success = true) // a.py -> match
-            assertEquals(0, harness.fired)
-
-            harness.detector.recordToolResult("edit_file", success = true) // b.py gone -> mismatch
-            assertEquals(1, harness.fired)
-        }
-
-    @Test
-    fun `stays silent when an edited file keeps an equal mtime`() =
-        runBlocking {
-            val harness = Harness()
-            harness.stats["a.py"] = at(1)
-
-            harness.detector.recordToolCall("edit_file", args("""{"path":"a.py"}"""))
-            // The stat is unchanged: same mtime, which a coarse filesystem can
-            // stamp on a real change. Never a warning.
-            harness.detector.recordToolResult("edit_file", success = true)
-
-            assertEquals(0, harness.fired)
-        }
-
-    @Test
-    fun `stays silent on an inconclusive verdict`() =
-        runBlocking {
-            val harness = Harness()
-
-            // An edit of a file this workspace never had.
-            harness.detector.recordToolCall("edit_file", args("""{"path":"ghost.py"}"""))
-            harness.detector.recordToolResult("edit_file", success = true)
-
-            assertEquals(0, harness.fired)
-        }
-
-    @Test
-    fun `verifies both ends of a move`() =
-        runBlocking {
-            val harness = Harness()
-            harness.stats["a.py"] = at(1)
-
-            harness.detector.recordToolCall(
-                "move_file",
-                args("""{"source":"a.py","destination":"lib/a.py"}"""),
-            )
-            harness.stats.remove("a.py")
-            harness.stats["lib/a.py"] = at(2)
-            harness.detector.recordToolResult("move_file", success = true)
-            assertEquals(0, harness.fired)
-
-            harness.detector.recordToolCall(
-                "move_file",
-                args("""{"source":"lib/a.py","destination":"lib/b.py"}"""),
-            )
-            // Nothing moved locally.
-            harness.detector.recordToolResult("move_file", success = true)
-            assertEquals(1, harness.fired)
-        }
-
-    @Test
-    fun `a denied call consumes its pending op, so the next allowed one pairs correctly`() =
-        runBlocking {
-            val harness = Harness()
-            harness.stats["a.py"] = at(1)
-            harness.stats["b.py"] = at(1)
-
-            // A denied edit captured pre-op state, but the proxy emits
-            // permission_denied and NO tool_result.
-            harness.detector.recordToolCall("edit_file", args("""{"path":"a.py"}"""))
-            harness.detector.recordDenied("edit_file")
-
-            // The allowed edit of b.py must pair with ITS pre-op state, not a.py's.
-            harness.detector.recordToolCall("edit_file", args("""{"path":"b.py"}"""))
-            harness.stats["b.py"] = at(2)
-            harness.detector.recordToolResult("edit_file", success = true)
-
-            assertEquals(0, harness.fired)
-        }
-
-    @Test
-    fun `a denial with nothing pending is a no-op`() {
-        val harness = Harness()
-
-        harness.detector.recordDenied("edit_file")
-
-        assertEquals(0, harness.fired)
+        object Reset : Step
     }
 
-    @Test
-    fun `reset drops pending pre-op state`() =
-        runBlocking {
-            val harness = Harness()
-
-            harness.detector.recordToolCall("write_file", args("""{"path":"a.py","content":"x"}"""))
-            harness.detector.reset()
-            harness.detector.recordToolResult("write_file", success = true) // nothing to check
-
-            assertEquals(0, harness.fired)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("sessions")
+    fun `warns once, and only when a successful file op contradicts local disk`(
+        name: String,
+        steps: List<Step>,
+        want: Int,
+    ) = runBlocking {
+        val harness = Harness()
+        for (step in steps) {
+            when (step) {
+                is Step.Call -> harness.detector.recordToolCall(step.tool, args(step.args))
+                is Step.Result -> harness.detector.recordToolResult(step.tool, step.success)
+                is Step.Stat -> harness.stats[step.path] = step.value
+                Step.Reset -> harness.detector.reset()
+            }
         }
-
-    @Test
-    fun `a tool that is not a file op is never watched`() =
-        runBlocking {
-            val harness = Harness()
-
-            harness.detector.recordToolCall("read_file", args("""{"path":"a.py"}"""))
-            harness.detector.recordToolResult("read_file", success = true)
-
-            assertEquals(0, harness.fired)
-        }
+        assertEquals(want, harness.fired, name)
+    }
 
     companion object {
+        @JvmStatic
+        fun sessions(): List<Arguments> =
+            listOf(
+                Arguments.of(
+                    "a write that appears locally is no contradiction",
+                    listOf(
+                        Step.Call("write_file", """{"path":"a.py","content":"x"}"""),
+                        Step.Stat("a.py", at(1)),
+                        Step.Result("write_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "a successful write that never lands warns once, and a second one stays silent",
+                    listOf(
+                        Step.Call("write_file", """{"path":"a.py","content":"x"}"""),
+                        Step.Result("write_file", true),
+                        Step.Call("write_file", """{"path":"b.py","content":"y"}"""),
+                        Step.Result("write_file", true),
+                    ),
+                    1,
+                ),
+                Arguments.of(
+                    "a failed result applied nothing to verify",
+                    listOf(
+                        Step.Call("write_file", """{"path":"a.py","content":"x"}"""),
+                        Step.Result("write_file", false),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "results pair with the calls in order",
+                    listOf(
+                        Step.Stat("a.py", at(1)),
+                        Step.Stat("b.py", at(1)),
+                        Step.Call("edit_file", """{"path":"a.py"}"""),
+                        Step.Call("edit_file", """{"path":"b.py"}"""),
+                        Step.Stat("a.py", at(2)),
+                        Step.Stat("b.py", ABSENT),
+                        Step.Result("edit_file", true),
+                        Step.Result("edit_file", true),
+                    ),
+                    1,
+                ),
+                Arguments.of(
+                    "an equal mtime is inconclusive, never a wrong mount",
+                    listOf(
+                        Step.Stat("a.py", at(1)),
+                        Step.Call("edit_file", """{"path":"a.py"}"""),
+                        Step.Result("edit_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "an edit of a file this workspace never had is inconclusive",
+                    listOf(
+                        Step.Call("edit_file", """{"path":"ghost.py"}"""),
+                        Step.Result("edit_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "a move that lands is no contradiction",
+                    listOf(
+                        Step.Stat("a.py", at(1)),
+                        Step.Call("move_file", """{"source":"a.py","destination":"lib/a.py"}"""),
+                        Step.Stat("a.py", ABSENT),
+                        Step.Stat("lib/a.py", at(2)),
+                        Step.Result("move_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "a move that stays put warns",
+                    listOf(
+                        Step.Stat("a.py", at(1)),
+                        Step.Call("move_file", """{"source":"a.py","destination":"lib/a.py"}"""),
+                        Step.Result("move_file", true),
+                    ),
+                    1,
+                ),
+                Arguments.of(
+                    "a denied call's failed result consumes its entry, so the next edit pairs with its own",
+                    listOf(
+                        Step.Stat("a.py", at(1)),
+                        Step.Stat("b.py", at(1)),
+                        Step.Call("edit_file", """{"path":"a.py"}"""),
+                        // The proxy follows a denial with this failed result.
+                        Step.Result("edit_file", false),
+                        Step.Call("edit_file", """{"path":"b.py"}"""),
+                        Step.Stat("b.py", at(2)),
+                        Step.Result("edit_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "a tool that is not a file op is never watched",
+                    listOf(
+                        Step.Call("read_file", """{"path":"a.py"}"""),
+                        Step.Result("read_file", true),
+                    ),
+                    0,
+                ),
+                Arguments.of(
+                    "reset drops the pre-op state of a turn that ended without results",
+                    listOf(
+                        Step.Call("write_file", """{"path":"a.py","content":"x"}"""),
+                        Step.Reset,
+                        Step.Result("write_file", true),
+                    ),
+                    0,
+                ),
+            )
+
         @JvmStatic
         fun paths(): List<Arguments> =
             listOf(

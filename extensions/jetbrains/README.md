@@ -149,9 +149,9 @@ suites cover the predictions, the snapshots and both workspace checks;
 | `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
 | `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
 | `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, and both workspace checks |
-| `EditPreviewTest` | the tools that name a path, then one table per tool: write_file, edit_file (exact, approximate, replace_all, literal `$`), the python and html structural_edit splices, insert_after and replace_lines, and every case that is not previewable |
-| `WorkspaceMismatchTest` | the paths a file op touches, the verdict for each kind of write/edit/delete/move, and the detector's FIFO matching, one-shot warning and silence on a failed or inconclusive op |
-| `WorkspaceTest` | reads and stats inside the root, absolute paths and `..` escapes refused, and the alignment verdict for each pair of host paths |
+| `EditPreviewTest` | the tools that name a path, then one table per tool: write_file, edit_file (exact, approximate, replace_all as a boolean, literal `$`), the python and html structural_edit splices, insert_after and replace_lines, and every case that is not previewable |
+| `WorkspaceMismatchTest` | the paths a file op touches, the verdict for each kind of write/edit/delete/move, and the detector as one table of short sessions: FIFO pairing, the one-shot warning, silence on a failed or inconclusive op, and the failed result that answers a denial |
+| `WorkspaceTest` | reads and stats inside the root, an absolute path or a `..` escape refused, a missing or empty root reading nothing, and the alignment verdict for each pair of host paths |
 | `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
 | `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 

@@ -204,13 +204,6 @@ class MismatchDetector(
         pending.getOrPut(tool) { mutableListOf() } += op
     }
 
-    /** A permission_denied consumed a tool_call that will never get a
-     * tool_result (the proxy skips execution entirely) — drop its pre-op state
-     * so the next allowed call of the same tool pairs correctly. */
-    fun recordDenied(tool: String) {
-        pending[tool]?.removeFirstOrNull()
-    }
-
     /** Check a tool_result against its captured pre-op state. Failed results
      * only consume the queue entry — the proxy made no change to verify. */
     suspend fun recordToolResult(

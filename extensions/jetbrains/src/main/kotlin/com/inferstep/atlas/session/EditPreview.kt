@@ -25,6 +25,7 @@ package com.inferstep.atlas.session
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 
 /** The tools whose permission prompts and tool chips get diffs. move_file /
@@ -472,10 +473,16 @@ private fun intField(
     return value.intOrNull
 }
 
+/** Boolean field, rejecting a JSON string: `{"replace_all":"true"}` is not a
+ * boolean the model set, and the reference client reads only the boolean.
+ * Same rule as [intField]. */
 private fun boolField(
     args: JsonElement?,
     key: String,
 ): Boolean {
     val value = (args as? JsonObject)?.get(key) as? JsonPrimitive ?: return false
-    return value.content == "true"
+    if (value.isString) {
+        return false
+    }
+    return value.booleanOrNull == true
 }

@@ -443,7 +443,7 @@ class ChatSessionTest {
         }
 
     @Test
-    fun `a denied call does not leave its snapshot for the next file op`() =
+    fun `a denied call's failed result does not leave its snapshot for the next file op`() =
         runBlocking {
             val workspace = FakeWorkspace()
             workspace.files["a.py"] = "old-a"
@@ -457,6 +457,12 @@ class ChatSessionTest {
                         ),
                         event(
                             """{"type":"permission_denied","data":{"tool":"write_file"}}""",
+                        ),
+                        // The proxy answers a denied call with this failed
+                        // result, in the same block that streams the denial.
+                        event(
+                            """{"type":"tool_result","data":{"tool":"write_file",""" +
+                                """"success":false,"error":"denied","data":null}}""",
                         ),
                         event(
                             """{"type":"tool_call","data":{"name":"write_file",""" +
@@ -472,8 +478,9 @@ class ChatSessionTest {
 
             fixture.session.send("go")
 
-            // The denied a.py call consumed its snapshot, so the result pairs
-            // with b.py — not with a file the proxy never wrote.
+            // The denied a.py call's failed result consumed its snapshot, so
+            // the successful result pairs with b.py — not with a.py, which the
+            // proxy never wrote.
             val result = fixture.entries.filterIsInstance<TranscriptEntry.Tool>().last()
             assertEquals(AppliedChange("b.py", "old-b", "new-b"), result.change)
         }

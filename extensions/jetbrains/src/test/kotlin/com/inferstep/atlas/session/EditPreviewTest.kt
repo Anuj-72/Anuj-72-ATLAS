@@ -221,6 +221,20 @@ class EditPreviewTest {
                     pred("a.txt", EditPredictionKind.FILE, "aa x aa", "bb x bb", false),
                 ),
                 Arguments.of(
+                    "replace_all as the string \"true\" is no boolean: one replacement, approximate",
+                    """{"path":"a.txt","old_str":"aa","new_str":"bb","replace_all":"true"}""",
+                    "aa x aa",
+                    pred(
+                        "a.txt",
+                        EditPredictionKind.FILE,
+                        "aa x aa",
+                        "bb x aa",
+                        true,
+                        "old_str matches 2 locations — the proxy requires a unique match and " +
+                            "will reject this edit (showing the first occurrence)",
+                    ),
+                ),
+                Arguments.of(
                     "new_str is spliced literally, with no \$-pattern semantics",
                     """{"path":"a.txt","old_str":"X","new_str":"${'$'}& ${'$'}' ${'$'}1"}""",
                     "a X b",
