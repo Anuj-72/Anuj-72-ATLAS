@@ -10,6 +10,7 @@ package com.inferstep.atlas.session
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
@@ -21,74 +22,56 @@ class WorkspaceTest {
     @TempDir
     lateinit var dir: File
 
-    @Test
-    fun `reads a file inside the root`() {
-        File(dir, "a.py").writeText("x = 1\n")
-        val workspace = LocalWorkspace(dir.absolutePath)
+    /** The folder the window has open: a subfolder of the test's own temp
+     * folder, so a file "outside" it is still one this test made and deletes
+     * with the folder, never one beside the runner's temporary root. */
+    private lateinit var root: File
 
-        assertEquals("x = 1\n", workspace.readText("a.py"))
+    @BeforeEach
+    fun makeRoot() {
+        root = File(dir, "root").apply { mkdirs() }
     }
 
-    @Test
-    fun `reads a file in a subdirectory`() {
-        val nested = File(dir, "src").apply { mkdirs() }
-        File(nested, "a.py").writeText("nested")
-        val workspace = LocalWorkspace(dir.absolutePath)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("reads")
+    fun `reads a file under the root, and nothing for an absent one`(
+        name: String,
+        path: String,
+        want: String?,
+    ) {
+        File(root, "a.py").writeText("x = 1\n")
+        File(root, "src").apply { mkdirs() }
+        File(root, "src/a.py").writeText("nested")
+        val workspace = LocalWorkspace(root.absolutePath)
 
-        assertEquals("nested", workspace.readText("src/a.py"))
+        assertEquals(want, workspace.readText(path), name)
     }
 
-    @Test
-    fun `an absent file reads as nothing`() {
-        val workspace = LocalWorkspace(dir.absolutePath)
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusals")
+    fun `refuses a path that leaves the root, and reads nothing with no root`(
+        name: String,
+        rootChoice: Root,
+        path: String,
+    ) {
+        File(dir, "outside.py").writeText("secret")
+        val bound =
+            when (rootChoice) {
+                Root.WINDOW -> root.absolutePath
+                Root.EMPTY -> ""
+                Root.NONE -> null
+            }
+        val workspace = LocalWorkspace(bound)
 
-        assertNull(workspace.readText("missing.py"))
-        assertNull(workspace.readText("src/missing.py"))
-    }
-
-    @Test
-    fun `an absolute path is refused before any filesystem call`() {
-        val outside = File(dir.parentFile, "outside-${dir.name}.py")
-        outside.writeText("secret")
-        try {
-            val workspace = LocalWorkspace(dir.absolutePath)
-
-            assertNull(workspace.readText(outside.absolutePath))
-            assertEquals(PathStat(exists = false), workspace.stat(outside.absolutePath))
-        } finally {
-            outside.delete()
-        }
-    }
-
-    @Test
-    fun `a relative path that climbs out of the root is refused`() {
-        val outside = File(dir.parentFile, "outside-${dir.name}.py")
-        outside.writeText("secret")
-        try {
-            val workspace = LocalWorkspace(dir.absolutePath)
-
-            assertNull(workspace.readText("../${outside.name}"))
-            assertEquals(PathStat(exists = false), workspace.stat("../${outside.name}"))
-        } finally {
-            outside.delete()
-        }
-    }
-
-    @Test
-    fun `a root that is null or empty reads nothing`() {
-        val missingRoot = LocalWorkspace(null)
-        val emptyRoot = LocalWorkspace("")
-
-        assertNull(missingRoot.readText("a.py"))
-        assertNull(emptyRoot.readText("a.py"))
-        assertEquals(PathStat(exists = false), missingRoot.stat("a.py"))
+        assertNull(workspace.readText(path), name)
+        assertEquals(PathStat(exists = false), workspace.stat(path), name)
     }
 
     @Test
     fun `stat reports existence and an mtime`() {
-        val file = File(dir, "a.py")
+        val file = File(root, "a.py")
         file.writeText("x")
-        val workspace = LocalWorkspace(dir.absolutePath)
+        val workspace = LocalWorkspace(root.absolutePath)
 
         val stat = workspace.stat("a.py")
 
@@ -100,7 +83,7 @@ class WorkspaceTest {
     @Test
     fun `the refresh callback names the path the proxy changed`() {
         val changed = mutableListOf<String>()
-        val workspace = LocalWorkspace(dir.absolutePath, onChanged = { changed += it })
+        val workspace = LocalWorkspace(root.absolutePath, onChanged = { changed += it })
 
         workspace.changed("src/new.py")
 
@@ -129,7 +112,45 @@ class WorkspaceTest {
         assertEquals(want, workspaceAlignment(projectDir, localRoot), name)
     }
 
+    /** Which folder the workspace is built over: the window's own, an empty
+     * string (a proxy that cannot say), or none at all (no folder open). */
+    enum class Root {
+        WINDOW,
+        EMPTY,
+        NONE,
+    }
+
     companion object {
+        @JvmStatic
+        fun reads(): List<Arguments> =
+            listOf(
+                Arguments.of("a file at the root", "a.py", "x = 1\n"),
+                Arguments.of("a file in a subdirectory", "src/a.py", "nested"),
+                Arguments.of("an absent file reads as nothing", "missing.py", null),
+                Arguments.of(
+                    "an absent file in a subdirectory reads as nothing",
+                    "src/missing.py",
+                    null,
+                ),
+            )
+
+        @JvmStatic
+        fun refusals(): List<Arguments> =
+            listOf(
+                Arguments.of(
+                    "an absolute path is refused before any filesystem call",
+                    Root.WINDOW,
+                    "/etc/passwd",
+                ),
+                Arguments.of(
+                    "a path that climbs out of the root is refused",
+                    Root.WINDOW,
+                    "../outside.py",
+                ),
+                Arguments.of("an empty root reads nothing", Root.EMPTY, "a.py"),
+                Arguments.of("a root that is null reads nothing", Root.NONE, "a.py"),
+            )
+
         @JvmStatic
         fun coverages(): List<Arguments> =
             listOf(
