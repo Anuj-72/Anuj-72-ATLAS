@@ -2,7 +2,9 @@
 //
 // Everything the panel shows is decided in session/ChatSession, which is free
 // of Compose and of com.intellij, so the conversation semantics are tested
-// under plain JUnit and this file only has to lay them out.
+// under plain JUnit and this file only has to lay them out. The session itself
+// belongs to AtlasProjectService, so closing the tool window does not forget a
+// conversation and an action can cancel or reset the same turn the panel shows.
 //
 // Drawn with Compose foundation plus Jewel's Text and Markdown renderer. There
 // is no Material dependency: the IDE provides Jewel, and the tool window is
@@ -20,28 +22,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
-import com.inferstep.atlas.client.AtlasClient
-import com.inferstep.atlas.client.AtlasConnection
+import com.inferstep.atlas.ide.AtlasProjectService
 import com.inferstep.atlas.protocol.PermissionMode
 import com.inferstep.atlas.protocol.TaskMode
 import com.inferstep.atlas.session.AppliedChange
-import com.inferstep.atlas.session.AtlasTurnClient
+import com.inferstep.atlas.session.ChatPlan
 import com.inferstep.atlas.session.ChatSession
 import com.inferstep.atlas.session.ChatUiState
 import com.inferstep.atlas.session.EditPrediction
-import com.inferstep.atlas.session.LocalWorkspace
 import com.inferstep.atlas.session.PendingPermission
 import com.inferstep.atlas.session.PermissionChoice
 import com.inferstep.atlas.session.TranscriptEntry
@@ -49,47 +47,28 @@ import com.inferstep.atlas.session.commandOf
 import com.inferstep.atlas.session.diffTitle
 import com.inferstep.atlas.session.isOneTimeOnly
 import com.intellij.openapi.project.Project
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
-import org.jetbrains.jewel.intui.markdown.bridge.ProvideMarkdownStyling
 import org.jetbrains.jewel.markdown.Markdown
 import org.jetbrains.jewel.ui.component.Text
 import javax.swing.UIManager
 
 private val ERROR_COLOR = Color(0xFFCC3333)
+private val WARNING_COLOR = Color(0xFFB26A00)
 
 /**
  * The chat panel for one project.
  *
- * The connection comes from the environment (see [AtlasConnection]): the
- * settings UI and secure token storage are Stage 5, so this stage reads what
- * every other ATLAS client reads, and shows the URL it is talking to.
+ * The connection, the session and the token all belong to
+ * [AtlasProjectService]; this composable reads them and draws them.
  */
 @Composable
-fun atlasChatPanel(
-    project: Project,
-    workingDir: String,
-) {
-    val scope = rememberCoroutineScope()
-    val connection = remember { AtlasConnection.fromEnvironment() }
-    val client = remember { AtlasClient(connection.url, connection.token) }
-    val adapter = remember { AtlasTurnClient(client) }
-    // The session reads local files to build diffs; the refresh callback is
-    // what tells the IDE's VFS about a file the proxy just wrote.
-    val workspace =
-        remember(workingDir) {
-            LocalWorkspace(workingDir) { relative -> refreshWorkspacePath(workingDir, relative) }
-        }
-    val session = remember { ChatSession(adapter, adapter, scope, workingDir, workspace, adapter) }
+fun atlasChatPanel(service: AtlasProjectService) {
+    val session = service.session
     val state by session.state.collectAsState()
+    val connection by service.connection.collectAsState()
 
-    // The Ktor client owns a connection pool; close it with the panel.
-    DisposableEffect(client) {
-        onDispose { client.close() }
-    }
-
-    // Ask which folder the proxy edits, once, so a misaligned install is
-    // visible before the first edit lands somewhere the user cannot see.
+    // Ask which folder the proxy edits when the panel first appears, so a
+    // misaligned install is visible before the first edit lands somewhere the
+    // user cannot see.
     LaunchedEffect(session) { session.checkWorkspace() }
 
     Column(
@@ -99,11 +78,28 @@ fun atlasChatPanel(
                 .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("ATLAS — ${connection.url}")
-        modeControls(state, session)
-        transcript(state, project, Modifier.fillMaxWidth().weight(1f))
-        pendingPrompts(state, session, project)
-        composer(state, session, scope)
+        header(connection.url, service)
+        modeControls(state, session, service)
+        progressLine(state)
+        planView(state.plan)
+        transcript(state, service.project, Modifier.fillMaxWidth().weight(1f))
+        pendingPrompts(state, session, service.project)
+        composer(state, service)
+    }
+}
+
+@Composable
+private fun header(
+    url: String,
+    service: AtlasProjectService,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("ATLAS — $url", modifier = Modifier.weight(1f))
+        actionText("Settings") { service.openSettings() }
+        actionText("New chat") { service.newConversation() }
     }
 }
 
@@ -112,6 +108,7 @@ fun atlasChatPanel(
 private fun modeControls(
     state: ChatUiState,
     session: ChatSession,
+    service: AtlasProjectService,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -126,29 +123,35 @@ private fun modeControls(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Permissions:")
             PermissionMode.entries.forEach { mode ->
-                choiceChip(modeLabel(mode), state.permissionMode == mode) {
-                    session.setPermissionMode(mode)
+                choiceChip(mode.wireName(), state.permissionMode == mode) {
+                    service.setPermissionMode(mode)
                 }
             }
         }
     }
 }
 
-/** The wire name of a mode, which is also the clearest label for it. */
-private fun modeLabel(mode: PermissionMode): String =
-    when (mode) {
-        PermissionMode.DEFAULT -> {
-            "default"
-        }
+/** The transient liveness line: what the model or V3 pipeline is doing now. */
+@Composable
+private fun progressLine(state: ChatUiState) {
+    val line = state.progress ?: if (state.running) "Working…" else null
+    line?.let { Text(it) }
+}
 
-        PermissionMode.ACCEPT_EDITS -> {
-            "accept-edits"
-        }
-
-        PermissionMode.YOLO -> {
-            "yolo"
+/** The plan the proxy generated, with the steps it says are satisfied. */
+@Composable
+private fun planView(plan: ChatPlan?) {
+    if (plan == null || plan.steps.isEmpty()) {
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(if (plan.revision == 0) "Plan" else "Plan · revision ${plan.revision}")
+        plan.steps.forEach { step ->
+            val mark = if (step.id in plan.satisfied) "[x]" else "[ ]"
+            Text("$mark ${step.label}")
         }
     }
+}
 
 @Composable
 private fun choiceChip(
@@ -209,13 +212,14 @@ private fun transcriptRow(
     }
 }
 
-/** An error is the client's own words about a failure, so it is marked. */
+/** An error is the client's own words about a failure, so it is marked; a
+ * warning is the workspace mismatch, which is not a failure of the turn. */
 @Composable
 private fun noticeLine(entry: TranscriptEntry.Notice) {
-    if (entry.isError) {
-        Text("ATLAS error: ${entry.text}", color = ERROR_COLOR)
-    } else {
-        Text(entry.text)
+    when {
+        entry.isError -> Text("ATLAS error: ${entry.text}", color = ERROR_COLOR)
+        entry.isWarning -> Text("ATLAS warning: ${entry.text}", color = WARNING_COLOR)
+        else -> Text(entry.text)
     }
 }
 
@@ -322,8 +326,7 @@ private fun actionText(
 @Composable
 private fun composer(
     state: ChatUiState,
-    session: ChatSession,
-    scope: CoroutineScope,
+    service: AtlasProjectService,
 ) {
     var draft by remember { mutableStateOf("") }
 
@@ -337,23 +340,14 @@ private fun composer(
             textStyle = TextStyle(color = ideColor("TextField.foreground")),
         )
         if (state.running) {
-            actionText("Cancel") { session.cancel() }
+            actionText("Cancel") { service.cancel() }
         } else {
-            sendAction(draft = draft, scope = scope, session = session) { draft = "" }
+            actionText("Send") {
+                val message = draft
+                draft = ""
+                service.send(message)
+            }
         }
-    }
-}
-
-@Composable
-private fun sendAction(
-    draft: String,
-    scope: CoroutineScope,
-    session: ChatSession,
-    onSent: () -> Unit,
-) {
-    actionText("Send") {
-        onSent()
-        scope.launch { session.send(draft) }
     }
 }
 

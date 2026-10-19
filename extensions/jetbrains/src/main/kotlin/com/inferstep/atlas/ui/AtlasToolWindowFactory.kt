@@ -1,6 +1,7 @@
 package com.inferstep.atlas.ui
 
 import androidx.compose.ui.awt.ComposePanel
+import com.inferstep.atlas.ide.AtlasProjectService
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
@@ -11,10 +12,10 @@ import org.jetbrains.jewel.bridge.theme.SwingBridgeTheme
 /**
  * Mounts the ATLAS chat panel.
  *
- * The panel is the only content: the tool window itself holds no state, so it
- * can be closed and reopened without losing anything the plugin cares about
- * (the transcript lives in the panel's [com.inferstep.atlas.session.ChatSession]
- * for as long as the panel does).
+ * The panel is only the renderer; the conversation, its connection and the
+ * token live in [AtlasProjectService], so the tool window can be closed and
+ * reopened without losing a turn and the actions and status bar operate the
+ * same session.
  *
  * `project.basePath` is sent as the turn's `working_dir`, the same value the
  * TUI sends as its cwd: on Docker installs the proxy uses it for
@@ -28,10 +29,11 @@ class AtlasToolWindowFactory :
         project: Project,
         toolWindow: ToolWindow,
     ) {
+        val service = AtlasProjectService.getInstance(project)
         val panel = ComposePanel()
         panel.setContent {
             SwingBridgeTheme {
-                atlasChatPanel(project, project.basePath.orEmpty())
+                atlasChatPanel(service)
             }
         }
         val content = ContentFactory.getInstance().createContent(panel, "", false)

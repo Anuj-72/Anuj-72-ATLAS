@@ -65,6 +65,16 @@ class TypesTest {
     }
 
     @Test
+    fun `a stored permission mode round-trips and an unknown one is default`() {
+        PermissionMode.entries.forEach { mode ->
+            assertEquals(mode, PermissionMode.fromWire(mode.wireName()), mode.name)
+        }
+        assertEquals(PermissionMode.DEFAULT, PermissionMode.fromWire(null))
+        assertEquals(PermissionMode.DEFAULT, PermissionMode.fromWire("  "))
+        assertEquals(PermissionMode.DEFAULT, PermissionMode.fromWire("something-else"))
+    }
+
+    @Test
     fun `a history and session allow-list survive a round-trip`() {
         val request =
             AgentRequest(

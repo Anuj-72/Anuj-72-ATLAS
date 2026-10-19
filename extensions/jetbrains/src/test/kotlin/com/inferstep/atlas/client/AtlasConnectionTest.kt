@@ -1,9 +1,14 @@
-// AtlasConnection: the documented default, the token file, and the cases an
-// install without a service token produces.
+// AtlasConnection: the documented default, the token file, URL normalization
+// and the redacted toString.
 package com.inferstep.atlas.client
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 class AtlasConnectionTest {
     @Test
@@ -65,7 +70,7 @@ class AtlasConnectionTest {
     }
 
     @Test
-    fun `reads the fallback token file when no path is configured`() {
+    fun `no configured token path reads no file`() {
         val asked = mutableListOf<String>()
         val connection =
             AtlasConnection.fromEnvironment(
@@ -77,6 +82,53 @@ class AtlasConnectionTest {
             )
 
         assertEquals("", connection.token)
-        assertEquals(listOf(AtlasConnection.FALLBACK_TOKEN_FILE), asked)
+        assertEquals(emptyList<String>(), asked)
+    }
+
+    @Test
+    fun `the token does not appear in toString`() {
+        val connection = AtlasConnection("http://127.0.0.1:8090", "s3cret")
+
+        assertFalse(connection.toString().contains("s3cret"), connection.toString())
+        assertTrue(connection.toString().contains("<redacted>"), connection.toString())
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("urls")
+    fun `normalizes the configured url`(
+        name: String,
+        raw: String?,
+        want: String,
+    ) {
+        assertEquals(want, normalizeProxyUrl(raw), name)
+    }
+
+    companion object {
+        @JvmStatic
+        fun urls(): List<Arguments> =
+            listOf(
+                Arguments.of("blank uses the documented default", "", AtlasConnection.DEFAULT_URL),
+                Arguments.of(
+                    "whitespace uses the documented default",
+                    "  ",
+                    AtlasConnection.DEFAULT_URL,
+                ),
+                Arguments.of("null uses the documented default", null, AtlasConnection.DEFAULT_URL),
+                Arguments.of(
+                    "a trailing slash is removed",
+                    "http://127.0.0.1:8090/",
+                    "http://127.0.0.1:8090",
+                ),
+                Arguments.of(
+                    "surrounding whitespace is removed",
+                    "  http://127.0.0.1:8090  ",
+                    "http://127.0.0.1:8090",
+                ),
+                Arguments.of(
+                    "a scheme-only value is left alone",
+                    "http://",
+                    "http://",
+                ),
+            )
     }
 }

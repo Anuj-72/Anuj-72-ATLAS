@@ -3,25 +3,28 @@ package com.inferstep.atlas.client
 import java.nio.file.Files
 import java.nio.file.Path
 
-// Where the proxy is and how to authenticate to it, read from the same
-// environment variables the TUI and `atlas doctor` use.
+// Where the proxy is and how to authenticate to it.
 //
-// Stage 3 needs a connection to be useful at all; the settings UI and secure
-// token storage are Stage 5, so this is the interim source of both, and it is
-// the only place in the plugin that reads the environment.
+// Stage 5 moved both into the plugin's settings (settings/AtlasSettings), with
+// the token in the IDE credential store. This type remains the value the rest
+// of the client passes around, and [fromEnvironment] is the fallback for an
+// install that configured the variables the TUI and `atlas doctor` use.
 
 /**
  * proxy URL plus service token.
  *
- * The token is never logged and never written anywhere: it is read from the
- * per-installation file `atlas init` generates (0600), which is the same
- * transport every other ATLAS client uses.
+ * [toString] deliberately redacts the token: nothing logs a connection today,
+ * but a data class's generated toString would print the secret in a stack
+ * trace, a debugger view or one interpolated log line.
  */
 data class AtlasConnection(
     val url: String,
     /** Empty when no token is configured, which is an install predating it. */
     val token: String = "",
 ) {
+    override fun toString(): String =
+        "AtlasConnection(url=$url, token=${if (token.isEmpty()) "<none>" else "<redacted>"})"
+
     companion object {
         /** The documented default (docs/CONFIGURATION.md). */
         const val DEFAULT_URL = "http://127.0.0.1:8090"
@@ -29,18 +32,18 @@ data class AtlasConnection(
         /** atlas-proxy endpoint, honoured by the TUI as its `--proxy` default. */
         const val URL_ENV = "ATLAS_PROXY_URL"
 
-        /** Path to the generated service token; its value never goes in `.env`. */
+        /** Path to the generated service token; its value never goes in `.env`.
+         * The plugin no longer guesses a relative default: a path relative to
+         * the IDE's working directory is not the install the token sits beside,
+         * and guessing it turns "no token configured" into the wrong answer. */
         const val TOKEN_FILE_ENV = "ATLAS_SERVICE_TOKEN_FILE"
-
-        /** The token file `atlas init` writes beside the install. */
-        const val FALLBACK_TOKEN_FILE = "secrets/service-token"
 
         /**
          * Read the connection from the environment.
          *
-         * A missing token file is not an error: an install without
-         * `ATLAS_SERVICE_TOKEN_FILE` has internal auth disabled, and the proxy
-         * answers. A blank `ATLAS_PROXY_URL` falls back to the default.
+         * A missing path or an unreadable file is not an error: an install
+         * without a configured token file has internal auth disabled, and the
+         * proxy answers. A blank `ATLAS_PROXY_URL` falls back to the default.
          */
         fun fromEnvironment(
             env: (String) -> String? = System::getenv,
@@ -55,10 +58,11 @@ data class AtlasConnection(
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
             val token =
-                readFile(configuredPath ?: FALLBACK_TOKEN_FILE)
+                configuredPath
+                    ?.let(readFile)
                     ?.trim()
                     .orEmpty()
-            return AtlasConnection(url = configuredUrl ?: DEFAULT_URL, token = token)
+            return AtlasConnection(url = normalizeProxyUrl(configuredUrl), token = token)
         }
 
         private fun readTokenFile(path: String): String? =
@@ -75,4 +79,20 @@ data class AtlasConnection(
                 null
             }
     }
+}
+
+/**
+ * The URL a client should use for a configured value.
+ *
+ * A blank value (the default in settings) means "not configured", so the
+ * documented default applies. Trailing slashes are removed once here rather
+ * than in every caller.
+ */
+fun normalizeProxyUrl(raw: String?): String {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+        return AtlasConnection.DEFAULT_URL
+    }
+    val stripped = trimmed.trimEnd('/')
+    return if (stripped.isEmpty() || stripped.endsWith(":")) trimmed else stripped
 }

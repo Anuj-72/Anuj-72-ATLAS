@@ -69,6 +69,32 @@ class AtlasToolWindowFactoryTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * Stage 5's four user-facing surfaces are extensions, not code the tool
+     * window mounts: settings, the status bar, the notification group and the
+     * actions. A missing registration fails here rather than in a smoke run.
+     */
+    fun testDescriptorRegistersTheStageFiveExtensions() {
+        val descriptor = readDescriptor()
+
+        assertTrue(
+            "settings must be an applicationConfigurable",
+            descriptor.contains("com.inferstep.atlas.settings.AtlasConfigurable"),
+        )
+        assertTrue(
+            "the status bar widget factory must be registered",
+            descriptor.contains("com.inferstep.atlas.ui.AtlasStatusBarWidgetFactory"),
+        )
+        assertTrue(
+            "notifications need the ATLAS group",
+            descriptor.contains("<notificationGroup id=\"ATLAS\""),
+        )
+        assertTrue(
+            "the chat action must be registered",
+            descriptor.contains("Atlas.OpenChatAction"),
+        )
+    }
+
     private fun readDescriptor(): String {
         val stream = javaClass.classLoader.getResourceAsStream(DESCRIPTOR_PATH)
         assertNotNull("$DESCRIPTOR_PATH must be on the test classpath", stream)

@@ -12,16 +12,23 @@
 // IDE's diff viewer.
 package com.inferstep.atlas.session
 
+import com.inferstep.atlas.protocol.AgentLensInterventionPayload
 import com.inferstep.atlas.protocol.ChatEvent
 import com.inferstep.atlas.protocol.DonePayload
 import com.inferstep.atlas.protocol.ErrorPayload
+import com.inferstep.atlas.protocol.LlmPromptProgressPayload
 import com.inferstep.atlas.protocol.PermissionDeniedPayload
 import com.inferstep.atlas.protocol.PermissionMode
 import com.inferstep.atlas.protocol.PermissionRequestPayload
+import com.inferstep.atlas.protocol.PlanAdherencePayload
+import com.inferstep.atlas.protocol.PlanLoadedPayload
+import com.inferstep.atlas.protocol.PlanRevisePayload
 import com.inferstep.atlas.protocol.TaskMode
 import com.inferstep.atlas.protocol.TextPayload
 import com.inferstep.atlas.protocol.ToolCallPayload
 import com.inferstep.atlas.protocol.ToolResultPayload
+import com.inferstep.atlas.protocol.V3ProgressPayload
+import com.inferstep.atlas.protocol.V3StagePayload
 import com.inferstep.atlas.protocol.payloadOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +39,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlin.math.roundToInt
 
 private const val TEXT_EVENT = "text"
 private const val TOOL_CALL_EVENT = "tool_call"
@@ -40,6 +48,32 @@ private const val PERMISSION_REQUEST_EVENT = "permission_request"
 private const val PERMISSION_DENIED_EVENT = "permission_denied"
 private const val DONE_EVENT = "done"
 private const val ERROR_EVENT = "error"
+private const val TURN_START_EVENT = "turn_start"
+private const val LLM_CALL_START_EVENT = "llm_call_start"
+private const val LLM_PROMPT_PROGRESS_EVENT = "llm_prompt_progress"
+private const val LLM_FIRST_TOKEN_EVENT = "llm_first_token"
+private const val LLM_CALL_END_EVENT = "llm_call_end"
+private const val V3_PROGRESS_EVENT = "v3_progress"
+private const val V3_LENS_VETO_EVENT = "v3_lens_veto"
+private const val V3_STRUCTURAL_VETO_EVENT = "v3_structural_veto"
+private const val AGENT_LENS_INTERVENTION_EVENT = "agent_lens_intervention"
+private const val PLAN_LOADED_EVENT = "plan_loaded"
+private const val PLAN_ADHERENCE_EVENT = "plan_adherence"
+private const val PLAN_REVISE_EVENT = "plan_revise"
+
+/** The long-form V3 stages share the `{stage, detail}` shape. */
+private val V3_STAGE_EVENTS =
+    setOf(
+        "v3_phase",
+        "v3_sandbox",
+        "v3_repair",
+        "v3_plansearch",
+        "v3_divsampling",
+        "v3_select",
+        "v3_probe",
+        "v3_self_test",
+        "v3_plan",
+    )
 
 /** The one tool whose result carries a server-computed unified diff. */
 private const val EDIT_FILE_TOOL = "edit_file"
@@ -107,6 +141,8 @@ sealed interface TranscriptEntry {
         override val id: Long,
         val text: String,
         val isError: Boolean = false,
+        /** Worth a native warning, but not an error: the workspace mismatch. */
+        val isWarning: Boolean = false,
     ) : TranscriptEntry
 
     /** How the run ended: the summary, the status and the reason (#236). */
@@ -115,6 +151,19 @@ sealed interface TranscriptEntry {
         val outcome: DoneOutcome,
     ) : TranscriptEntry
 }
+
+/** One step of the plan the proxy is following, as the panel shows it. */
+data class ChatPlanStep(
+    val id: String,
+    val label: String,
+)
+
+/** The current plan and which steps the proxy says it has satisfied. */
+data class ChatPlan(
+    val steps: List<ChatPlanStep>,
+    val revision: Int,
+    val satisfied: Set<String> = emptySet(),
+)
 
 /** Everything the panel renders. */
 data class ChatUiState(
@@ -128,6 +177,12 @@ data class ChatUiState(
      * with no entry either is not a file edit or has nothing predictable to
      * show — the card then offers no diff. */
     val previews: Map<Long, EditPrediction> = emptyMap(),
+    /** The latest liveness line from the model or V3 pipeline, cleared when
+     * the turn ends. Transient by design: a replay must not show a stale
+     * spinner. */
+    val progress: String? = null,
+    /** The plan the current turn is following, when it generated one. */
+    val plan: ChatPlan? = null,
 )
 
 /**
@@ -138,8 +193,8 @@ data class ChatUiState(
  * anywhere. The posted permission decisions run on [scope].
  */
 class ChatSession(
-    private val client: TurnClient,
-    private val poster: PermissionPoster,
+    client: TurnClient,
+    poster: PermissionPoster,
     private val scope: CoroutineScope,
     /** The client's workspace root, sent as `working_dir`. */
     private val workingDir: String,
@@ -148,8 +203,13 @@ class ChatSession(
      * want; the panel passes one that also refreshes the IDE's VFS. */
     private val workspace: Workspace = LocalWorkspace(workingDir),
     /** GET /workspace, asked once when the panel appears. */
-    private val probe: WorkspaceProbe = WorkspaceProbe { null },
+    probe: WorkspaceProbe = WorkspaceProbe { null },
 ) : PermissionUi {
+    @Volatile private var client: TurnClient = client
+
+    @Volatile private var poster: PermissionPoster = poster
+
+    @Volatile private var probe: WorkspaceProbe = probe
     private val turns = TurnManager(scope)
     private val permissions = PermissionFlow(turns.sessionAllowedTools, this, scope)
 
@@ -167,11 +227,31 @@ class ChatSession(
     private val mismatch =
         MismatchDetector(
             stat = workspace::stat,
-            onMismatch = { append(TranscriptEntry.Notice(nextId++, MISMATCH_NOTICE)) },
+            onMismatch = {
+                append(TranscriptEntry.Notice(nextId++, MISMATCH_NOTICE, isWarning = true))
+            },
         )
 
     private var nextId = 1L
-    private var cancelRequested = false
+
+    @Volatile private var cancelRequested = false
+
+    /**
+     * Use a new proxy connection for the next turn.
+     *
+     * A turn captures the client and poster it started with, so swapping this
+     * while a turn is in flight cannot route its permission answers to a
+     * different proxy; the new connection takes effect on the next turn.
+     */
+    fun updateConnection(
+        client: TurnClient,
+        poster: PermissionPoster,
+        probe: WorkspaceProbe,
+    ) {
+        this.client = client
+        this.poster = poster
+        this.probe = probe
+    }
 
     /** The next turn's declaration. Nothing reads the message text. */
     fun setTaskMode(mode: TaskMode) {
@@ -214,6 +294,7 @@ class ChatSession(
                 nextId++,
                 "ATLAS is editing ${report.projectDir}, not ${workspace.root} — changes it " +
                     "makes will land outside this window.",
+                isWarning = true,
             ),
         )
     }
@@ -232,20 +313,24 @@ class ChatSession(
 
         val mode = mutableState.value.permissionMode
         val taskMode = mutableState.value.taskMode
+        // A turn uses one connection from start to finish: a settings change
+        // mid-turn affects the next turn, not this one's permission answers.
+        val activeClient = client
+        val activePoster = poster
         cancelRequested = false
         var sawDone = false
 
         append(TranscriptEntry.User(nextId++, text))
-        mutableState.update { it.copy(running = true) }
+        mutableState.update { it.copy(running = true, progress = null, plan = null) }
 
         try {
             turns
-                .runTurn(client, text, mode, taskMode, workingDir)
+                .runTurn(activeClient, text, mode, taskMode, workingDir)
                 .collect { event ->
                     if (event.type == DONE_EVENT) {
                         sawDone = true
                     }
-                    apply(event)
+                    apply(event, activePoster)
                 }
         } catch (e: CancellationException) {
             // The scope went away mid-turn (the panel was disposed); the
@@ -275,7 +360,12 @@ class ChatSession(
             snapshots.clear()
             mismatch.reset()
             mutableState.update {
-                it.copy(running = false, pending = emptyList(), previews = emptyMap())
+                it.copy(
+                    running = false,
+                    pending = emptyList(),
+                    previews = emptyMap(),
+                    progress = null,
+                )
             }
         }
     }
@@ -304,6 +394,8 @@ class ChatSession(
                 pending = emptyList(),
                 running = false,
                 previews = emptyMap(),
+                progress = null,
+                plan = null,
             )
         }
     }
@@ -361,8 +453,11 @@ class ChatSession(
         )
     }
 
-    /** Apply one stream event to the transcript. */
-    private suspend fun apply(event: ChatEvent) {
+    /** Apply one stream event to the transcript and the progress state. */
+    private suspend fun apply(
+        event: ChatEvent,
+        activePoster: PermissionPoster,
+    ) {
         when (event.type) {
             TEXT_EVENT -> {
                 appendText(event.payloadOrNull<TextPayload>()?.content.orEmpty())
@@ -379,7 +474,7 @@ class ChatSession(
             PERMISSION_REQUEST_EVENT -> {
                 event
                     .payloadOrNull<PermissionRequestPayload>()
-                    ?.let { permissions.handleRequest(poster, turns.sessionId, it) }
+                    ?.let { permissions.handleRequest(activePoster, turns.sessionId, it) }
             }
 
             PERMISSION_DENIED_EVENT -> {
@@ -411,12 +506,116 @@ class ChatSession(
                 )
             }
 
-            // llm_*, v3_*, plan_* and the intervention events are progress,
-            // not conversation. A later stage renders them; ignoring them here
-            // is what keeps the transcript readable.
+            TURN_START_EVENT, LLM_CALL_START_EVENT -> {
+                setProgress("Thinking…")
+            }
+
+            LLM_PROMPT_PROGRESS_EVENT -> {
+                val progress = event.payloadOrNull<LlmPromptProgressPayload>()
+                val percent =
+                    progress
+                        ?.takeIf { it.pct > 0 }
+                        ?.let { " ${(it.pct * 100).roundToInt()}%" }
+                        .orEmpty()
+                setProgress("Processing prompt$percent…")
+            }
+
+            LLM_FIRST_TOKEN_EVENT, LLM_CALL_END_EVENT -> {
+                setProgress(null)
+            }
+
+            V3_PROGRESS_EVENT -> {
+                val message = event.payloadOrNull<V3ProgressPayload>()?.message.orEmpty()
+                setProgress(if (message.isEmpty()) null else "V3: $message")
+            }
+
+            in V3_STAGE_EVENTS -> {
+                val stage = event.payloadOrNull<V3StagePayload>()
+                val label = stage?.stage.orEmpty()
+                val detail = stage?.detail.orEmpty()
+                setProgress(
+                    when {
+                        label.isEmpty() -> null
+                        detail.isEmpty() -> "V3: $label"
+                        else -> "V3: $label — $detail"
+                    },
+                )
+            }
+
+            V3_LENS_VETO_EVENT, V3_STRUCTURAL_VETO_EVENT -> {
+                val stage = event.payloadOrNull<V3StagePayload>()
+                val why =
+                    if (event.type ==
+                        V3_LENS_VETO_EVENT
+                    ) {
+                        "lens quality"
+                    } else {
+                        "unresolved calls"
+                    }
+                val detail = stage?.detail.orEmpty()
+                setProgress(
+                    "V3: candidate rejected ($why)${if (detail.isEmpty()) "" else " — $detail"}",
+                )
+            }
+
+            AGENT_LENS_INTERVENTION_EVENT -> {
+                val reason = event.payloadOrNull<AgentLensInterventionPayload>()?.reason.orEmpty()
+                setProgress("Lens intervention: ${reason.ifEmpty { "corrective queued" }}")
+            }
+
+            PLAN_LOADED_EVENT -> {
+                setPlan(event.payloadOrNull<PlanLoadedPayload>())
+            }
+
+            PLAN_ADHERENCE_EVENT -> {
+                val adherence = event.payloadOrNull<PlanAdherencePayload>()
+                if (adherence?.matched == true) {
+                    adherence.stepId?.let(::satisfyPlanStep)
+                }
+            }
+
+            PLAN_REVISE_EVENT -> {
+                val reason = event.payloadOrNull<PlanRevisePayload>()?.reason.orEmpty()
+                append(
+                    TranscriptEntry.Notice(
+                        nextId++,
+                        "Plan going off track — revising (${reason.ifEmpty {
+                            "off-plan streak"
+                        }}).",
+                    ),
+                )
+            }
+
+            // High-volume token streams and loop bookkeeping: the progress
+            // line has enough signal without a recomposition per token.
             else -> {
                 Unit
             }
+        }
+    }
+
+    private fun setProgress(text: String?) {
+        mutableState.update { it.copy(progress = text) }
+    }
+
+    private fun setPlan(loaded: PlanLoadedPayload?) {
+        if (loaded == null) {
+            return
+        }
+        val steps =
+            loaded.steps.map { step ->
+                val label = "${step.action} ${step.target}".trim()
+                ChatPlanStep(step.id, label.ifEmpty { step.id })
+            }
+        mutableState.update {
+            it.copy(plan = ChatPlan(steps, loaded.revision))
+        }
+    }
+
+    private fun satisfyPlanStep(stepId: String) {
+        mutableState.update { state ->
+            val plan = state.plan ?: return@update state
+            state.copy(plan = plan.copy(satisfied = plan.satisfied + stepId))
         }
     }
 
