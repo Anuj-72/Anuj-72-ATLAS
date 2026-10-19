@@ -173,6 +173,7 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 | `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, 401 and non-JSON envelopes, a dropped connection, and every optional endpoint |
 | `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, an install with no token, URL normalization, and the redacted `toString` |
 | `AtlasStatusTest` | every `/ready` gate combination, the status-bar order of the failing gates, and 401 vs. unreachable failures |
+| `AtlasNotifierTest` | notification content escapes markup while keeping the command or path text intact |
 | `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
 | `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
 | `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, both workspace checks and their warning flag, a connection swap leaving the open prompt with its own turn, the transient progress line (including what clears it) and the generated plan with its satisfied steps |

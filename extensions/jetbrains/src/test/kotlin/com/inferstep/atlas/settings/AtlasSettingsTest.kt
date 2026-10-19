@@ -4,30 +4,28 @@ import com.inferstep.atlas.client.AtlasConnection
 import com.inferstep.atlas.protocol.PermissionMode
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 
 class AtlasSettingsTest {
     private val environment = AtlasConnection("http://env:8090", "env-token")
 
-    @Test
-    fun `an empty proxy url follows the environment`() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("proxyUrls")
+    fun `a configured proxy url wins and a blank one follows the environment`(
+        name: String,
+        configured: String,
+        want: String,
+    ) {
         val settings = AtlasSettings()
+        settings.proxyUrl = configured
 
-        assertEquals("http://env:8090", settings.resolvedProxyUrl(environment))
+        assertEquals(want, settings.resolvedProxyUrl(environment), name)
         assertEquals(
-            environment,
+            AtlasConnection(want, "env-token"),
             settings.connection(storedToken = null, environment = environment),
-        )
-    }
-
-    @Test
-    fun `a configured proxy url wins and is normalized`() {
-        val settings = AtlasSettings()
-        settings.proxyUrl = " http://127.0.0.1:9000/ "
-
-        assertEquals("http://127.0.0.1:9000", settings.resolvedProxyUrl(environment))
-        assertEquals(
-            AtlasConnection("http://127.0.0.1:9000", "env-token"),
-            settings.connection(storedToken = null, environment = environment),
+            name,
         )
     }
 
@@ -75,5 +73,18 @@ class AtlasSettingsTest {
 
         settings.statusBarPollIntervalSec = 30
         assertEquals(30, settings.statusBarPollIntervalSec)
+    }
+
+    companion object {
+        @JvmStatic
+        fun proxyUrls(): List<Arguments> =
+            listOf(
+                Arguments.of("a blank setting follows the environment", "", "http://env:8090"),
+                Arguments.of(
+                    "a configured setting wins and is normalized",
+                    " http://127.0.0.1:9000/ ",
+                    "http://127.0.0.1:9000",
+                ),
+            )
     }
 }

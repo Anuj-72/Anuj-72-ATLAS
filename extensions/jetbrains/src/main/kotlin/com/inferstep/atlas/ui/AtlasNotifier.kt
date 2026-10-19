@@ -30,12 +30,21 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.xml.util.XmlStringUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /** The notification group registered in `plugin.xml`. */
 private const val NOTIFICATION_GROUP = "ATLAS"
+
+/**
+ * Notification content is HTML, and the platform does not escape it. The
+ * request text and the error text come from the proxy, so a command containing
+ * `<` or `&` must be escaped to read as the command that will run rather than
+ * as markup.
+ */
+internal fun notificationContent(text: String): String = XmlStringUtil.escapeString(text)
 
 class AtlasNotifier(
     private val project: Project,
@@ -89,7 +98,7 @@ class AtlasNotifier(
         ApplicationManager.getApplication().invokeLater {
             val notification =
                 group
-                    ?.createNotification(title, entry.text, type)
+                    ?.createNotification(title, notificationContent(entry.text), type)
                     ?: return@invokeLater
             notification.addAction(
                 NotificationAction.createSimpleExpiring("Open Chat") { openChat() },
@@ -113,7 +122,7 @@ class AtlasNotifier(
     ) {
         val notificationGroup = group ?: return
         val request = prompt.request
-        val content = requestContent(request)
+        val content = notificationContent(requestContent(request))
         val notification =
             notificationGroup.createNotification(
                 "ATLAS needs approval",

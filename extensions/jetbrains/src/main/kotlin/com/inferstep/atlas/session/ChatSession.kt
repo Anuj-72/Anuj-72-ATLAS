@@ -458,6 +458,16 @@ class ChatSession(
         event: ChatEvent,
         activePoster: PermissionPoster,
     ) {
+        // Each step ignores the types it does not own, so high-volume token
+        // and loop events still cost no recomposition.
+        applyTranscript(event)
+        applyPermission(event, activePoster)
+        applyProgress(event)
+        applyPlan(event)
+    }
+
+    /** The conversation itself: text, tools and the banner that ends a turn. */
+    private suspend fun applyTranscript(event: ChatEvent) {
         when (event.type) {
             TEXT_EVENT -> {
                 appendText(event.payloadOrNull<TextPayload>()?.content.orEmpty())
@@ -469,22 +479,6 @@ class ChatSession(
 
             TOOL_RESULT_EVENT -> {
                 appendToolResult(event)
-            }
-
-            PERMISSION_REQUEST_EVENT -> {
-                event
-                    .payloadOrNull<PermissionRequestPayload>()
-                    ?.let { permissions.handleRequest(activePoster, turns.sessionId, it) }
-            }
-
-            PERMISSION_DENIED_EVENT -> {
-                // The proxy answers a denial with permission_denied and then a
-                // tool_result whose success is false (proxy/agent.go), so that
-                // result is what consumes the snapshot and the pre-op stat,
-                // exactly as for a call that failed. A stream that ends before
-                // it leaves nothing behind: the turn's finally clears both.
-                val tool = event.payloadOrNull<PermissionDeniedPayload>()?.tool.orEmpty()
-                permissions.handleDenied(tool)
             }
 
             DONE_EVENT -> {
@@ -506,6 +500,45 @@ class ChatSession(
                 )
             }
 
+            else -> {
+                Unit
+            }
+        }
+    }
+
+    /** The prompts, which are state too: the panel and the notification share
+     * them. */
+    private fun applyPermission(
+        event: ChatEvent,
+        activePoster: PermissionPoster,
+    ) {
+        when (event.type) {
+            PERMISSION_REQUEST_EVENT -> {
+                event
+                    .payloadOrNull<PermissionRequestPayload>()
+                    ?.let { permissions.handleRequest(activePoster, turns.sessionId, it) }
+            }
+
+            PERMISSION_DENIED_EVENT -> {
+                // The proxy answers a denial with permission_denied and then a
+                // tool_result whose success is false (proxy/agent.go), so that
+                // result is what consumes the snapshot and the pre-op stat,
+                // exactly as for a call that failed. A stream that ends before
+                // it leaves nothing behind: the turn's finally clears both.
+                val tool = event.payloadOrNull<PermissionDeniedPayload>()?.tool.orEmpty()
+                permissions.handleDenied(tool)
+            }
+
+            else -> {
+                Unit
+            }
+        }
+    }
+
+    /** The liveness line: model, V3 and lens events, and the event that clears
+     * it. */
+    private fun applyProgress(event: ChatEvent) {
+        when (event.type) {
             TURN_START_EVENT, LLM_CALL_START_EVENT -> {
                 setProgress("Thinking…")
             }
@@ -563,6 +596,15 @@ class ChatSession(
                 setProgress("Lens intervention: ${reason.ifEmpty { "corrective queued" }}")
             }
 
+            else -> {
+                Unit
+            }
+        }
+    }
+
+    /** The plan and the adherence events that mark its steps. */
+    private fun applyPlan(event: ChatEvent) {
+        when (event.type) {
             PLAN_LOADED_EVENT -> {
                 setPlan(event.payloadOrNull<PlanLoadedPayload>())
             }
@@ -586,8 +628,6 @@ class ChatSession(
                 )
             }
 
-            // High-volume token streams and loop bookkeeping: the progress
-            // line has enough signal without a recomposition per token.
             else -> {
                 Unit
             }
