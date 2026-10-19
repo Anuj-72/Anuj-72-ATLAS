@@ -1,0 +1,242 @@
+// The ATLAS status bar item: /ready at a configurable interval, calibration
+// on an explicit refresh, and a click menu for the common actions.
+//
+// Polling pauses while a turn streams: the live SSE connection is stronger
+// evidence of connectivity than a probe, and /ready hits four downstream
+// checks. The item refreshes immediately when the turn ends and when settings
+// or the token change.
+package com.inferstep.atlas.ui
+
+import com.inferstep.atlas.client.AtlasClient
+import com.inferstep.atlas.client.AtlasStatus
+import com.inferstep.atlas.client.statusFromFailure
+import com.inferstep.atlas.client.statusFromReady
+import com.inferstep.atlas.ide.AtlasProjectService
+import com.inferstep.atlas.settings.AtlasSettings
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.wm.StatusBar
+import com.intellij.openapi.wm.StatusBarWidget
+import com.intellij.openapi.wm.StatusBarWidgetFactory
+import com.intellij.util.Consumer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.awt.Component
+import java.awt.event.MouseEvent
+
+class AtlasStatusBarWidgetFactory : StatusBarWidgetFactory {
+    override fun getId(): String = AtlasStatusBarWidget.ID
+
+    override fun getDisplayName(): String = "ATLAS"
+
+    override fun isEnabledByDefault(): Boolean = true
+
+    override fun createWidget(
+        project: Project,
+        scope: CoroutineScope,
+    ): StatusBarWidget = AtlasStatusBarWidget(project, scope)
+
+    override fun disposeWidget(widget: StatusBarWidget) {
+        widget.dispose()
+    }
+}
+
+/** /ready is a probe, not a turn: a blackholed host must not leave the status
+ * bar saying "starting" forever. */
+private const val STATUS_TIMEOUT_MS = 5_000L
+
+class AtlasStatusBarWidget(
+    private val project: Project,
+    scope: CoroutineScope,
+) : StatusBarWidget,
+    StatusBarWidget.TextPresentation {
+    private val service = AtlasProjectService.getInstance(project)
+    private val settings = AtlasSettings.getInstance()
+    private val job = SupervisorJob(scope.coroutineContext[Job])
+    private val widgetScope = CoroutineScope(scope.coroutineContext + job)
+    private val pollLock = Mutex()
+
+    @Volatile private var status: AtlasStatus = AtlasStatus.Starting(emptyList())
+
+    @Volatile private var detail: String = "checking…"
+
+    @Volatile private var calibration: String = ""
+
+    @Volatile private var statusBar: StatusBar? = null
+
+    @Volatile private var started = false
+
+    override fun ID(): String = ID
+
+    override fun getPresentation(): StatusBarWidget.WidgetPresentation = this
+
+    override fun install(statusBar: StatusBar) {
+        this.statusBar = statusBar
+        if (started) {
+            return
+        }
+        started = true
+        widgetScope.launch {
+            var firstPoll = true
+            while (currentCoroutineContext().isActive) {
+                poll(includeCalibration = firstPoll)
+                firstPoll = false
+                delay(settings.statusBarPollIntervalSec.toLong() * 1000L)
+            }
+        }
+        widgetScope.launch {
+            service.statusRefreshRequests.collect { poll(includeCalibration = true) }
+        }
+        widgetScope.launch {
+            var wasRunning = false
+            service.session.state.collect { state ->
+                if (wasRunning && !state.running) {
+                    poll()
+                }
+                wasRunning = state.running
+            }
+        }
+    }
+
+    override fun getText(): String =
+        when (status) {
+            AtlasStatus.Ready -> "ATLAS"
+            is AtlasStatus.Starting -> "ATLAS · starting"
+            AtlasStatus.Unreachable -> "ATLAS · offline"
+            AtlasStatus.Unauthorized -> "ATLAS · token"
+        }
+
+    override fun getAlignment(): Float = Component.CENTER_ALIGNMENT
+
+    override fun getTooltipText(): String {
+        val lines = mutableListOf("ATLAS proxy: $detail")
+        if (calibration.isNotEmpty()) {
+            lines += calibration
+        }
+        if (service.session.state.value.running) {
+            lines += "turn in progress"
+        }
+        lines += "Click for actions."
+        return "<html>${lines.joinToString("<br>")}</html>"
+    }
+
+    override fun getClickConsumer(): Consumer<MouseEvent> = Consumer { showMenu() }
+
+    private suspend fun poll(includeCalibration: Boolean = false) {
+        pollLock.withLock {
+            if (service.session.state.value.running) {
+                return
+            }
+            val connection = service.connection.value
+            val client = AtlasClient(connection.url, connection.token)
+            try {
+                try {
+                    val ready = withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.getReady() }
+                    status = if (ready == null) AtlasStatus.Unreachable else statusFromReady(ready)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    status = statusFromFailure(e)
+                }
+                detail = detailOf(status)
+                if (includeCalibration) {
+                    calibration =
+                        try {
+                            val calibrationStatus =
+                                withTimeoutOrNull(
+                                    STATUS_TIMEOUT_MS,
+                                ) { client.getCalibrationStatus() }
+                            if (calibrationStatus == null) {
+                                ""
+                            } else {
+                                "lens: ${calibrationStatus.lens.verdict} · asa: ${calibrationStatus.asa.verdict}"
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            ""
+                        }
+                }
+            } finally {
+                client.close()
+            }
+            updateWidget()
+        }
+    }
+
+    private fun detailOf(status: AtlasStatus): String =
+        when (status) {
+            AtlasStatus.Ready -> {
+                "all gates passing"
+            }
+
+            is AtlasStatus.Starting -> {
+                if (status.waiting.isEmpty()) {
+                    "starting…"
+                } else {
+                    "waiting on: ${status.waiting.joinToString()}"
+                }
+            }
+
+            AtlasStatus.Unreachable -> {
+                "the proxy is not reachable"
+            }
+
+            AtlasStatus.Unauthorized -> {
+                "the proxy rejected the token (401)"
+            }
+        }
+
+    private fun updateWidget() {
+        ApplicationManager.getApplication().invokeLater {
+            statusBar?.updateWidget(ID)
+        }
+    }
+
+    private fun showMenu() {
+        val group =
+            DefaultActionGroup(
+                listOf(
+                    OpenChatAction(),
+                    CancelTurnAction(),
+                    NewConversationAction(),
+                    RefreshStatusAction(),
+                    OpenAtlasSettingsAction(),
+                ),
+            )
+        val popup =
+            JBPopupFactory.getInstance().createActionGroupPopup(
+                "ATLAS",
+                group,
+                SimpleDataContext.getProjectContext(project),
+                JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
+                false,
+                null,
+                -1,
+            )
+        val anchor = statusBar?.component ?: return
+        popup.showUnderneathOf(anchor)
+    }
+
+    override fun dispose() {
+        job.cancel()
+        statusBar = null
+    }
+
+    companion object {
+        const val ID = "AtlasStatus"
+    }
+}

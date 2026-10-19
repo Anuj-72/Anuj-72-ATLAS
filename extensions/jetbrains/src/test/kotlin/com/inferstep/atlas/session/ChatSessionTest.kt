@@ -512,6 +512,9 @@ class ChatSessionTest {
                     .single()
             assertTrue(notice.text.contains("a different directory"), notice.text)
             assertFalse(notice.isError)
+            // The warning flag is what makes AtlasNotifier surface this as a
+            // native warning rather than a silent transcript line.
+            assertTrue(notice.isWarning, notice.text)
         }
 
     @Test
@@ -533,6 +536,7 @@ class ChatSessionTest {
 
             val notice = misaligned.entries.single() as TranscriptEntry.Notice
             assertTrue(notice.text.contains("/home/isaac/snake-game"), notice.text)
+            assertTrue(notice.isWarning, notice.text)
 
             val aligned =
                 SessionFixture(
@@ -552,6 +556,110 @@ class ChatSessionTest {
                 )
             noRoute.session.checkWorkspace()
             assertEquals(0, noRoute.entries.size)
+        }
+
+    @Test
+    fun `a swapped connection takes effect on the next turn and leaves the open prompt alone`() =
+        runBlocking {
+            val fixture = SessionFixture(listOf(permissionFrame("write_file", "c1")))
+            // The proxy pauses on a prompt, so the turn stays in flight while
+            // the settings change lands.
+            fixture.client.hangAfter = 0
+            val running = launch { fixture.session.send("first") }
+            letTheLaunchedWorkRun()
+            val prompt =
+                fixture.session.state.value.pending
+                    .single()
+
+            val nextClient = RecordingClient(listOf(doneFrame("""{"summary":"second"}""")))
+            val nextPoster = RecordingPoster()
+            fixture.session.updateConnection(nextClient, nextPoster, WorkspaceProbe { null })
+
+            // The open prompt belongs to the turn that produced it: its answer
+            // must go to that turn's poster, not the one settings just built.
+            fixture.session.answer(prompt.id, PermissionChoice.ALLOW_ONCE)
+            letTheLaunchedWorkRun()
+            assertEquals(1, fixture.poster.decisions.size)
+            assertEquals(0, nextPoster.decisions.size)
+
+            fixture.session.cancel()
+            running.join()
+
+            fixture.session.send("second")
+
+            assertEquals(1, fixture.client.requests.size)
+            assertEquals(1, nextClient.requests.size)
+        }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("progress")
+    fun `shows the latest progress line and clears it when the step is done`(
+        name: String,
+        frames: List<ChatEvent>,
+        hangAfter: Int,
+        want: String?,
+    ) = runBlocking {
+        val fixture = SessionFixture(frames)
+        fixture.client.hangAfter = hangAfter
+
+        val running = launch { fixture.session.send("go") }
+        letTheLaunchedWorkRun()
+
+        assertEquals(want, fixture.session.state.value.progress, name)
+
+        fixture.session.cancel()
+        running.join()
+    }
+
+    @Test
+    fun `renders the plan and which steps the proxy satisfied`() =
+        runBlocking {
+            val fixture =
+                SessionFixture(
+                    listOf(
+                        event(
+                            """{"type":"plan_loaded","data":{"steps":[""" +
+                                """{"id":"s1","action":"edit","target":"app.py"},""" +
+                                """{"id":"s2","action":"run","target":"pytest"}],""" +
+                                """"verify_step":"s2","revision":0}}""",
+                        ),
+                        event(
+                            """{"type":"plan_adherence","data":{"matched":true,""" +
+                                """"step_id":"s1","satisfied":1,"total":2}}""",
+                        ),
+                        event(
+                            """{"type":"plan_revise","data":{"reason":"off-plan streak",""" +
+                                """"revision":1}}""",
+                        ),
+                        doneFrame("""{"summary":"ok"}"""),
+                    ),
+                )
+
+            fixture.session.send("go")
+
+            assertEquals(
+                ChatPlan(
+                    listOf(
+                        ChatPlanStep("s1", "edit app.py"),
+                        ChatPlanStep("s2", "run pytest"),
+                    ),
+                    revision = 0,
+                    satisfied = setOf("s1"),
+                ),
+                fixture.session.state.value.plan,
+            )
+            assertTrue(
+                fixture.entries.any {
+                    it is TranscriptEntry.Notice &&
+                        it.text.contains(
+                            "revising",
+                        )
+                },
+                fixture.entries.toString(),
+            )
+
+            fixture.session.reset()
+            assertNull(fixture.session.state.value.plan)
         }
 
     companion object {
@@ -604,6 +712,58 @@ class ChatSessionTest {
                             DoneOutcome("done", "incomplete", "incomplete", "", "incomplete"),
                         ),
                     ),
+                ),
+            )
+
+        @JvmStatic
+        fun progress(): List<Arguments> =
+            listOf(
+                Arguments.of(
+                    "an LLM call says it is thinking",
+                    listOf(event("""{"type":"llm_call_start","data":{}}""")),
+                    0,
+                    "Thinking…",
+                ),
+                Arguments.of(
+                    "prompt evaluation shows its percentage",
+                    listOf(event("""{"type":"llm_prompt_progress","data":{"pct":0.42}}""")),
+                    0,
+                    "Processing prompt 42%…",
+                ),
+                Arguments.of(
+                    "a V3 fallback message is labelled",
+                    listOf(event("""{"type":"v3_progress","data":{"message":"planning"}}""")),
+                    0,
+                    "V3: planning",
+                ),
+                Arguments.of(
+                    "a typed V3 stage keeps its detail",
+                    listOf(
+                        event(
+                            """{"type":"v3_sandbox","data":{"stage":"sandbox_pass",""" +
+                                """"detail":"2/3"}}""",
+                        ),
+                    ),
+                    0,
+                    "V3: sandbox_pass — 2/3",
+                ),
+                Arguments.of(
+                    "the first token clears the thinking line",
+                    listOf(
+                        event("""{"type":"llm_call_start","data":{}}"""),
+                        event("""{"type":"llm_first_token","data":{}}"""),
+                    ),
+                    1,
+                    null,
+                ),
+                Arguments.of(
+                    "the end of an LLM call clears a V3 line",
+                    listOf(
+                        event("""{"type":"v3_progress","data":{"message":"planning"}}"""),
+                        event("""{"type":"llm_call_end","data":{}}"""),
+                    ),
+                    1,
+                    null,
                 ),
             )
     }

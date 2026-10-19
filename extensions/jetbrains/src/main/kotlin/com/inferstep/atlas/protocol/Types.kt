@@ -92,6 +92,26 @@ enum class PermissionMode {
 
     @SerialName("yolo")
     YOLO,
+    ;
+
+    /** The wire name, which is also what a settings file stores. */
+    fun wireName(): String =
+        when (this) {
+            DEFAULT -> "default"
+            ACCEPT_EDITS -> "accept-edits"
+            YOLO -> "yolo"
+        }
+
+    companion object {
+        /** Parse a stored wire name. An absent or unknown one means `default`,
+         * the mode the proxy uses when no mode is sent. */
+        fun fromWire(raw: String?): PermissionMode =
+            when (raw?.trim()) {
+                "accept-edits" -> ACCEPT_EDITS
+                "yolo" -> YOLO
+                else -> DEFAULT
+            }
+    }
 }
 
 /** One prior-turn message replayed to the proxy on each `/v1/agent` call.

@@ -2,7 +2,7 @@
 
 A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop with no agent logic in the plugin itself.
 
-**Status: Stage 4 — diffs, VFS and workspace integration.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wired the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Stage 4 adds diff review and the workspace checks around it: the change a file-writing call is predicted to make, the exact change it made, and a warning when the proxy is editing a different folder. Settings are Stage 5, hardening and release Stage 6.
+**Status: Stage 5 — IDE integration.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wired the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Stage 4 added diff review and the workspace checks around it: the change a file-writing call is predicted to make, the exact change it made, and a warning when the proxy is editing a different folder. Stage 5 adds the IDE integration around that conversation: settings and credential-store token storage, a proxy status bar, model/V3 progress and the plan in the panel, native notifications for prompts and failures, and the actions that operate the same session from anywhere in the IDE. Hardening and release are Stage 6.
 
 ## Spike results
 
@@ -70,9 +70,7 @@ A port of `extensions/vscode/src/session/`, with the TUI as the reference where 
 
 **Cancellation stops the stream first.** `cancel()` aborts the local SSE request, which is the mechanism that actually ends the turn, and posts `/cancel` as a backstop. The panel's Cancel button routes there; a cancelled turn keeps whatever text it had produced in the history it replays.
 
-**The connection comes from the environment.** `ATLAS_PROXY_URL` (default `http://127.0.0.1:8090`) and `ATLAS_SERVICE_TOKEN_FILE`, the same variables the TUI and `atlas doctor` use, read in one place (`client/AtlasConnection.kt`). The settings UI and secure token storage are Stage 5; until then the tool window shows the URL it is talking to, and the token is read from the file `atlas init` writes rather than from any setting. The diff review and the workspace checks that Stage 4 adds are described under [The diffs and the workspace](#the-diffs-and-the-workspace-stage-4).
-
-**Two hazards the settings stage inherits**, raised in review of this pull request and left for Stage 5 rather than fixed here. `AtlasConnection` is a `data class` with no `toString()` override, so the one Kotlin generates prints `token` in full: nothing logs a connection today, but a stack trace, a debugger view or a single `"$connection"` interpolated into a log line would put the service token there. And `FALLBACK_TOKEN_FILE` (`secrets/service-token`) is a relative path, so it resolves against the working directory the IDE was started from, not against the install the token sits beside — the ambiguity `ATLAS_SERVICE_TOKEN_FILE` exists to remove, and one a sandbox run started elsewhere meets as "no token configured". Stage 5 answers both: the URL and the token become settings, and the token moves to the platform's credential store.
+**The connection is a setting with an environment fallback.** Settings → Tools → ATLAS holds the proxy URL, permission mode and status-bar interval; the token is stored in the platform credential store through `AtlasTokenStore` (`PasswordSafe`), not in `atlas.xml`. A blank URL or token falls back to `ATLAS_PROXY_URL` / `ATLAS_SERVICE_TOKEN_FILE`, the variables the TUI and `atlas doctor` use, so an existing install keeps working. `AtlasConnection.toString()` redacts the token, and the old relative `secrets/service-token` fallback is gone: it resolved against the IDE's working directory rather than the install, which turned "the token is elsewhere" into "no token configured". The diff review and the workspace checks that Stage 4 adds are described under [The diffs and the workspace](#the-diffs-and-the-workspace-stage-4), and the Stage 5 surfaces under [The IDE integration](#the-ide-integration-stage-5).
 
 ## The diffs and the workspace (Stage 4)
 
@@ -134,9 +132,37 @@ suites cover the predictions, the snapshots and both workspace checks;
 `AtlasDiffViewer` and the VFS refresh are covered by nothing except the
 `runPyCharm` smoke run, which this stage has not had either.
 
+## The IDE integration (Stage 5)
+
+```
+src/main/kotlin/com/inferstep/atlas/ide/AtlasProjectService.kt      # one session, one connection, one status refresh signal
+src/main/kotlin/com/inferstep/atlas/settings/AtlasSettings.kt      # persisted URL, permission mode and poll interval
+src/main/kotlin/com/inferstep/atlas/settings/AtlasTokenStore.kt    # PasswordSafe-backed service token
+src/main/kotlin/com/inferstep/atlas/settings/AtlasConfigurable.kt  # Settings → Tools → ATLAS
+src/main/kotlin/com/inferstep/atlas/ui/AtlasStatusBarWidget.kt     # /ready polling and the click menu
+src/main/kotlin/com/inferstep/atlas/ui/AtlasNotifier.kt            # permission/error/workspace notifications
+src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands registered in plugin.xml
+```
+
+**One session per project.** `AtlasProjectService` owns the `ChatSession`, the Ktor client and the workspace view. The panel, the status bar and the actions all use that one session, so closing the tool window does not forget a conversation, and Cancel or New Conversation works from the Tools menu even when the panel is closed. A turn is launched on the service scope rather than the Compose scope, which is why closing the panel does not abort it.
+
+**Settings are the source of the connection.** `AtlasSettings` persists the proxy URL, the permission mode and the status-bar poll interval in `atlas.xml`; the token is never there. A blank URL follows `ATLAS_PROXY_URL`, and a blank stored token follows `ATLAS_SERVICE_TOKEN_FILE`, so an existing install keeps working. Applying settings publishes a message-bus event; each project service swaps its client only when the URL or token actually changed, and the panel's header and the status bar observe the new value. The permission-mode chips in the panel write the same setting rather than a second, panel-local mode.
+
+**The token is write-only in the UI.** Settings has a password field and a "Remove the stored service token" checkbox; an existing secret is never read back into the field. `ATLAS: Set Service Token` in the Tools menu is the same action without opening the Settings dialog. `PasswordSafe` delegates to the platform keychain (Keychain, Secret Service, Windows credential manager, or the in-memory store in tests), and `AtlasConnection.toString()` prints `<redacted>` instead of the token.
+
+**The status bar polls `/ready`.** The item shows `ATLAS` when every gate passes, `ATLAS · starting` with the failing gates in its tooltip, `ATLAS · offline` when the proxy cannot be reached, and `ATLAS · token` on a 401. Polling pauses while a turn streams and refreshes when it ends; the interval is settable from 5 to 3600 seconds. `/v1/calibration/status` is fetched at startup and on **ATLAS: Refresh Status & Calibration**, not on every poll, because each call re-probes the lens service. A 5-second timeout keeps a blackholed host from leaving the item on "starting" forever. Clicking the item opens the common actions in a popup.
+
+**Progress and the plan are state, not a second transcript.** `ChatSession` now reads the `llm_*`, `v3_*` and `plan_*` events it used to ignore: a transient line under the mode controls shows thinking, prompt-evaluation percentage, the current V3 stage, a veto or a lens intervention, and the panel draws the generated plan with the steps `plan_adherence` marked satisfied. The line is cleared at the end of the turn, so a replay never shows a stale spinner; the plan is cleared when the next turn starts or the conversation is reset.
+
+**Notifications mirror the two things that can wait for the user.** A `permission_request` opens the inline card and a native notification with **View Diff** (when a prediction exists), **Allow Once**, **Allow for Session** (not for a deletion) and **Deny**; the first answer wins. A new error notice opens an error notification with **Open Chat** and **Settings**, and the workspace-mismatch notice opens a warning notification. The notifier observes `ChatSession.state`, not the panel, so a closed tool window does not silence a prompt.
+
+**Actions are the VS Code commands, with JetBrains names.** **ATLAS: Open Chat**, **New Conversation**, **Cancel Current Turn**, **Set Service Token**, **Refresh Status & Calibration** and **Settings** are in the Tools menu; Cancel, New Conversation and Settings are also tool-window title actions, and the status-bar menu carries the useful subset. Each delegates to `AtlasProjectService`, so it operates the same session the panel shows.
+
+**Not seen on screen.** The descriptor test checks that the settings page, the status bar factory, the notification group and the actions are registered; `AtlasStatusTest` covers the `/ready` rules, and `AtlasConfigurableTest` and `AtlasProjectServiceTest` exercise the settings/service wiring under the platform test framework. The status bar's polling loop, the popup menus and notification actions themselves, and every surface's actual appearance, have not been exercised in a running IDE. A `runPyCharm` session that opens Settings, saves a token, watches the status bar go ready, allows a prompt from the notification and opens its diff is the check that would close that gap.
+
 ## Tests
 
-`./gradlew test` runs the suites in one JUnit Platform run: the `BasePlatformTestCase` tool-window test (via the vintage engine) and the JVM suites (Jupiter). Only the tool-window test needs an IDE; none of the others needs a proxy:
+`./gradlew test` runs the suites in one JUnit Platform run: the `BasePlatformTestCase` suites (via the vintage engine) and the JVM suites (Jupiter). The platform suites — the tool window, the settings page and the project service — need the test framework but no IDE window; none of the suites needs a proxy:
 
 | Class | What it covers |
 |---|---|
@@ -145,13 +171,18 @@ suites cover the predictions, the snapshots and both workspace checks;
 | `RealStreamTest` | a recorded real proxy turn, replayed at chunk sizes 1, 7, 64 and 1024 |
 | `ProtocolIsolationTest` | the three IDE-free packages (`protocol`, `client`, `session`) import nothing from `com.intellij` |
 | `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, 401 and non-JSON envelopes, a dropped connection, and every optional endpoint |
-| `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, and an install with no token |
+| `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, an install with no token, URL normalization, and the redacted `toString` |
+| `AtlasStatusTest` | every `/ready` gate combination, the status-bar order of the failing gates, and 401 vs. unreachable failures |
+| `AtlasNotifierTest` | notification content escapes markup while keeping the command or path text intact |
 | `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
 | `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
-| `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, and both workspace checks |
+| `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, both workspace checks and their warning flag, a connection swap leaving the open prompt with its own turn, the transient progress line (including what clears it) and the generated plan with its satisfied steps |
 | `EditPreviewTest` | the tools that name a path, then one table per tool: write_file, edit_file (exact, approximate, replace_all as a boolean, literal `$`), the python and html structural_edit splices, insert_after and replace_lines, and every case that is not previewable |
 | `WorkspaceMismatchTest` | the paths a file op touches, the verdict for each kind of write/edit/delete/move, and the detector as one table of short sessions: FIFO pairing, the one-shot warning, silence on a failed or inconclusive op, and the failed result that answers a denial |
 | `WorkspaceTest` | reads and stats inside the root, an absolute path or a `..` escape refused, a missing or empty root reading nothing, and the alignment verdict for each pair of host paths |
+| `AtlasSettingsTest` | the URL and token precedence, the stored permission-mode wire names, and the poll-interval bounds |
+| `AtlasConfigurableTest` | the settings page builds against the real application services and a memory password safe |
+| `AtlasProjectServiceTest` | one service and one session per project, and a permission-mode write reaching both the setting and the session |
 | `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
 | `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 
@@ -248,7 +279,7 @@ Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the
 | `runWebStorm` | WebStorm 2026.1 | no |
 | `runGoLand` | GoLand 2026.1 | no |
 
-Neither the Stage 3 chat nor the Stage 4 diffs have been **launched in any of them**: the panel, its streaming, its prompt cards, its Cancel button and the diff window are covered by the JVM tests above and by nothing else. A `runPyCharm` session against a live proxy, with an edit allowed and its diff opened, is the check that would close that gap, and it has not been run yet.
+Neither the Stage 3 chat, the Stage 4 diffs nor the Stage 5 IDE integration have been **launched in any of them**: the panel, its streaming, its prompt cards, its Cancel button, the diff window, the settings page, the status bar and the notification actions are covered by the platform, JVM and descriptor tests above and by nothing else. A `runPyCharm` session against a live proxy, with settings opened, a token saved and an edit allowed from the notification and its diff opened, is the check that would close that gap, and it has not been run yet.
 
 The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
 
@@ -264,7 +295,8 @@ Kotlin is intentionally **not** covered by `scripts/code_health.py`, which scans
 build.gradle.kts        # plugin module: IPGP, bundled Compose/Jewel, Ktor, Kotlin toolchain, ktlint
 settings.gradle.kts     # root project
 src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer,
-                        # the diff prediction and workspace checks, and the IDE diff opener
+                        # the diff prediction and workspace checks, the project service,
+                        # settings/token storage, the status bar, notifications and actions
 src/main/resources/     # META-INF/plugin.xml
 src/test/kotlin/        # tool-window test, protocol/client suite, session and workspace suites, mock proxy
 src/test/resources/     # the recorded real proxy turn
