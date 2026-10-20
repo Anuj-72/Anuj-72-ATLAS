@@ -27,6 +27,10 @@ WATCH_POLL_SEC = 0.25
 
 # The proxy forwards this; absence is normal for direct callers.
 REQUEST_ID_HEADER = "X-ATLAS-Request-ID"
+# The largest request body a route takes. The largest real one is a file with
+# its project context, a few MiB; 64 MiB is far above that, and keeps a
+# request without end from filling the service's memory.
+MAX_REQUEST_BODY_BYTES = 64 << 20
 import os
 import sys
 from pathlib import Path
@@ -224,6 +228,17 @@ class V3Handler(BaseHTTPRequestHandler):
         _set_rid(self.headers.get("X-ATLAS-Request-ID", ""))
         if not self._authorized():
             return
+        # The one read of Content-Length: every route reads this many bytes.
+        try:
+            self.body_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.body_length = -1
+        if self.body_length < 0:
+            self._json_response(400, {"error": "Content-Length is not a whole number of 0 or more"})
+            return
+        if self.body_length > MAX_REQUEST_BODY_BYTES:
+            self._json_response(413, {"error": f"request body over {MAX_REQUEST_BODY_BYTES} bytes"})
+            return
         if self.path == "/v3/generate":
             self._handle_generate()
         elif self.path == "/v3/plan":
@@ -297,7 +312,7 @@ class V3Handler(BaseHTTPRequestHandler):
             total_tokens: int
             total_time_ms: float
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -477,7 +492,7 @@ class V3Handler(BaseHTTPRequestHandler):
             rationale: str
             reasons: list[str]
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -570,7 +585,7 @@ class V3Handler(BaseHTTPRequestHandler):
         after lens-scoring, matching write_file's flow so PC-207 lens-veto
         can still reject stub-shaped replacements.
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -615,7 +630,7 @@ class V3Handler(BaseHTTPRequestHandler):
         which extracts symbols from the user message via regex and walks
         the working directory for .py files (with its own size cap).
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -683,7 +698,7 @@ class V3Handler(BaseHTTPRequestHandler):
         Malformed Python does NOT produce ok:false; tree-sitter parses it
         tolerantly and returns a best-effort extraction.
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -729,7 +744,7 @@ class V3Handler(BaseHTTPRequestHandler):
         Conservative by design: ambiguous blocks (template statement tags,
         `<script src>`, non-JS `type`, escaped Python strings) report nothing.
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -763,7 +778,7 @@ class V3Handler(BaseHTTPRequestHandler):
         skipped, and any mention of the name outside its own `def` line counts
         as a reference, so the check errs toward silence.
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -802,7 +817,7 @@ class V3Handler(BaseHTTPRequestHandler):
         cheap and never misses the file in a large repo. Additive: the
         symbols/supported shape is unchanged.
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
@@ -857,7 +872,7 @@ class V3Handler(BaseHTTPRequestHandler):
         Response: {"ok": true, "language": "python", "cyclomatic_complexity": 12}
                   or {"ok": false, "error": "..."}
         """
-        content_len = int(self.headers.get("Content-Length", 0))
+        content_len = self.body_length
         try:
             body = json.loads(self.rfile.read(content_len) or b"{}")
         except json.JSONDecodeError as e:
