@@ -169,7 +169,7 @@ timeouts/output caps; **syntax** = compile/parse check only.
 | Call-graph reasoning (#39) | Preview | Always on, Python files only (the veto, repair context and read/outline edges); hermetic tests; effect on task outcomes not yet measured |
 | Host verification (`ATLAS_VERIFY_IN=host`) | Experimental | Explicit opt-in; removes the container backstop |
 | Benchmark/ablation stack (`ATLAS_V3_*`, lens feedback) | Research-only | Never read by the product runtime (contract-tested) |
-| IDE integration | Supported (VS Code) / Preview (JetBrains plugin) | VS Code: its unit and contract suites and extension job. JetBrains: Plugin Verifier on IDEA, PyCharm, WebStorm and GoLand (2026.1.5 and 2026.2.3); no on-screen acceptance run against a live proxy yet |
+| IDE integration | Preview (VS Code and JetBrains) | VS Code: type-check, lint, unit suite and production bundle in `vscode-extension.yml`; no on-screen acceptance run against a live proxy. JetBrains: Plugin Verifier on IDEA, PyCharm, WebStorm and GoLand (2026.1.5 and 2026.2.3); no on-screen acceptance run against a live proxy yet |
 
 ## Context lengths
 

@@ -150,7 +150,7 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 
 **The token is write-only in the UI.** Settings has a password field and a "Remove the stored service token" checkbox; an existing secret is never read back into the field. `ATLAS: Set Service Token` in the Tools menu is the same action without opening the Settings dialog. `PasswordSafe` delegates to the platform keychain (Keychain, Secret Service, Windows credential manager, or the in-memory store in tests), and `AtlasConnection.toString()` prints `<redacted>` instead of the token.
 
-**The status bar polls `/ready`.** The item shows `ATLAS` when every gate passes, `ATLAS · starting` with the failing gates in its tooltip, `ATLAS · offline` when the proxy cannot be reached, and `ATLAS · token` on a 401. Polling pauses while a turn streams and refreshes when it ends; the interval is settable from 5 to 3600 seconds. `/v1/calibration/status` is fetched at startup and on **ATLAS: Refresh Status & Calibration**, not on every poll, because each call re-probes the lens service. A 5-second timeout keeps a blackholed host from leaving the item on "starting" forever. Clicking the item opens the common actions in a popup.
+**The status bar polls `/ready` and probes a route that needs the token.** The item shows `ATLAS` when every gate passes, `ATLAS · starting` with the failing gates in its tooltip, `ATLAS · offline` when the proxy cannot be reached, and `ATLAS · token` when `/workspace` answers 401. The token probe is separate because `/ready` is open: a wrong or missing token would otherwise leave the item looking ready. Polling pauses while a turn streams and refreshes when it ends; the interval is settable from 5 to 3600 seconds. `/v1/calibration/status` is fetched at startup and on **ATLAS: Refresh Status & Calibration**, not on every poll, because each call re-probes the lens service. A 5-second timeout keeps a blackholed host from leaving the item on "starting" forever. Clicking the item opens the common actions in a popup.
 
 **Progress and the plan are state, not a second transcript.** `ChatSession` now reads the `llm_*`, `v3_*` and `plan_*` events it used to ignore: a transient line under the mode controls shows thinking, prompt-evaluation percentage, the current V3 stage, a veto or a lens intervention, and the panel draws the generated plan with the steps `plan_adherence` marked satisfied. The line is cleared at the end of the turn, so a replay never shows a stale spinner; the plan is cleared when the next turn starts or the conversation is reset.
 
@@ -250,23 +250,12 @@ bash scripts/check-distribution.sh build/distributions/jetbrains-plugin-0.1.0.zi
 - a distribution-contents step after the gate, and the built ZIP uploaded as
   an artifact.
 
-### The Gradle verification-file experiment
+### Dependency verification
 
 The lock file fixes the version of every dependency; it does not prove that the
-bytes behind a version are the bytes that were reviewed. Stage 6 also tried
-Gradle's other mechanism, `gradle/verification-metadata.xml`, which stores a
-SHA-256 for every file a build downloads. The experiment was run before the
-verifier matrix was configured: `--write-verification-metadata sha256` wrote a
-226 KB file with 932 artifacts over 334 components — one checksum for each IDE
-distribution the build then resolved, among everything else — and a gate run
-with the file present passed.
-
-It is **not** part of this build. Dependabot does not update the file, so every
-dependency or platform bump would need a hand regeneration and review; the IDE
-entries are the largest artifacts and the ones that change with a platform
-bump; and a cold-cache rebuild was not made, so the download-time half is not
-measured. The version lock remains the dependency pin, and a verification file,
-if it is ever adopted, needs its own change with that regeneration workflow.
+bytes behind a version are the bytes that were reviewed. A verification file was
+not adopted because Dependabot does not maintain it, so every dependency or
+platform bump would need a hand regeneration and review.
 
 ### What Stage 6 does not prove
 
@@ -285,10 +274,11 @@ against a live proxy remains the check that would close the UI half.
 | `TypesTest` | wire names and modes, absent optionals staying absent, unknown fields and unknown event types, the documented `done.status` rule, the six-code error set, and the task contract |
 | `RealStreamTest` | a recorded real proxy turn, replayed at chunk sizes 1, 7, 64 and 1024 |
 | `ProtocolIsolationTest` | the three IDE-free packages (`protocol`, `client`, `session`) import nothing from `com.intellij` |
-| `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, the structured 400/401/500 errors and a non-JSON envelope, a dropped connection, and every optional endpoint |
+| `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, the structured 400/401/500 errors and a non-JSON envelope, a dropped connection, the token probe's 200/401/404 split, and every optional endpoint |
 | `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, an install with no token, URL normalization, and the redacted `toString` |
 | `AtlasStatusTest` | every `/ready` gate combination, the status-bar order of the failing gates, and 401 vs. unreachable failures |
 | `AtlasNotifierTest` | notification content escapes markup while keeping the command or path text intact |
+| `AtlasStatusBarTooltipTest` | the status-bar tooltip escapes proxy text before it becomes HTML |
 | `TurnManagerTest` | session-id minting, the request shape, the 40-entry cap and the assistant envelope, the allowlist re-send, the busy guard, the task mode, and cancel |
 | `PermissionFlowTest` | auto-allow, allow-once/session/deny, first-answer-wins, a remote deny, turn-end cleanup, one-file-at-a-time deletions, and advisory post failures |
 | `ChatSessionTest` | streaming text into one entry, tool chips with their summaries, the done banner, live prompts, auto-allowed tools, cancellation, the mode controls and reset, the change a successful file op made, the prediction a prompt carries, both workspace checks and their warning flag, a connection swap leaving the open prompt with its own turn, the transient progress line (including what clears it) and the generated plan with its satisfied steps |

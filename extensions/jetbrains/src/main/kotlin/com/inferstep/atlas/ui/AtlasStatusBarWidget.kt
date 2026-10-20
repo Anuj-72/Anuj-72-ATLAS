@@ -1,5 +1,6 @@
-// The ATLAS status bar item: /ready at a configurable interval, calibration
-// on an explicit refresh, and a click menu for the common actions.
+// The ATLAS status bar item: /ready at a configurable interval, a token probe
+// against an authenticated route, calibration on an explicit refresh, and a
+// click menu for the common actions.
 //
 // Polling pauses while a turn streams: the live SSE connection is stronger
 // evidence of connectivity than a probe, and /ready hits four downstream
@@ -9,6 +10,7 @@ package com.inferstep.atlas.ui
 
 import com.inferstep.atlas.client.AtlasClient
 import com.inferstep.atlas.client.AtlasStatus
+import com.inferstep.atlas.client.TokenProbe
 import com.inferstep.atlas.client.statusFromFailure
 import com.inferstep.atlas.client.statusFromReady
 import com.inferstep.atlas.ide.AtlasProjectService
@@ -22,6 +24,7 @@ import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.StatusBarWidgetFactory
 import com.intellij.util.Consumer
+import com.intellij.xml.util.XmlStringUtil
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -58,6 +61,25 @@ class AtlasStatusBarWidgetFactory : StatusBarWidgetFactory {
  * bar saying "starting" forever. */
 private const val STATUS_TIMEOUT_MS = 5_000L
 
+/** The tooltip is HTML, and [detail] and [calibration] carry text from the
+ * proxy's answers. Escape each line so a `<` or `&` in a verdict is shown as
+ * the text the proxy sent rather than interpreted as markup. */
+internal fun statusTooltip(
+    detail: String,
+    calibration: String,
+    running: Boolean,
+): String {
+    val lines = mutableListOf("ATLAS proxy: $detail")
+    if (calibration.isNotEmpty()) {
+        lines += calibration
+    }
+    if (running) {
+        lines += "turn in progress"
+    }
+    lines += "Click for actions."
+    return "<html>${lines.joinToString("<br>") { XmlStringUtil.escapeString(it) }}</html>"
+}
+
 class AtlasStatusBarWidget(
     private val project: Project,
     scope: CoroutineScope,
@@ -74,6 +96,10 @@ class AtlasStatusBarWidget(
     @Volatile private var detail: String = "checking…"
 
     @Volatile private var calibration: String = ""
+
+    /** The last authenticated probe's answer. An unknown answer, such as a
+     * timeout, leaves it as it was; only a 2xx clears a rejection. */
+    @Volatile private var tokenRejected = false
 
     @Volatile private var statusBar: StatusBar? = null
 
@@ -123,17 +149,12 @@ class AtlasStatusBarWidget(
 
     override fun getAlignment(): Float = Component.CENTER_ALIGNMENT
 
-    override fun getTooltipText(): String {
-        val lines = mutableListOf("ATLAS proxy: $detail")
-        if (calibration.isNotEmpty()) {
-            lines += calibration
-        }
-        if (service.session.state.value.running) {
-            lines += "turn in progress"
-        }
-        lines += "Click for actions."
-        return "<html>${lines.joinToString("<br>")}</html>"
-    }
+    override fun getTooltipText(): String =
+        statusTooltip(
+            detail = detail,
+            calibration = calibration,
+            running = service.session.state.value.running,
+        )
 
     override fun getClickConsumer(): Consumer<MouseEvent> = Consumer { showMenu() }
 
@@ -145,9 +166,22 @@ class AtlasStatusBarWidget(
             val connection = service.connection.value
             val client = AtlasClient(connection.url, connection.token)
             try {
+                val tokenProbe =
+                    withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.probeToken() }
+                        ?: TokenProbe.Unknown
+                when (tokenProbe) {
+                    TokenProbe.Accepted -> tokenRejected = false
+                    TokenProbe.Rejected -> tokenRejected = true
+                    TokenProbe.Unknown -> Unit
+                }
                 try {
                     val ready = withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.getReady() }
-                    status = if (ready == null) AtlasStatus.Unreachable else statusFromReady(ready)
+                    status =
+                        when {
+                            tokenRejected -> AtlasStatus.Unauthorized
+                            ready == null -> AtlasStatus.Unreachable
+                            else -> statusFromReady(ready)
+                        }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

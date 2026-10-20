@@ -394,6 +394,19 @@ class AtlasClientTest {
             }
         }
 
+    @ParameterizedTest(name = "{0} -> {1}")
+    @MethodSource("tokenProbes")
+    fun `token probe distinguishes a rejected token from a route it cannot read`(
+        status: Int,
+        want: TokenProbe,
+    ) = runBlocking {
+        MockProxy(MockProxy.Options(workspaceStatus = status)).use { proxy ->
+            AtlasClient(proxy.url).use { client ->
+                assertEquals(want, client.probeToken())
+            }
+        }
+    }
+
     private suspend fun collect(stream: kotlinx.coroutines.flow.Flow<ChatEvent>): List<ChatEvent> {
         val events = mutableListOf<ChatEvent>()
         stream.collect { events += it }
@@ -424,6 +437,14 @@ class AtlasClientTest {
             listOf(
                 Arguments.of(400, AtlasErrorCodes.INVALID_INPUT),
                 Arguments.of(500, AtlasErrorCodes.INTERNAL_ERROR),
+            )
+
+        @JvmStatic
+        fun tokenProbes(): List<Arguments> =
+            listOf(
+                Arguments.of(200, TokenProbe.Accepted),
+                Arguments.of(401, TokenProbe.Rejected),
+                Arguments.of(404, TokenProbe.Unknown),
             )
 
         val TURN =

@@ -6,6 +6,18 @@ package com.inferstep.atlas.client
 
 import com.inferstep.atlas.protocol.ReadyResponse
 
+/** What an authenticated route says about the configured service token. */
+enum class TokenProbe {
+    /** The proxy accepted the token. */
+    Accepted,
+
+    /** The proxy answered 401: the token is missing or wrong. */
+    Rejected,
+
+    /** The route is absent, or answered something other than 2xx/401. */
+    Unknown,
+}
+
 /** What the status bar says about the proxy, in display order. */
 sealed interface AtlasStatus {
     /** Every gate passes and `/v1/agent` will accept a turn. */
