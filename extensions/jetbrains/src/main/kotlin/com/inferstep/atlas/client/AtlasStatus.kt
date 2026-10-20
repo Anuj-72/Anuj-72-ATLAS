@@ -59,6 +59,47 @@ fun statusFromReady(response: ReadyResponse): AtlasStatus {
     return AtlasStatus.Starting(waiting)
 }
 
+/**
+ * The state one poll shows. [ready] is null when `/ready` did not answer, and
+ * an unreachable proxy is "offline" even if the token was rejected on an
+ * earlier poll: the bar does not report a token problem the proxy is not
+ * there to confirm.
+ */
+fun statusFromAnswers(
+    ready: ReadyResponse?,
+    tokenRejected: Boolean,
+): AtlasStatus =
+    when {
+        ready == null -> AtlasStatus.Unreachable
+        tokenRejected -> AtlasStatus.Unauthorized
+        else -> statusFromReady(ready)
+    }
+
+/**
+ * Whether the token stands rejected after this probe. Only a 2xx clears a
+ * rejection and only a 401 sets one: an unknown answer, such as a probe that
+ * timed out or a route an older proxy does not serve, says nothing about the
+ * token and leaves the last answer standing.
+ */
+fun TokenProbe.rejectedAfter(previous: Boolean): Boolean =
+    when (this) {
+        TokenProbe.Accepted -> false
+        TokenProbe.Rejected -> true
+        TokenProbe.Unknown -> previous
+    }
+
+/**
+ * Whether a rejection carries over to [connection]. It belongs to the address
+ * and token it was learned on: a new one is a new question and starts
+ * un-rejected, while an unchanged one keeps the last answer until a probe
+ * contradicts it.
+ */
+fun rejectionApplies(
+    rejected: Boolean,
+    probed: AtlasConnection?,
+    connection: AtlasConnection,
+): Boolean = rejected && probed == connection
+
 /** Map a failed `/ready` request to the state the status bar shows. */
 fun statusFromFailure(error: Throwable): AtlasStatus =
     if (error is AtlasApiError && error.isUnauthorized) {

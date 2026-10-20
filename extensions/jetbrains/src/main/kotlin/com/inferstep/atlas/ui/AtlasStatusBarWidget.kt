@@ -9,10 +9,13 @@
 package com.inferstep.atlas.ui
 
 import com.inferstep.atlas.client.AtlasClient
+import com.inferstep.atlas.client.AtlasConnection
 import com.inferstep.atlas.client.AtlasStatus
 import com.inferstep.atlas.client.TokenProbe
+import com.inferstep.atlas.client.rejectedAfter
+import com.inferstep.atlas.client.rejectionApplies
+import com.inferstep.atlas.client.statusFromAnswers
 import com.inferstep.atlas.client.statusFromFailure
-import com.inferstep.atlas.client.statusFromReady
 import com.inferstep.atlas.ide.AtlasProjectService
 import com.inferstep.atlas.settings.AtlasSettings
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -97,9 +100,13 @@ class AtlasStatusBarWidget(
 
     @Volatile private var calibration: String = ""
 
-    /** The last authenticated probe's answer. An unknown answer, such as a
-     * timeout, leaves it as it was; only a 2xx clears a rejection. */
+    /** The last authenticated probe's answer, for the connection it was
+     * learned on. An unknown answer, such as a timeout, leaves it as it was;
+     * only a 2xx clears a rejection, and a new address or token starts over. */
     @Volatile private var tokenRejected = false
+
+    /** The connection [tokenRejected] belongs to. */
+    @Volatile private var probedConnection: AtlasConnection? = null
 
     @Volatile private var statusBar: StatusBar? = null
 
@@ -164,47 +171,17 @@ class AtlasStatusBarWidget(
                 return
             }
             val connection = service.connection.value
+            tokenRejected = rejectionApplies(tokenRejected, probedConnection, connection)
+            probedConnection = connection
             val client = AtlasClient(connection.url, connection.token)
             try {
-                val tokenProbe =
-                    withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.probeToken() }
-                        ?: TokenProbe.Unknown
-                when (tokenProbe) {
-                    TokenProbe.Accepted -> tokenRejected = false
-                    TokenProbe.Rejected -> tokenRejected = true
-                    TokenProbe.Unknown -> Unit
-                }
-                try {
-                    val ready = withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.getReady() }
-                    status =
-                        when {
-                            tokenRejected -> AtlasStatus.Unauthorized
-                            ready == null -> AtlasStatus.Unreachable
-                            else -> statusFromReady(ready)
-                        }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    status = statusFromFailure(e)
-                }
+                status = probe(client)
                 detail = detailOf(status)
                 if (includeCalibration) {
+                    // A host that did not answer /ready cannot answer this
+                    // either, and the last verdict would read as current.
                     calibration =
-                        try {
-                            val calibrationStatus =
-                                withTimeoutOrNull(
-                                    STATUS_TIMEOUT_MS,
-                                ) { client.getCalibrationStatus() }
-                            if (calibrationStatus == null) {
-                                ""
-                            } else {
-                                "lens: ${calibrationStatus.lens.verdict} · asa: ${calibrationStatus.asa.verdict}"
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            ""
-                        }
+                        if (status == AtlasStatus.Unreachable) "" else calibrationLine(client)
                 }
             } finally {
                 client.close()
@@ -212,6 +189,49 @@ class AtlasStatusBarWidget(
             updateWidget()
         }
     }
+
+    /**
+     * Ask `/ready` first. While the proxy does not answer, "offline" is the
+     * whole answer: a probe would add a second time limit to a poll that has
+     * already used one, and a 401 it could not get says nothing.
+     */
+    private suspend fun probe(client: AtlasClient): AtlasStatus {
+        val ready =
+            try {
+                withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.getReady() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val failed = statusFromFailure(e)
+                if (failed == AtlasStatus.Unauthorized) {
+                    tokenRejected = true
+                }
+                return failed
+            }
+        if (ready == null) {
+            return statusFromAnswers(null, tokenRejected)
+        }
+        val tokenProbe =
+            withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.probeToken() }
+                ?: TokenProbe.Unknown
+        tokenRejected = tokenProbe.rejectedAfter(tokenRejected)
+        return statusFromAnswers(ready, tokenRejected)
+    }
+
+    private suspend fun calibrationLine(client: AtlasClient): String =
+        try {
+            val calibrationStatus =
+                withTimeoutOrNull(STATUS_TIMEOUT_MS) { client.getCalibrationStatus() }
+            if (calibrationStatus == null) {
+                ""
+            } else {
+                "lens: ${calibrationStatus.lens.verdict} · asa: ${calibrationStatus.asa.verdict}"
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            ""
+        }
 
     private fun detailOf(status: AtlasStatus): String =
         when (status) {
