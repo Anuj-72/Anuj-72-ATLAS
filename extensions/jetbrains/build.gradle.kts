@@ -1,6 +1,7 @@
 import org.gradle.api.artifacts.dsl.LockMode
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
@@ -30,6 +31,18 @@ plugins {
 // .github/dependabot.yml also ignores io.ktor for this tree.
 val ktorVersion = "3.4.3"
 val serializationVersion = "1.11.0"
+
+// Which products `verifyPlugin` checks. The CI matrix sets one per job so a
+// runner downloads two IDE distributions rather than eight; a release run
+// leaves it unset and checks all four.
+val verifierProducts =
+    providers
+        .gradleProperty("atlasVerifyProducts")
+        .orNull
+        ?.split(',')
+        ?.map { it.trim().lowercase() }
+        ?.filter { it.isNotEmpty() }
+        ?: listOf("idea", "pycharm", "webstorm", "goland")
 
 // The IDE already ships kotlinx-coroutines and the Kotlin stdlib and puts them
 // on a plugin's classloader through com.intellij.modules.platform, so every
@@ -118,6 +131,11 @@ dependencies {
         bundledModule("intellij.platform.jewel.markdown.core")
         bundledModule("intellij.platform.jewel.markdown.ideLafBridgeStyling")
         testFramework(TestFrameworkType.Platform)
+
+        // Pin the verifier CLI. Without a version the plugin resolves the
+        // newest one, so the gate would quietly become a different check
+        // after a release. 1.411 is the CLI this matrix was measured with.
+        pluginVerifier("1.411")
     }
 }
 
@@ -198,6 +216,64 @@ intellijPlatform {
             sinceBuild = "261"
         }
     }
+
+    // Plugin Verifier: the built ZIP against the four products the plugin
+    // claims, on the 2026.1 line it compiles against and on the current
+    // 2026.2 line. Verifying is not the same question as loading in a sandbox:
+    // it checks every class and API the plugin uses against each product's
+    // binary surface, which is what the four `runIde`-family tasks cannot do
+    // on a machine without a display.
+    //
+    // One product per invocation is how CI keeps four jobs small enough for a
+    // runner's disk: `-PatlasVerifyProducts=pycharm` verifies PyCharm only.
+    // With no property, every product is verified, which is the local release
+    // check.
+    pluginVerification {
+        ides {
+            if ("idea" in verifierProducts) {
+                create(IntelliJPlatformType.IntellijIdea, "2026.1.5")
+                create(IntelliJPlatformType.IntellijIdea, "2026.2.3")
+            }
+            if ("pycharm" in verifierProducts) {
+                create(IntelliJPlatformType.PyCharm, "2026.1.5")
+                create(IntelliJPlatformType.PyCharm, "2026.2.3")
+            }
+            if ("webstorm" in verifierProducts) {
+                create(IntelliJPlatformType.WebStorm, "2026.1.5")
+                create(IntelliJPlatformType.WebStorm, "2026.2.3")
+            }
+            if ("goland" in verifierProducts) {
+                create(IntelliJPlatformType.GoLand, "2026.1.5")
+                create(IntelliJPlatformType.GoLand, "2026.2.3")
+            }
+        }
+
+        // Fail on anything the release should not ship, and on the warnings
+        // that name a binary or dependency problem. Deprecated-API and
+        // experimental-API notes are reported but do not fail: the verifier
+        // reports them by design on a platform this size, and the release
+        // checklist reads the report for them. An ignored problem needs a
+        // reason in the commit or the report, never a blanket mute.
+        failureLevel =
+            listOf(
+                VerifyPluginTask.FailureLevel.COMPATIBILITY_WARNINGS,
+                VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+                VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES,
+                VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+                VerifyPluginTask.FailureLevel.NON_EXTENDABLE_API_USAGES,
+                VerifyPluginTask.FailureLevel.SCHEDULED_FOR_REMOVAL_API_USAGES,
+                VerifyPluginTask.FailureLevel.PLUGIN_STRUCTURE_WARNINGS,
+                VerifyPluginTask.FailureLevel.MISSING_DEPENDENCIES,
+                VerifyPluginTask.FailureLevel.INVALID_PLUGIN,
+            )
+
+        verificationReportsFormats =
+            listOf(
+                VerifyPluginTask.VerificationReportsFormats.PLAIN,
+                VerifyPluginTask.VerificationReportsFormats.HTML,
+                VerifyPluginTask.VerificationReportsFormats.MARKDOWN,
+            )
+    }
 }
 
 tasks.test {
@@ -229,6 +305,15 @@ kotlin {
     compilerOptions {
         languageVersion.set(KotlinVersion.KOTLIN_2_3)
         apiVersion.set(KotlinVersion.KOTLIN_2_3)
+        // Kotlin's compatibility mode writes a delegating method into the
+        // implementing class for every platform interface default, so a class
+        // that overrides nothing still carries `getIcon`, `getAnchor`,
+        // `manage` and the rest of ToolWindowFactory's defaults. The verifier
+        // reads those copies as the plugin's own usages of experimental and
+        // deprecated API. JVM default methods let the platform's own
+        // implementation be the only one, and the toolchain is 21, so no
+        // older consumer needs the bridges.
+        freeCompilerArgs.add("-jvm-default=no-compatibility")
     }
 }
 

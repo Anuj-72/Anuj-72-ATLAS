@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### Added: the JetBrains plugin is verified across four products and audited before release
+
+Stage 6 of the JetBrains plugin ([issue #35](https://github.com/inferstep/ATLAS/issues/35))
+turns the Stage 5 build into a release candidate.
+- `./gradlew verifyPlugin` runs JetBrains' Plugin Verifier against IntelliJ IDEA, PyCharm,
+  WebStorm and GoLand on 2026.1.5 and 2026.2.3. A CI matrix runs one product per job so each
+  runner downloads two IDE distributions, not eight. All eight reports say Compatible. The
+  compile platform stays at 2026.1.3: building against 2026.2 would let a 2026.1 IDE meet
+  bytecode that names a newer API.
+- The verifier found three fixable defects, all fixed rather than muted: the
+  `statusBarWidgetFactory` had no `id` matching `getId()`; `SimpleListCellRenderer.create` is
+  deprecated in 2026.2; and Kotlin's compatibility mode generated delegating methods for
+  `ToolWindowFactory`'s defaults, which the verifier read as the plugin's own experimental and
+  deprecated API usage. Jewel's Markdown composable and `SwingBridgeTheme` remain reported
+  (both experimental, the Markdown composable deprecated in 2026.2), with no plugin-visible
+  replacement.
+- `scripts/check-distribution.sh` audits the built ZIP: one main jar with the expected id and a
+  numeric version, the transport jars present, and no bundled coroutine or Kotlin stdlib jar, no
+  test class, no duplicate jar and no checkout secret. CI runs it and uploads the ZIP and the
+  verifier reports.
+- The token store, the VFS refresh after a proxy write, tool-window recreation and action
+  registration now have tests, and the client suite covers the structured 400 and 500 envelopes.
+- Gradle's `verification-metadata.xml` was tried as an experiment, not adopted: it wrote a
+  226 KB file with 932 artifacts over 334 components, including each IDE distribution, and a
+  gate run with it passed. Dependabot does not maintain it and a cold-cache rebuild was not
+  made, so the version lock remains the dependency pin.
+
 ### Changed: ruff catches swallowed exceptions and complex functions, and lints scripts/
 
 ruff ran Pyflakes only, and not on `scripts/`. Its settings are now in

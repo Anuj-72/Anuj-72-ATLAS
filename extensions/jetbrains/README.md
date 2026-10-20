@@ -2,7 +2,7 @@
 
 A JetBrains IDE client for the [ATLAS](https://github.com/inferstep/ATLAS) agent proxy — a thin UI layer wrapping `atlas-proxy`'s agent loop with no agent logic in the plugin itself.
 
-**Status: Stage 5 — IDE integration.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wired the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Stage 4 added diff review and the workspace checks around it: the change a file-writing call is predicted to make, the exact change it made, and a warning when the proxy is editing a different folder. Stage 5 adds the IDE integration around that conversation: settings and credential-store token storage, a proxy status bar, model/V3 progress and the plan in the panel, native notifications for prompts and failures, and the actions that operate the same session from anywhere in the IDE. Hardening and release are Stage 6.
+**Status: Stage 6 — hardening and release.** Tracking [issue #35](https://github.com/inferstep/ATLAS/issues/35), one pull request per stage. Stage 1 proved a Jewel Compose panel can mount in the ATLAS tool window, follow the IDE theme and recompose incrementally as frames arrive. Stage 2 added the Kotlin client for the atlas-proxy HTTP API. Stage 3 wired the two together: the panel is a real chat, and a turn now carries history, a task contract and the session allowlist, with the permission prompts answered in the tool window. Stage 4 added diff review and the workspace checks around it: the change a file-writing call is predicted to make, the exact change it made, and a warning when the proxy is editing a different folder. Stage 5 adds the IDE integration around that conversation: settings and credential-store token storage, a proxy status bar, model/V3 progress and the plan in the panel, native notifications for prompts and failures, and the actions that operate the same session from anywhere in the IDE. Stage 6 is the release pass: Plugin Verifier across all four products on the 2026.1 and 2026.2 lines, the distribution audited for what it must and must not contain, the same checks in CI, and the verifier's findings fixed.
 
 ## Spike results
 
@@ -160,6 +160,121 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 
 **Not seen on screen.** The descriptor test checks that the settings page, the status bar factory, the notification group and the actions are registered; `AtlasStatusTest` covers the `/ready` rules, and `AtlasConfigurableTest` and `AtlasProjectServiceTest` exercise the settings/service wiring under the platform test framework. The status bar's polling loop, the popup menus and notification actions themselves, and every surface's actual appearance, have not been exercised in a running IDE. A `runPyCharm` session that opens Settings, saves a token, watches the status bar go ready, allows a prompt from the notification and opens its diff is the check that would close that gap.
 
+## Hardening and release (Stage 6)
+
+Stage 6 turns "works here" into a release candidate. The built ZIP is checked
+against every target product's binary surface, the archive itself is audited,
+and the same checks run in CI.
+
+### Plugin Verifier across the products
+
+[JetBrains' Plugin Verifier](https://github.com/JetBrains/intellij-plugin-verifier)
+reads the built ZIP and checks every class, method and extension point the
+plugin names against each product build, without launching the IDE:
+
+```bash
+./gradlew verifyPlugin                                  # all four products, both lines
+./gradlew verifyPlugin -PatlasVerifyProducts=pycharm     # one product, for a small runner
+```
+
+The property exists because the verifier downloads a full IDE distribution per
+product and line, and a standard CI runner's disk cannot hold eight of them. CI
+runs a matrix of four jobs, one product each, so every job is two downloads; a
+local release run leaves the property unset and checks all eight.
+
+| Product | 2026.1.5 | 2026.2.3 |
+|---|---|---|
+| IntelliJ IDEA | IU-261.27258.48 | IU-262.10968.63 |
+| PyCharm | PY-261.27258.51 | PY-262.10968.92 |
+| WebStorm | WS-261.27258.45 | WS-262.10968.77 |
+| GoLand | GO-261.27258.47 | GO-262.10968.67 |
+
+All eight reports say **Compatible**. The 2026.1 reports carry two
+experimental-API usages (`Markdown` and `SwingBridgeTheme`); the 2026.2
+reports add one deprecated usage (`Markdown`) and carry the same two
+experimental ones.
+
+The plugin compiles against 2026.1.3 and declares `sinceBuild = 261`, so the
+2026.1 line is the supported baseline and 2026.2 is the current stable line
+whose removals matter. The compile platform is deliberately **not** moved to
+2026.2: building against it would let a 2026.1 IDE meet bytecode that names a
+newer API. Verifying against a newer build is the forward-compatibility check.
+
+### What the verifier found, and the fixes
+
+- **`statusBarWidgetFactory` had no `id`,** so it did not match the string
+  `AtlasStatusBarWidgetFactory.getId()` returns. The descriptor now sets
+  `id="AtlasStatus"`, and the verifier's plugin-structure warning is gone.
+- **`SimpleListCellRenderer.create(…)` is deprecated in 2026.2,** the
+  `Customizer` overload as well as the `String` one. The permission-mode box
+  now uses a small subclass of the renderer and overrides `customize()`,
+  which is the class's own abstraction and not deprecated on either line.
+- **Kotlin's compatibility mode generated delegating methods** in
+  `AtlasToolWindowFactory` for `ToolWindowFactory`'s default methods, and the
+  verifier read each copy as the plugin's own experimental or deprecated API
+  usage. Compiling with `-jvm-default=no-compatibility` lets the platform's
+  implementation be the only one; the six delegating methods, each reported as
+  an override and an invocation, disappeared from both reports.
+- **Jewel's Markdown composable and `SwingBridgeTheme` remain reported.** Both
+  are experimental API in 2026.2 and the Markdown composable is deprecated
+  there too. No plugin-visible replacement exists (see the Stage 1 spike
+  results), so they stay, are reported, and are read at release rather than
+  muted.
+
+The task fails on compatibility warnings and problems,
+internal/override-only/non-extendable API, scheduled-for-removal API,
+plugin-structure warnings, missing dependencies and an invalid plugin. Deprecated and experimental reports do not fail it: a new
+deprecation should not block a release, while a structural defect or an API the
+next line removes should.
+
+### Packaging audit
+
+`scripts/check-distribution.sh` reads the built ZIP the way a user installs it
+and fails when it contains the wrong id, no numeric version, a bundled
+coroutine or Kotlin stdlib jar, a missing transport jar, a duplicate jar name, a
+test class, or a checkout file such as `.env`, `secrets/` or a key. It is a
+script rather than a Gradle task so it can also be pointed at a downloaded CI
+artifact:
+
+```bash
+bash scripts/check-distribution.sh
+bash scripts/check-distribution.sh build/distributions/jetbrains-plugin-0.1.0.zip
+```
+
+### CI
+
+`.github/workflows/jetbrains-plugin.yml` keeps the gate and lock jobs and adds:
+
+- a `verify-plugin` matrix of four jobs, one product each (two IDE downloads
+  per runner), with the verifier report uploaded whether it passed or failed;
+- a distribution-contents step after the gate, and the built ZIP uploaded as
+  an artifact.
+
+### The Gradle verification-file experiment
+
+The lock file fixes the version of every dependency; it does not prove that the
+bytes behind a version are the bytes that were reviewed. Stage 6 also tried
+Gradle's other mechanism, `gradle/verification-metadata.xml`, which stores a
+SHA-256 for every file a build downloads. The experiment was run before the
+verifier matrix was configured: `--write-verification-metadata sha256` wrote a
+226 KB file with 932 artifacts over 334 components — one checksum for each IDE
+distribution the build then resolved, among everything else — and a gate run
+with the file present passed.
+
+It is **not** part of this build. Dependabot does not update the file, so every
+dependency or platform bump would need a hand regeneration and review; the IDE
+entries are the largest artifacts and the ones that change with a platform
+bump; and a cold-cache rebuild was not made, so the download-time half is not
+measured. The version lock remains the dependency pin, and a verification file,
+if it is ever adopted, needs its own change with that regeneration workflow.
+
+### What Stage 6 does not prove
+
+Four-way binary compatibility is now checked. The **on-screen** behaviour is
+not: no IDE has been launched here, no live atlas-proxy was run, and Windows is
+still untried. The smoke-test table below is unchanged, and a `runPyCharm` run
+against a live proxy remains the check that would close the UI half.
+
 ## Tests
 
 `./gradlew test` runs the suites in one JUnit Platform run: the `BasePlatformTestCase` suites (via the vintage engine) and the JVM suites (Jupiter). The platform suites — the tool window, the settings page and the project service — need the test framework but no IDE window; none of the suites needs a proxy:
@@ -170,7 +285,7 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 | `TypesTest` | wire names and modes, absent optionals staying absent, unknown fields and unknown event types, the documented `done.status` rule, the six-code error set, and the task contract |
 | `RealStreamTest` | a recorded real proxy turn, replayed at chunk sizes 1, 7, 64 and 1024 |
 | `ProtocolIsolationTest` | the three IDE-free packages (`protocol`, `client`, `session`) import nothing from `com.intellij` |
-| `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, 401 and non-JSON envelopes, a dropped connection, and every optional endpoint |
+| `AtlasClientTest` | the client against an in-process HTTP fixture: streaming, the permission pause and its resume, cancel, the structured 400/401/500 errors and a non-JSON envelope, a dropped connection, and every optional endpoint |
 | `AtlasConnectionTest` | the documented default URL, a blank URL, the token file, an install with no token, URL normalization, and the redacted `toString` |
 | `AtlasStatusTest` | every `/ready` gate combination, the status-bar order of the failing gates, and 401 vs. unreachable failures |
 | `AtlasNotifierTest` | notification content escapes markup while keeping the command or path text intact |
@@ -183,6 +298,9 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 | `AtlasSettingsTest` | the URL and token precedence, the stored permission-mode wire names, and the poll-interval bounds |
 | `AtlasConfigurableTest` | the settings page builds against the real application services and a memory password safe |
 | `AtlasProjectServiceTest` | one service and one session per project, and a permission-mode write reaching both the setting and the session |
+| `AtlasTokenStoreTest` | the token round trip through PasswordSafe, including the blank value that removes it |
+| `AtlasWorkspaceRefreshTest` | a file written outside the IDE is found in the VFS after `refreshWorkspacePath` |
+| `AtlasToolWindowFactoryTest` | the Compose panel mounts in a registered tool window, recreation keeps the project session, every action is registered, and the descriptor keeps the Compose module and the Stage 5 extensions |
 | `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
 | `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 
@@ -211,7 +329,17 @@ All commands run from `extensions/jetbrains/`:
 ./gradlew ktlintCheck      # Kotlin formatting and lint gate
 ./gradlew ktlintFormat     # apply the same rules
 ./gradlew buildPlugin      # build the distributable ZIP
+./gradlew verifyPlugin     # Plugin Verifier, all four products on both lines
+bash scripts/check-distribution.sh   # audit the built ZIP
 ```
+
+`verifyPlugin` downloads two IDE distributions per product; pass
+`-PatlasVerifyProducts=idea` (or `pycharm`, `webstorm`, `goland`) to check one
+product, as the CI matrix does.
+
+The ZIP in `build/distributions/` is installed with **Settings → Plugins →
+Install Plugin from Disk**. It is not signed or published to JetBrains
+Marketplace; publishing is a separate decision from this release check.
 
 The four run tasks download a full IDE on first use, which is large and slow. They exist so the plugin can be smoke-tested against each product rather than assuming IDEA compatibility.
 
@@ -264,9 +392,9 @@ so which IDE build a sandbox run downloads is not fixed by it; the OS-specific i
 reaches the lock file in any case, which records the OS-less line `idea:idea:2026.1.3`.
 `verifyPlugin` and publishing have configurations of their own that are not locked either.
 Locking has been built and renewed on Linux and on macOS 15.5 (arm64, OpenJDK 21), where the
-strict gate passes with 62 tests and `--write-locks` writes the same lock file byte for byte.
-Windows is still untried, and the platform bump in stage 6 needs a lock that a Windows machine
-can build from as well.
+strict gate passes and `--write-locks` writes the same lock file byte for byte. Windows is still
+untried: no Windows build has been made. The IDE distributions Plugin Verifier downloads are
+outside the lock entirely, so a verifier run resolves those from the platform's own repository.
 
 ## Smoke-test status
 
@@ -281,7 +409,7 @@ Each `runIde`-family task launches a sandboxed IDE with the built plugin, so the
 
 Neither the Stage 3 chat, the Stage 4 diffs nor the Stage 5 IDE integration have been **launched in any of them**: the panel, its streaming, its prompt cards, its Cancel button, the diff window, the settings page, the status bar and the notification actions are covered by the platform, JVM and descriptor tests above and by nothing else. A `runPyCharm` session against a live proxy, with settings opened, a token saved and an edit allowed from the notification and its diff opened, is the check that would close that gap, and it has not been run yet.
 
-The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Treat four-way compatibility as unverified until each run task has been smoke-tested.
+The PyCharm run is the one that reproduced the Stage 1 `NoClassDefFoundError` above, and the one that confirmed the Markdown route. With the tool window forced visible so its content factory actually runs, the plugin loads (`Loaded custom plugins: ATLAS` in the sandbox log, with no `has dependency on … which is not installed` line for it), the tool window mounts, Jewel's Markdown renderer composes the assistant text, and no exception names the plugin. The other three have not been launched — their sandboxes have no project or tool-window state, so the tool window was never exercised. Four-way **binary** compatibility is checked by Plugin Verifier; the on-screen behaviour is not. Treat the UI as unverified until each run task has been smoke-tested.
 
 ## Kotlin style
 
@@ -300,5 +428,6 @@ src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy clie
 src/main/resources/     # META-INF/plugin.xml
 src/test/kotlin/        # tool-window test, protocol/client suite, session and workspace suites, mock proxy
 src/test/resources/     # the recorded real proxy turn
+scripts/                # the release ZIP audit
 .editorconfig           # ktlint rules (single source)
 ```

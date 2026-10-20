@@ -49,7 +49,10 @@
                                  parentId="tools"
                                  instance="com.inferstep.atlas.settings.AtlasConfigurable"/>
 
-        <statusBarWidgetFactory implementation="com.inferstep.atlas.ui.AtlasStatusBarWidgetFactory"/>
+        <!-- The id must equal AtlasStatusBarWidgetFactory.getId(); the verifier
+             fails the plugin structure when the two disagree. -->
+        <statusBarWidgetFactory id="AtlasStatus"
+                                implementation="com.inferstep.atlas.ui.AtlasStatusBarWidgetFactory"/>
 
         <notificationGroup id="ATLAS" displayType="BALLOON"/>
     </extensions>

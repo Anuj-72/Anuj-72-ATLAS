@@ -81,6 +81,8 @@ class AtlasStatusBarWidget(
 
     override fun ID(): String = ID
 
+    // Only the no-argument presentation is implemented. The PlatformType
+    // overload is deprecated, and its default implementation delegates here.
     override fun getPresentation(): StatusBarWidget.WidgetPresentation = this
 
     override fun install(statusBar: StatusBar) {
