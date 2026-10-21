@@ -376,7 +376,7 @@ tier 上限为 0（无上限）；由循环内部的检测器栈决定何时中�
 
 `comparison` 仍描述契约与旧有机制的对比；`influences_live_decision` 仍描述观察者及其 sink 能否影响策略，且保持为 false。一次 schema 变更意味着一个新版本 —— 封闭字段集加一个为它编写的读取器 —— 从不是对既有版本的重定义，也从不是一个对未知字段耸肩放行的解析器。
 
-客户端：TUI 对普通消息发送 `work`，对一次性 `/ask <message>` 发送 `question`；e2e 与可靠性 harness 发送 `work`。VS Code 扩展尚不发送契约，因此其请求不获得 V3 候选（[CANDIDATE_POLICY.md](../../CANDIDATE_POLICY.md)）。`expected_outputs` 与 `verification` 会被携带与校验，但**尚未迁移** —— 交付物与验证义务仍按旧方式推导。
+客户端：TUI 对普通消息发送 `work`，对一次性 `/ask <message>` 发送 `question`；VS Code 扩展与 JetBrains 插件发送用户选择的 Work/Question 模式，默认为 `work`；e2e 与可靠性 harness 发送 `work`。每个自有客户端都会声明，因此没有契约的请求来自外部调用者，不获得 V3 候选（[CANDIDATE_POLICY.md](../../CANDIDATE_POLICY.md)）。`expected_outputs` 与 `verification` 会被携带与校验，但**尚未迁移** —— 交付物与验证义务仍按旧方式推导。
 
 ### Plan 模式（按轮次预检）
 

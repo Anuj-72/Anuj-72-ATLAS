@@ -531,8 +531,10 @@ new version with a closed field set and a reader for it — never a redefinition
 version, and never a parser that shrugs at unknown fields.
 
 Clients: the TUI sends `work` for an ordinary message and `question` for a one-shot `/ask <message>`;
-the e2e and reliability harnesses send `work`. The VS Code extension sends no contract yet, so its
-requests get no V3 candidate ([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). `expected_outputs` and `verification` are carried and
+the VS Code extension and the JetBrains plugin send the Work/Question mode the user selected, `work`
+by default; the e2e and reliability harnesses send `work`. Every owned client declares, so a request
+with no contract is a stranger's and gets no V3 candidate
+([CANDIDATE_POLICY.md](CANDIDATE_POLICY.md)). `expected_outputs` and `verification` are carried and
 validated but **not yet migrated** — deliverable and verification obligations are still derived the
 old way.
 

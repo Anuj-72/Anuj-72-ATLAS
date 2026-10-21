@@ -180,9 +180,9 @@ of the routes themselves. Each skip writes one `candidate_generation_bypass`
 capture record carrying the request, the tool, the reason and the predicate
 inputs that decided it — path-free and content-free, like every capture record.
 
-A client that sends no contract gets no V3 candidate. The TUI sends one; the
-VS Code extension does not yet, so its requests keep the model's bytes until
-it does.
+A client that sends no contract gets no V3 candidate. The TUI and both IDE
+clients send one; absence stays reserved for external and legacy callers,
+whose requests keep the model's bytes.
 
 ## Structured mutation scope
 

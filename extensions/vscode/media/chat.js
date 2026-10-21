@@ -14,6 +14,8 @@
 	const inputEl = document.getElementById('input');
 	const sendEl = document.getElementById('send');
 	const stopEl = document.getElementById('stop');
+	const taskWorkEl = document.getElementById('task-work');
+	const taskQuestionEl = document.getElementById('task-question');
 
 	/** The assistant bubble currently receiving streamed text, if any. */
 	let openAssistantEl = null;
@@ -288,6 +290,14 @@
 		inputEl.disabled = busy;
 	}
 
+	/** Render which declaration the next turn will send. The extension host
+	 * owns the value; this only reflects it, so a reopened sidebar and the
+	 * host cannot disagree about what was selected. */
+	function setTaskMode(mode) {
+		taskWorkEl.setAttribute('aria-pressed', String(mode === 'work'));
+		taskQuestionEl.setAttribute('aria-pressed', String(mode === 'question'));
+	}
+
 	function resetAll() {
 		messagesEl.textContent = '';
 		pendingChips.clear();
@@ -379,6 +389,9 @@
 				setProgress('');
 				appendBlock('error-card', message.message);
 				break;
+			case 'taskMode':
+				setTaskMode(message.value);
+				break;
 			case 'busy':
 				setBusy(message.value);
 				break;
@@ -399,6 +412,8 @@
 
 	sendEl.addEventListener('click', submit);
 	stopEl.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
+	taskWorkEl.addEventListener('click', () => vscode.postMessage({ type: 'setTaskMode', mode: 'work' }));
+	taskQuestionEl.addEventListener('click', () => vscode.postMessage({ type: 'setTaskMode', mode: 'question' }));
 	inputEl.addEventListener('keydown', (event) => {
 		if (event.key === 'Enter' && !event.shiftKey) {
 			event.preventDefault();

@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { agentDispatcher, AtlasApiError, AtlasClient } from '../src/client/atlasClient';
 import type { AgentRequest, ChatEvent } from '../src/client/types';
+import { TurnManager } from '../src/session/turnManager';
 import { MockProxy } from './fixtures/mockProxy';
 
 const BASE_REQUEST: AgentRequest = {
@@ -44,6 +45,23 @@ describe('AtlasClient.sendAgentTurn', () => {
 		}
 		expect(events.map((e) => e.type)).toEqual(['turn_start', 'text', 'done']);
 		expect(mock.requests[0].body).toMatchObject({ message: 'hello', session_id: 'test-abc123' });
+	});
+
+	it('puts a turn manager\'s task contract on the wire', async () => {
+		const mock = await startProxy({ agentEvents: [{ type: 'done', data: { summary: '' } }] });
+		const client = new AtlasClient({ baseUrl: mock.url });
+		const turns = new TurnManager();
+
+		for await (const _ of turns.runTurn(client, 'is this a question?', 'default', 'question', '.')) {
+			// drain
+		}
+
+		// What the proxy receives, not what the request object holds: the
+		// contract is what decides whether V3 is consulted at all.
+		expect(mock.requests[0].body).toMatchObject({
+			message: 'is this a question?',
+			task_contract: { task_mode: 'question' },
+		});
 	});
 
 	it('sends the bearer token on every request', async () => {
