@@ -1,6 +1,8 @@
 package com.inferstep.atlas.ui
 
 import androidx.compose.ui.awt.ComposePanel
+import com.inferstep.atlas.ide.AtlasProjectService
+import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.wm.RegisterToolWindowTask
 import com.intellij.openapi.wm.ToolWindowAnchor
 import com.intellij.openapi.wm.ToolWindowManager
@@ -9,13 +11,13 @@ import java.awt.Component
 import java.awt.Container
 
 /**
- * Two guards for the Stage 1 tool window.
+ * Guards for the tool window and the descriptor that puts it on the classpath.
  *
- * Neither can replace the four `runIde`-family smoke runs: the platform test
- * framework only ever runs against the IDEA SDK, where the Compose modules
+ * None of these can replace the four `runIde`-family smoke runs: the platform
+ * test framework only ever runs against the IDEA SDK, where the Compose modules
  * happen to be visible, so it cannot reproduce a product that does not put
- * them on this plugin's classloader. The descriptor test below is the part
- * that can, and it fails if the runtime dependency is dropped again.
+ * them on this plugin's classloader. The descriptor tests below are the part
+ * that can, and they fail if the runtime dependency is dropped again.
  */
 class AtlasToolWindowFactoryTest : BasePlatformTestCase() {
     fun testAtlasToolWindowMountsComposePanel() {
@@ -70,6 +72,37 @@ class AtlasToolWindowFactoryTest : BasePlatformTestCase() {
     }
 
     /**
+     * Tool-window recreation: the content is thrown away and built again, as
+     * the platform does when the window is closed and reopened. The
+     * conversation lives on the project service, so the second mount must use
+     * the same session rather than a fresh one — the property that keeps a
+     * running turn and its history alive across a close.
+     */
+    fun testRecreatingTheContentKeepsTheProjectSession() {
+        val toolWindow =
+            ToolWindowManager.getInstance(project).registerToolWindow(
+                RegisterToolWindowTask("ATLAS", ToolWindowAnchor.RIGHT),
+            )
+        val factory = AtlasToolWindowFactory()
+        factory.createToolWindowContent(project, toolWindow)
+        val session = AtlasProjectService.getInstance(project).session
+
+        toolWindow.contentManager.removeAllContents(true)
+        factory.createToolWindowContent(project, toolWindow)
+
+        assertEquals(
+            "the rebuilt window must have one content tab",
+            1,
+            toolWindow.contentManager.contents.size,
+        )
+        assertSame(
+            "the rebuilt window must keep the project's session",
+            session,
+            AtlasProjectService.getInstance(project).session,
+        )
+    }
+
+    /**
      * Stage 5's four user-facing surfaces are extensions, not code the tool
      * window mounts: settings, the status bar, the notification group and the
      * actions. A missing registration fails here rather than in a smoke run.
@@ -93,6 +126,28 @@ class AtlasToolWindowFactoryTest : BasePlatformTestCase() {
             "the chat action must be registered",
             descriptor.contains("Atlas.OpenChatAction"),
         )
+    }
+
+    /**
+     * Every action is looked up through ActionManager, not merely grepped out
+     * of the descriptor: a class the platform cannot instantiate is registered
+     * on paper and still fails to open from the menu.
+     */
+    fun testEveryActionIsRegisteredWithThePlatform() {
+        val manager = ActionManager.getInstance()
+        val actions =
+            listOf(
+                "Atlas.OpenChatAction",
+                "Atlas.NewConversationAction",
+                "Atlas.CancelTurnAction",
+                "Atlas.SetServiceTokenAction",
+                "Atlas.RefreshStatusAction",
+                "Atlas.OpenAtlasSettingsAction",
+            )
+
+        actions.forEach { id ->
+            assertNotNull("$id must be a registered action", manager.getAction(id))
+        }
     }
 
     private fun readDescriptor(): String {

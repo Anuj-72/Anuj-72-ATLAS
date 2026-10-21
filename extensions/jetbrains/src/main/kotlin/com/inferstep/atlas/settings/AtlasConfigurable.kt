@@ -11,6 +11,7 @@ import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import javax.swing.JComponent
+import javax.swing.JList
 import javax.swing.JPanel
 
 /**
@@ -43,7 +44,21 @@ class AtlasConfigurable : Configurable {
     override fun getPreferredFocusedComponent(): JComponent = urlField
 
     override fun createComponent(): JComponent {
-        modeBox.renderer = SimpleListCellRenderer.create("") { mode -> mode.wireName() }
+        // A subclass rather than SimpleListCellRenderer.create: the factory
+        // methods are deprecated in 2026.2 (the Customizer overload as well as
+        // the String one), while customize() is the class's own abstraction.
+        modeBox.renderer =
+            object : SimpleListCellRenderer<PermissionMode>() {
+                override fun customize(
+                    list: JList<out PermissionMode>,
+                    value: PermissionMode?,
+                    index: Int,
+                    selected: Boolean,
+                    hasFocus: Boolean,
+                ) {
+                    text = value?.wireName().orEmpty()
+                }
+            }
         tokenField.emptyText.text = "Leave empty to keep the stored token"
         clearToken.addActionListener {
             tokenField.isEnabled = !clearToken.isSelected

@@ -25,6 +25,9 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
 import java.net.ServerSocket
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -157,6 +160,27 @@ class AtlasClientTest {
                 assertEquals(AtlasErrorCodes.UNAUTHORIZED, error.code)
                 assertEquals("missing token", error.detail)
                 assertTrue(error.isUnauthorized)
+            }
+        }
+    }
+
+    @ParameterizedTest(name = "{0} {1}")
+    @MethodSource("structuredFailures")
+    fun `a structured HTTP failure keeps the proxy's code and detail`(
+        status: Int,
+        code: String,
+    ) {
+        val envelope = """{"error":"$code","detail":"the proxy said no","api_version":"1.0.0"}"""
+        MockProxy(MockProxy.Options(agentStatus = status, agentBody = envelope)).use { proxy ->
+            AtlasClient(proxy.url).use { client ->
+                val error =
+                    assertThrows(AtlasApiError::class.java) {
+                        runBlocking { collect(client.agentTurn(request())) }
+                    }
+
+                assertEquals(status, error.status)
+                assertEquals(code, error.code)
+                assertEquals("the proxy said no", error.detail)
             }
         }
     }
@@ -370,6 +394,19 @@ class AtlasClientTest {
             }
         }
 
+    @ParameterizedTest(name = "{0} -> {1}")
+    @MethodSource("tokenProbes")
+    fun `token probe distinguishes a rejected token from a route it cannot read`(
+        status: Int,
+        want: TokenProbe,
+    ) = runBlocking {
+        MockProxy(MockProxy.Options(workspaceStatus = status)).use { proxy ->
+            AtlasClient(proxy.url).use { client ->
+                assertEquals(want, client.probeToken())
+            }
+        }
+    }
+
     private suspend fun collect(stream: kotlinx.coroutines.flow.Flow<ChatEvent>): List<ChatEvent> {
         val events = mutableListOf<ChatEvent>()
         stream.collect { events += it }
@@ -394,6 +431,21 @@ class AtlasClientTest {
 
     private companion object {
         const val PROMPT_TIMEOUT_MS = 20_000L
+
+        @JvmStatic
+        fun structuredFailures(): List<Arguments> =
+            listOf(
+                Arguments.of(400, AtlasErrorCodes.INVALID_INPUT),
+                Arguments.of(500, AtlasErrorCodes.INTERNAL_ERROR),
+            )
+
+        @JvmStatic
+        fun tokenProbes(): List<Arguments> =
+            listOf(
+                Arguments.of(200, TokenProbe.Accepted),
+                Arguments.of(401, TokenProbe.Rejected),
+                Arguments.of(404, TokenProbe.Unknown),
+            )
 
         val TURN =
             listOf(

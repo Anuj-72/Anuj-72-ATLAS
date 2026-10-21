@@ -139,6 +139,7 @@ job on this list that does not start gives no red:
 | `test results upload`, `test results upload (extension)` | The result of each test sent to Codecov, also when a test job failed. A refused upload turns only this job red. When a job stopped before its tests ran there is no file of results; the upload job then says so and is not red for it | The same: a report to Codecov; a refused upload turns only this job red. |
 | `lint + test + build` | Build of the VS Code extension | It starts only when the VS Code extension's files change. |
 | `ktlint + test + build` | Build of the JetBrains plugin | It starts only when the JetBrains plugin's files change. |
+| `verifier (idea)`, `verifier (pycharm)`, `verifier (webstorm)`, `verifier (goland)` | Plugin Verifier reads the built JetBrains plugin ZIP against each product on the 2026.1 and 2026.2 lines, and uploads the report | Each job downloads two IDE distributions, so it starts only when the plugin's files change, one product per job to fit a runner's disk. |
 | the `PR build check` jobs | Each service image builds | They do not start in the merge queue. |
 
 A check that compares a change with its base compares with the base branch

@@ -67,3 +67,57 @@ jobs:
         run: |
           ./gradlew --no-daemon --write-locks ktlintCheck test verifyPluginProjectConfiguration buildPlugin
           git diff --exit-code -- gradle.lockfile
+
+      # The ZIP is what a user installs, so the release check reads it rather
+      # than the build directory: one main jar, the declared id and version,
+      # the transport jars present, and no coroutine/stdlib copy, test class
+      # or checkout secret inside.
+      - name: distribution contents
+        run: bash scripts/check-distribution.sh
+
+      - name: upload plugin distribution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: jetbrains-plugin
+          path: extensions/jetbrains/build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # Plugin Verifier answers the question a sandbox run cannot: does every
+  # class and API the plugin uses exist in this product's binary surface? One
+  # product per job keeps each runner to two IDE downloads (the 2026.1 line it
+  # compiles against and the current 2026.2 line), which fits a standard
+  # runner's disk. The local release check runs all four products at once.
+  verify-plugin:
+    name: verifier (${{ matrix.product }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        product: [idea, pycharm, webstorm, goland]
+    defaults:
+      run:
+        working-directory: extensions/jetbrains
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: verify ${{ matrix.product }}
+        run: ./gradlew --no-daemon verifyPlugin -PatlasVerifyProducts=${{ matrix.product }}
+
+      - name: upload verifier report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: plugin-verifier-${{ matrix.product }}
+          path: extensions/jetbrains/build/reports/pluginVerifier/**
+          if-no-files-found: warn
+          retention-days: 14

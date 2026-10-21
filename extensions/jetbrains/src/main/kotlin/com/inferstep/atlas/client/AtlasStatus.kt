@@ -6,6 +6,18 @@ package com.inferstep.atlas.client
 
 import com.inferstep.atlas.protocol.ReadyResponse
 
+/** What an authenticated route says about the configured service token. */
+enum class TokenProbe {
+    /** The proxy accepted the token. */
+    Accepted,
+
+    /** The proxy answered 401: the token is missing or wrong. */
+    Rejected,
+
+    /** The route is absent, or answered something other than 2xx/401. */
+    Unknown,
+}
+
 /** What the status bar says about the proxy, in display order. */
 sealed interface AtlasStatus {
     /** Every gate passes and `/v1/agent` will accept a turn. */
@@ -46,6 +58,47 @@ fun statusFromReady(response: ReadyResponse): AtlasStatus {
         }
     return AtlasStatus.Starting(waiting)
 }
+
+/**
+ * The state one poll shows. [ready] is null when `/ready` did not answer, and
+ * an unreachable proxy is "offline" even if the token was rejected on an
+ * earlier poll: the bar does not report a token problem the proxy is not
+ * there to confirm.
+ */
+fun statusFromAnswers(
+    ready: ReadyResponse?,
+    tokenRejected: Boolean,
+): AtlasStatus =
+    when {
+        ready == null -> AtlasStatus.Unreachable
+        tokenRejected -> AtlasStatus.Unauthorized
+        else -> statusFromReady(ready)
+    }
+
+/**
+ * Whether the token stands rejected after this probe. Only a 2xx clears a
+ * rejection and only a 401 sets one: an unknown answer, such as a probe that
+ * timed out or a route an older proxy does not serve, says nothing about the
+ * token and leaves the last answer standing.
+ */
+fun TokenProbe.rejectedAfter(previous: Boolean): Boolean =
+    when (this) {
+        TokenProbe.Accepted -> false
+        TokenProbe.Rejected -> true
+        TokenProbe.Unknown -> previous
+    }
+
+/**
+ * Whether a rejection carries over to [connection]. It belongs to the address
+ * and token it was learned on: a new one is a new question and starts
+ * un-rejected, while an unchanged one keeps the last answer until a probe
+ * contradicts it.
+ */
+fun rejectionApplies(
+    rejected: Boolean,
+    probed: AtlasConnection?,
+    connection: AtlasConnection,
+): Boolean = rejected && probed == connection
 
 /** Map a failed `/ready` request to the state the status bar shows. */
 fun statusFromFailure(error: Throwable): AtlasStatus =
