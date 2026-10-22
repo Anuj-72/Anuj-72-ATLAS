@@ -230,11 +230,11 @@ next line removes should.
 ### Packaging audit
 
 `scripts/check-distribution.sh` reads the built ZIP the way a user installs it
-and fails when it contains the wrong id, no numeric version, a bundled
-coroutine or Kotlin stdlib jar, a missing transport jar, a duplicate jar name, a
-test class, or a checkout file such as `.env`, `secrets/` or a key. It is a
-script rather than a Gradle task so it can also be pointed at a downloaded CI
-artifact:
+and fails when it contains the wrong id, no numeric version, a missing plugin
+icon or one that is not 40 x 40, a bundled coroutine or Kotlin stdlib jar, a
+missing transport jar, a duplicate jar name, a test class, or a checkout file
+such as `.env`, `secrets/` or a key. It is a script rather than a Gradle task so
+it can also be pointed at a downloaded CI artifact:
 
 ```bash
 bash scripts/check-distribution.sh
@@ -415,7 +415,7 @@ settings.gradle.kts     # root project
 src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer,
                         # the diff prediction and workspace checks, the project service,
                         # settings/token storage, the status bar, notifications and actions
-src/main/resources/     # META-INF/plugin.xml
+src/main/resources/     # META-INF/plugin.xml and the light/dark plugin icons
 src/test/kotlin/        # tool-window test, protocol/client suite, session and workspace suites, mock proxy
 src/test/resources/     # the recorded real proxy turn
 scripts/                # the release ZIP audit
