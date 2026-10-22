@@ -20,6 +20,7 @@ import type {
 	PlanLoadedEventData,
 	PlanReviseEventData,
 	ReasoningTokenEventData,
+	TaskMode,
 	TextEventData,
 	ToolCallEventData,
 	ToolResultEventData,
@@ -49,6 +50,9 @@ export const TOKEN_SECRET_KEY = 'atlas.serviceToken';
 /** workspaceState key for the mismatch warning's "Don't show again". */
 export const MISMATCH_DISMISSED_KEY = 'atlas.mismatchWarningDismissed';
 
+/** workspaceState key for the Work/Question selection. */
+export const TASK_MODE_KEY = 'atlas.taskMode';
+
 /** Messages the extension posts INTO the webview (media/chat.js). */
 type OutboundMessage =
 	| { type: 'userMessage'; text: string }
@@ -67,6 +71,7 @@ type OutboundMessage =
 	| { type: 'turnDone' }
 	| { type: 'turnError'; message: string }
 	| { type: 'reset' }
+	| { type: 'taskMode'; value: TaskMode }
 	| { type: 'busy'; value: boolean };
 
 /** Messages the webview posts back to the extension. */
@@ -74,6 +79,7 @@ type InboundMessage =
 	| { type: 'ready' }
 	| { type: 'submit'; text: string }
 	| { type: 'cancel' }
+	| { type: 'setTaskMode'; mode: TaskMode }
 	| { type: 'permissionAnswer'; id: number; choice: PermissionChoice }
 	| { type: 'viewPermissionDiff'; id: number }
 	| { type: 'viewAppliedDiff'; id: number };
@@ -119,6 +125,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 * excluded. */
 	private transcript: OutboundMessage[] = [];
 	private readonly turns = new TurnManager();
+	/** The declaration the next turn sends as `task_contract.task_mode`. */
+	private taskMode: TaskMode;
 	private readonly permissions: PermissionFlow;
 	private readonly output: vscode.OutputChannel;
 
@@ -145,6 +153,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		private readonly workspaceState: vscode.Memento,
 	) {
 		this.output = vscode.window.createOutputChannel('ATLAS');
+		// Work is the default for the same reason the TUI's ordinary message
+		// is work: an unselected owned caller has declared nothing, and work
+		// is what a chat box most often asks for. The selection outlives a
+		// sidebar reload (a per-folder memento) rather than silently flipping
+		// back and declaring the next question as work.
+		// Fail closed to work on a value this version does not know: the proxy
+		// refuses an unknown mode with 400, which would be a silent dead end.
+		const stored = workspaceState.get<TaskMode>(TASK_MODE_KEY, 'work');
+		this.taskMode = stored === 'question' ? 'question' : 'work';
 		this.permissions = new PermissionFlow(this.turns.sessionAllowedTools, {
 			onPrompt: (pending) => this.showPermissionPrompt(pending),
 			onDismiss: (pending, reason) => this.resolvePermissionPrompt(pending, reason),
@@ -199,6 +216,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				case 'submit':
 					void this.runTurn(message.text);
 					break;
+				case 'setTaskMode':
+					this.setTaskMode(message.mode);
+					break;
 				case 'cancel':
 					this.cancelTurn();
 					break;
@@ -218,6 +238,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	cancelTurn(): void {
 		this.turns.cancel();
+	}
+
+	/** Declare the next turn as work or as a question. Only the two wire values
+	 * are accepted — the webview is a renderer, and an unknown one changes
+	 * nothing. Kept in workspaceState, so a reopened sidebar starts on the
+	 * last choice instead of declaring the next question as work. */
+	private setTaskMode(mode: TaskMode): void {
+		if (mode !== 'work' && mode !== 'question') {
+			return;
+		}
+		this.taskMode = mode;
+		void this.workspaceState.update(TASK_MODE_KEY, mode);
+		this.postTransient({ type: 'taskMode', value: mode });
 	}
 
 	newConversation(): void {
@@ -255,7 +288,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			// Inside the try: a SecretStorage failure must surface as an error
 			// card, not make Send silently do nothing.
 			const client = await this.makeClient();
-			for await (const event of this.turns.runTurn(client, message, mode, workingDir)) {
+			for await (const event of this.turns.runTurn(client, message, mode, this.taskMode, workingDir)) {
 				await this.dispatch(event.type, event.data, client);
 			}
 			this.post({ type: 'turnDone' });
@@ -705,6 +738,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		for (const message of this.transcript) {
 			void this.view?.webview.postMessage(message);
 		}
+		// The transcript carries turn output only; the composer's own state
+		// (which declaration the next turn will send) is restored here.
+		this.postTransient({ type: 'taskMode', value: this.taskMode });
 		this.postTransient({ type: 'busy', value: this.turns.busy });
 	}
 
@@ -735,6 +771,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	<main id="messages" aria-live="polite"></main>
 	<div id="progress" hidden></div>
 	<footer id="composer">
+		<div id="task-mode" role="group" aria-label="Task mode">
+			<span id="task-label">Task:</span>
+			<button id="task-work" type="button" aria-pressed="true">Work</button>
+			<button id="task-question" type="button" aria-pressed="false">Question</button>
+		</div>
 		<textarea id="input" rows="2" placeholder="Ask ATLAS..."></textarea>
 		<div id="actions">
 			<button id="send" type="button">Send</button>
