@@ -34,8 +34,12 @@
     </dependencies>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- The stripe button's own icon. The platform reads the dark variant
+             from icons/toolwindow_dark.svg by suffix, so only this file is
+             named here. 13 x 13 is the size the stripe draws it at. -->
         <toolWindow id="ATLAS"
                     anchor="right"
+                    icon="/icons/toolwindow.svg"
                     factoryClass="com.inferstep.atlas.ui.AtlasToolWindowFactory">
             <actions>
                 <action id="Atlas.NewConversationAction"/>

@@ -158,6 +158,8 @@ src/main/kotlin/com/inferstep/atlas/ui/AtlasActions.kt             # commands re
 
 **Actions are the VS Code commands, with JetBrains names.** **ATLAS: Open Chat**, **New Conversation**, **Cancel Current Turn**, **Set Service Token**, **Refresh Status & Calibration** and **Settings** are in the Tools menu; Cancel, New Conversation and Settings are also tool-window title actions, and the status-bar menu carries the useful subset. Each delegates to `AtlasProjectService`, so it operates the same session the panel shows.
 
+**The tool window draws its own icon.** `plugin.xml`'s `<toolWindow>` names `icons/toolwindow.svg`, a 13 x 13 mark — the size the platform draws a stripe button at — with a `_dark` file beside it that the platform selects by suffix, the same light/dark split as the 40 x 40 plugin icons. `AtlasToolWindowIconTest` holds the descriptor entry, both files at 13 x 13 with the mark's four steps, stem and dot, and the pair's shared geometry, so an edit to one theme cannot leave the other drawing a different mark. `scripts/check-distribution.sh` audits only the two `META-INF` plugin icons, so this test is what stands between a renamed file and the platform's default square.
+
 **Not seen on screen.** The descriptor test checks that the settings page, the status bar factory, the notification group and the actions are registered; `AtlasStatusTest` covers the `/ready` rules, and `AtlasConfigurableTest` and `AtlasProjectServiceTest` exercise the settings/service wiring under the platform test framework. The status bar's polling loop, the popup menus and notification actions themselves, and every surface's actual appearance, have not been exercised in a running IDE. A `runPyCharm` session that opens Settings, saves a token, watches the status bar go ready, allows a prompt from the notification and opens its diff is the check that would close that gap.
 
 ## Hardening and release (Stage 6)
@@ -291,6 +293,7 @@ against a live proxy remains the check that would close the UI half.
 | `AtlasTokenStoreTest` | the token round trip through PasswordSafe, including the blank value that removes it |
 | `AtlasWorkspaceRefreshTest` | a file written outside the IDE is found in the VFS after `refreshWorkspacePath` |
 | `AtlasToolWindowFactoryTest` | the Compose panel mounts in a registered tool window, recreation keeps the project session, every action is registered, and the descriptor keeps the Compose module and the Stage 5 extensions |
+| `AtlasToolWindowIconTest` | the descriptor gives the tool window an icon, both theme files are 13 x 13 with the mark's six shapes, and the pair differ only in fill |
 | `DoneOutcomeTest` | the status/reason rules, including an absent status and a stream with no `done` at all |
 | `ToolSummaryTest` | directory listings, capped listings, match counts, the generic fallbacks, and a shape it does not know |
 
@@ -415,8 +418,9 @@ settings.gradle.kts     # root project
 src/main/kotlin/        # Compose chat panel, the protocol layer, the proxy client, the session layer,
                         # the diff prediction and workspace checks, the project service,
                         # settings/token storage, the status bar, notifications and actions
-src/main/resources/     # META-INF/plugin.xml and the light/dark plugin icons
-src/test/kotlin/        # tool-window test, protocol/client suite, session and workspace suites, mock proxy
+src/main/resources/     # META-INF/plugin.xml, the light/dark plugin icons and the tool window's pair
+src/test/kotlin/        # tool-window and icon tests, protocol/client suite, session and workspace suites,
+                        # mock proxy
 src/test/resources/     # the recorded real proxy turn
 scripts/                # the release ZIP audit
 .editorconfig           # ktlint rules (single source)
