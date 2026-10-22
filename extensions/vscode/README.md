@@ -62,6 +62,6 @@ src/
 ├── ui/               # chat webview, status bar, diff provider
 ├── workspace/        # workspace-mismatch heuristic
 └── util/             # error-envelope mapping
-media/                # webview assets
+media/                # webview assets, the Activity Bar glyph and the manifest icon
 test/                 # vitest unit tests + mock proxy fixture
 ```

@@ -39,6 +39,18 @@ grep -q '<id>com.inferstep.atlas</id>' "$work/plugin.xml" || fail "plugin.xml ha
 grep -q 'since-build="261"' "$work/plugin.xml" || fail "plugin.xml does not declare since-build 261"
 grep -q '<version>[0-9][^<]*</version>' "$work/plugin.xml" || fail "plugin.xml has no numeric version"
 
+# The IDE reads the plugin icon from these two file names in META-INF and from
+# nowhere else, so a descriptor check cannot see them: without them Settings |
+# Plugins and the Marketplace listing draw the generic plugin icon. They are
+# also the only files whose size the platform requires, hence the viewBox.
+for icon in META-INF/pluginIcon.svg META-INF/pluginIcon_dark.svg; do
+  if ! unzip -p "$main_jar" "$icon" >"$work/icon-check" 2>/dev/null; then
+    fail "the main jar has no $icon"
+  fi
+  [[ -s "$work/icon-check" ]] || fail "$icon in the main jar is empty"
+  grep -q 'viewBox="0 0 40 40"' "$work/icon-check" || fail "$icon is not a 40x40 SVG"
+done
+
 # The platform provides coroutines and the Kotlin stdlib on the plugin
 # classloader. A second copy inside the ZIP shadows them, which is the
 # two-runtime failure the Ktor pin exists to avoid.

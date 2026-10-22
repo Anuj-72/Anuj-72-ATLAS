@@ -70,8 +70,9 @@ jobs:
 
       # The ZIP is what a user installs, so the release check reads it rather
       # than the build directory: one main jar, the declared id and version,
-      # the transport jars present, and no coroutine/stdlib copy, test class
-      # or checkout secret inside.
+      # the two plugin icons the IDE reads by name from META-INF, the
+      # transport jars present, and no coroutine/stdlib copy, test class or
+      # checkout secret inside.
       - name: distribution contents
         run: bash scripts/check-distribution.sh
 
