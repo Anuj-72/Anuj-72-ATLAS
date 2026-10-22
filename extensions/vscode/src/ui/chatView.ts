@@ -242,7 +242,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	/** Declare the next turn as work or as a question. Only the two wire values
 	 * are accepted — the webview is a renderer, and an unknown one changes
-	 * nothing. Persisted per workspace, like the JetBrains panel's selection. */
+	 * nothing. Kept in workspaceState, so a reopened sidebar starts on the
+	 * last choice instead of declaring the next question as work. */
 	private setTaskMode(mode: TaskMode): void {
 		if (mode !== 'work' && mode !== 'question') {
 			return;
