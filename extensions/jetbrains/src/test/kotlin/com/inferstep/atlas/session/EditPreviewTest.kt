@@ -1,29 +1,19 @@
 // The predicted diff a permission prompt can show: which tools name a path,
 // and what the post-state is for each of them.
 //
-// One table per tool, because every case in a table is the same question asked
-// with other arguments: given this tool, these args and this local file, what
-// diff — or none, which is what an unpredictable call gets. A port of
-// extensions/vscode/test/editPreview.test.ts.
+// Tables, because every case in a table is the same question asked with other
+// arguments: given this tool and these args, which path; and given this tool,
+// these args and this local file, what diff — or none, which is what an
+// unpredictable call gets. The two line-number tools have a table of their own,
+// of plain values. A port of extensions/vscode/test/editPreview.test.ts.
 package com.inferstep.atlas.session
 
 import com.inferstep.atlas.protocol.AtlasJson
-import kotlinx.serialization.json.JsonElement
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.MethodSource
-
-private fun args(json: String): JsonElement = AtlasJson.parseToJsonElement(json)
-
-private fun pred(
-    path: String,
-    kind: EditPredictionKind,
-    left: String,
-    right: String,
-    approximate: Boolean,
-    note: String? = null,
-): EditPrediction = EditPrediction(path, kind, left, right, approximate, note)
 
 private const val SERVER_SIDE_NOTE = "predicted client-side — tree-sitter runs server-side"
 
@@ -64,72 +54,75 @@ class EditPreviewTest {
         argsJson: String,
         want: String?,
     ) {
-        assertEquals(want, editTargetPath(tool, args(argsJson)), name)
+        assertEquals(want, editTargetPath(tool, AtlasJson.parseToJsonElement(argsJson)), name)
     }
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("writeFile")
-    fun `write_file shows the current file against the new content`(
+    @ParameterizedTest(name = "{1}: {0}")
+    @MethodSource("predictions")
+    fun `predicts the change a file-edit call will make, or none when it cannot`(
         name: String,
+        tool: String,
         argsJson: String,
         current: String?,
         want: EditPrediction?,
     ) {
-        assertEquals(want, predictEdit("write_file", args(argsJson), current), name)
+        val args = AtlasJson.parseToJsonElement(argsJson)
+
+        assertEquals(want, predictEdit(tool, args, current), "$tool: $name")
     }
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("editFile")
-    fun `edit_file splices old_str, or falls back to a snippet`(
+    // insert_after and replace_lines edit f.py by line number. The columns: the case, the tool,
+    // the call's args besides the path, the file before the call (empty: not readable locally),
+    // and the file after it with the note the preview shows (empty: no preview). In the two file
+    // columns, \n is a line break.
+    @ParameterizedTest(name = "{1}: {0}")
+    @CsvSource(
+        delimiter = '|',
+        textBlock = """
+        replaces an inclusive range, exactly | replace_lines | "start_line":2,"end_line":3,"content":"X\nY" | a\nb\nc\nd\n | a\nX\nY\nd\n | replaced lines 2-3
+        replaces a single line | replace_lines | "start_line":1,"end_line":1,"content":"Z" | a\nb\nc\nd\n | Z\nb\nc\nd\n | replaced line 1
+        preserves a missing trailing newline | replace_lines | "start_line":2,"end_line":2,"content":"X" | a\nb | a\nX | replaced line 2
+        declines a range that starts before the file | replace_lines | "start_line":0,"end_line":1,"content":"X" | a\nb\nc\nd\n |  |
+        declines an inverted range | replace_lines | "start_line":3,"end_line":2,"content":"X" | a\nb\nc\nd\n |  |
+        declines a range past the end | replace_lines | "start_line":2,"end_line":99,"content":"X" | a\nb\nc\nd\n |  |
+        declines a missing end line | replace_lines | "start_line":1,"content":"X" | a\nb\nc\nd\n |  |
+        declines a line number sent as a string | replace_lines | "start_line":"1","end_line":2,"content":"X" | a\nb\nc\nd\n |  |
+        declines a file that is not readable locally | replace_lines | "start_line":1,"end_line":2,"content":"X" |  |  |
+        inserts after a 1-based line number, and is exact | insert_after | "line":2,"content":"X" | a\nb\nc\n | a\nb\nX\nc\n | inserted after line 2
+        line 0 is the top of the file | insert_after | "line":0,"content":"X" | a\nb\nc\n | X\na\nb\nc\n | inserted at top of file
+        a line past the end appends | insert_after | "line":99,"content":"X" | a\nb\nc\n | a\nb\nc\nX\n | inserted after line 99
+        preserves a missing trailing newline | insert_after | "line":1,"content":"X" | a\nb | a\nX\nb | inserted after line 1
+        does not double a newline the content already carries | insert_after | "line":1,"content":"X\n" | a\nb\nc\n | a\nX\nb\nc\n | inserted after line 1
+        handles multi-line content | insert_after | "line":1,"content":"X\nY" | a\nb\nc\n | a\nX\nY\nb\nc\n | inserted after line 1
+        no line at all is not previewable | insert_after | "content":"X" | a\n |  |
+        a line sent as a string is not a number | insert_after | "line":"2","content":"X" | a\n |  |
+        a fractional line is not a line | insert_after | "line":1.5,"content":"X" | a\n |  |
+        a negative line is refused | insert_after | "line":-1,"content":"X" | a\n |  |
+        a file that is not readable locally | insert_after | "line":1,"content":"X" |  |  |""",
+    )
+    fun `predicts a line-number edit exactly, or none when it cannot`(
         name: String,
-        argsJson: String,
-        current: String?,
-        want: EditPrediction?,
+        tool: String,
+        argsBesidesThePath: String,
+        before: String?,
+        after: String?,
+        note: String?,
     ) {
-        assertEquals(want, predictEdit("edit_file", args(argsJson), current), name)
-    }
+        val args = AtlasJson.parseToJsonElement("""{"path":"f.py",$argsBesidesThePath}""")
+        val current = before?.replace("\\n", "\n")
+        val want =
+            after?.let {
+                EditPrediction(
+                    "f.py",
+                    EditPredictionKind.FILE,
+                    current!!,
+                    it.replace("\\n", "\n"),
+                    false,
+                    note!!,
+                )
+            }
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("structuralPython")
-    fun `structural_edit splices a named python node, or says it could not`(
-        name: String,
-        argsJson: String,
-        current: String,
-        want: EditPrediction?,
-    ) {
-        assertEquals(want, predictEdit("structural_edit", args(argsJson), current), name)
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("structuralHtml")
-    fun `structural_edit splices a top-level html element, or says it could not`(
-        name: String,
-        argsJson: String,
-        want: EditPrediction?,
-    ) {
-        assertEquals(want, predictEdit("structural_edit", args(argsJson), HTML), name)
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("insertAfter")
-    fun `insert_after splices after a line number, exactly`(
-        name: String,
-        argsJson: String,
-        current: String?,
-        want: EditPrediction?,
-    ) {
-        assertEquals(want, predictEdit("insert_after", args(argsJson), current), name)
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("replaceLines")
-    fun `replace_lines replaces an inclusive range, exactly`(
-        name: String,
-        argsJson: String,
-        current: String?,
-        want: EditPrediction?,
-    ) {
-        assertEquals(want, predictEdit("replace_lines", args(argsJson), current), name)
+        assertEquals(want, predictEdit(tool, args, current), "$tool: $name")
     }
 
     companion object {
@@ -147,19 +140,7 @@ class EditPreviewTest {
                 Arguments.of("insert_after", "insert_after", """{"path":"f.py"}""", "f.py"),
                 Arguments.of("replace_lines", "replace_lines", """{"path":"f.py"}""", "f.py"),
                 Arguments.of(
-                    "run_command is not a file edit",
-                    "run_command",
-                    """{"command":"ls"}""",
-                    null,
-                ),
-                Arguments.of(
-                    "move_file is not a file edit",
-                    "move_file",
-                    """{"source":"a"}""",
-                    null,
-                ),
-                Arguments.of(
-                    "delete_file is not a file edit",
+                    "delete_file names a path, but is not a file edit",
                     "delete_file",
                     """{"path":"a.py"}""",
                     null,
@@ -169,42 +150,51 @@ class EditPreviewTest {
             )
 
         @JvmStatic
-        fun writeFile(): List<Arguments> =
+        fun predictions(): List<Arguments> =
             listOf(
+                // write_file: exact, the file on disk (or nothing) against the new content.
                 Arguments.of(
                     "a new file shows empty on the left and its content on the right",
+                    "write_file",
                     """{"path":"new.py","content":"x = 1\n"}""",
                     null,
-                    pred("new.py", EditPredictionKind.FILE, "", "x = 1\n", false, "new file"),
+                    EditPrediction(
+                        "new.py",
+                        EditPredictionKind.FILE,
+                        "",
+                        "x = 1\n",
+                        false,
+                        "new file",
+                    ),
                 ),
                 Arguments.of(
                     "an existing file shows the old content against the new",
+                    "write_file",
                     """{"path":"a.py","content":"new"}""",
                     "old",
-                    pred("a.py", EditPredictionKind.FILE, "old", "new", false),
+                    EditPrediction("a.py", EditPredictionKind.FILE, "old", "new", false),
                 ),
                 Arguments.of(
                     "a missing content field is not previewable",
+                    "write_file",
                     """{"path":"a.py"}""",
                     "old",
                     null,
                 ),
-            )
-
-        @JvmStatic
-        fun editFile(): List<Arguments> =
-            listOf(
+                // edit_file: splices old_str, or falls back to a snippet.
                 Arguments.of(
                     "a unique old_str is an exact single-occurrence replacement",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"aa","new_str":"bb"}""",
                     "aa x cc",
-                    pred("a.txt", EditPredictionKind.FILE, "aa x cc", "bb x cc", false),
+                    EditPrediction("a.txt", EditPredictionKind.FILE, "aa x cc", "bb x cc", false),
                 ),
                 Arguments.of(
                     "two matches without replace_all is approximate — the proxy rejects it",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"aa","new_str":"bb"}""",
                     "aa x aa",
-                    pred(
+                    EditPrediction(
                         "a.txt",
                         EditPredictionKind.FILE,
                         "aa x aa",
@@ -216,15 +206,17 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "replace_all replaces every occurrence",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"aa","new_str":"bb","replace_all":true}""",
                     "aa x aa",
-                    pred("a.txt", EditPredictionKind.FILE, "aa x aa", "bb x bb", false),
+                    EditPrediction("a.txt", EditPredictionKind.FILE, "aa x aa", "bb x bb", false),
                 ),
                 Arguments.of(
                     "replace_all as the string \"true\" is no boolean: one replacement, approximate",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"aa","new_str":"bb","replace_all":"true"}""",
                     "aa x aa",
-                    pred(
+                    EditPrediction(
                         "a.txt",
                         EditPredictionKind.FILE,
                         "aa x aa",
@@ -236,15 +228,23 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "new_str is spliced literally, with no \$-pattern semantics",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"X","new_str":"${'$'}& ${'$'}' ${'$'}1"}""",
                     "a X b",
-                    pred("a.txt", EditPredictionKind.FILE, "a X b", "a \$& \$' \$1 b", false),
+                    EditPrediction(
+                        "a.txt",
+                        EditPredictionKind.FILE,
+                        "a X b",
+                        "a \$& \$' \$1 b",
+                        false,
+                    ),
                 ),
                 Arguments.of(
                     "old_str not found: a snippet diff plus the note",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"zz","new_str":"bb"}""",
                     "aa x aa",
-                    pred(
+                    EditPrediction(
                         "a.txt",
                         EditPredictionKind.SNIPPET,
                         "zz",
@@ -256,9 +256,10 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "file missing locally: a snippet diff plus the workspace note",
+                    "edit_file",
                     """{"path":"a.txt","old_str":"zz","new_str":"bb"}""",
                     null,
-                    pred(
+                    EditPrediction(
                         "a.txt",
                         EditPredictionKind.SNIPPET,
                         "zz",
@@ -267,17 +268,14 @@ class EditPreviewTest {
                         "target file not found in this workspace — showing old_str vs new_str",
                     ),
                 ),
-            )
-
-        @JvmStatic
-        fun structuralPython(): List<Arguments> =
-            listOf(
+                // structural_edit on python: splices the named node, or says it could not.
                 Arguments.of(
                     "function: replaces the def block including its decorators",
+                    "structural_edit",
                     """{"path":"app.py","selector":"function:dashboard",""" +
                         """"content":"@app.route('/dash')\ndef dashboard():\n    return quick()"}""",
                     PY,
-                    pred(
+                    EditPrediction(
                         "app.py",
                         EditPredictionKind.FILE,
                         PY,
@@ -297,10 +295,11 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "function: matches async def too",
+                    "structural_edit",
                     """{"path":"a.py","selector":"function:fetch",""" +
                         """"content":"async def fetch():\n    return 2"}""",
                     "async def fetch():\n    return await go()\n\nprint(1)",
-                    pred(
+                    EditPrediction(
                         "a.py",
                         EditPredictionKind.FILE,
                         "async def fetch():\n    return await go()\n\nprint(1)",
@@ -311,9 +310,10 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "class: replaces the class body and keeps its surroundings",
+                    "structural_edit",
                     """{"path":"a.py","selector":"class:B","content":"class B(Base):\n    x = 9"}""",
                     "class A:\n    def m(self):\n        pass\n\nclass B(Base):\n    x = 1\n\ntail = 2",
-                    pred(
+                    EditPrediction(
                         "a.py",
                         EditPredictionKind.FILE,
                         "class A:\n    def m(self):\n        pass\n\nclass B(Base):\n    x = 1\n\ntail = 2",
@@ -324,10 +324,11 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "no match: the whole file against the content, labelled approximate",
+                    "structural_edit",
                     """{"path":"app.py","selector":"function:missing",""" +
                         """"content":"def missing():\n    pass"}""",
                     PY,
-                    pred(
+                    EditPrediction(
                         "app.py",
                         EditPredictionKind.FILE,
                         PY,
@@ -339,9 +340,10 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "two definitions with the name: the first is replaced, and the note says so",
+                    "structural_edit",
                     """{"path":"a.py","selector":"function:f","content":"def f():\n    return 9"}""",
                     "def f():\n    pass\n\ndef f():\n    return 1",
-                    pred(
+                    EditPrediction(
                         "a.py",
                         EditPredictionKind.FILE,
                         "def f():\n    pass\n\ndef f():\n    return 1",
@@ -350,15 +352,13 @@ class EditPreviewTest {
                         "2 definitions named 'f' — the first one is shown replaced",
                     ),
                 ),
-            )
-
-        @JvmStatic
-        fun structuralHtml(): List<Arguments> =
-            listOf(
+                // structural_edit on html: splices a top-level element, or says it could not.
                 Arguments.of(
                     "<body>: the whole element is replaced, nesting ignored",
+                    "structural_edit",
                     """{"path":"i.html","selector":"<body>","content":"<body><p>new</p></body>"}""",
-                    pred(
+                    HTML,
+                    EditPrediction(
                         "i.html",
                         EditPredictionKind.FILE,
                         HTML,
@@ -375,8 +375,10 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "<div>: the matching close is found past the nested same-tag",
+                    "structural_edit",
                     """{"path":"i.html","selector":"<div>","content":"<div>x</div>"}""",
-                    pred(
+                    HTML,
+                    EditPrediction(
                         "i.html",
                         EditPredictionKind.FILE,
                         HTML,
@@ -395,9 +397,11 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "<html>: a leading doctype in the content is stripped (the proxy's quirk)",
+                    "structural_edit",
                     """{"path":"i.html","selector":"<html>",""" +
                         """"content":"<!DOCTYPE html>\n<html><body>n</body></html>"}""",
-                    pred(
+                    HTML,
+                    EditPrediction(
                         "i.html",
                         EditPredictionKind.FILE,
                         HTML,
@@ -408,8 +412,10 @@ class EditPreviewTest {
                 ),
                 Arguments.of(
                     "tag absent: the whole-file approximate fallback",
+                    "structural_edit",
                     """{"path":"i.html","selector":"<table>","content":"<table></table>"}""",
-                    pred(
+                    HTML,
+                    EditPrediction(
                         "i.html",
                         EditPredictionKind.FILE,
                         HTML,
@@ -418,192 +424,6 @@ class EditPreviewTest {
                         "selector '<table>' not matched locally — showing the proposed content " +
                             "against the whole file",
                     ),
-                ),
-            )
-
-        @JvmStatic
-        fun insertAfter(): List<Arguments> =
-            listOf(
-                Arguments.of(
-                    "inserts after a 1-based line number, and is exact",
-                    """{"path":"f.py","line":2,"content":"X"}""",
-                    "a\nb\nc\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\n",
-                        "a\nb\nX\nc\n",
-                        false,
-                        "inserted after line 2",
-                    ),
-                ),
-                Arguments.of(
-                    "line 0 is the top of the file",
-                    """{"path":"f.py","line":0,"content":"X"}""",
-                    "a\nb\nc\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\n",
-                        "X\na\nb\nc\n",
-                        false,
-                        "inserted at top of file",
-                    ),
-                ),
-                Arguments.of(
-                    "a line past the end appends",
-                    """{"path":"f.py","line":99,"content":"X"}""",
-                    "a\nb\nc\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\n",
-                        "a\nb\nc\nX\n",
-                        false,
-                        "inserted after line 99",
-                    ),
-                ),
-                Arguments.of(
-                    "preserves a missing trailing newline",
-                    """{"path":"f.py","line":1,"content":"X"}""",
-                    "a\nb",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb",
-                        "a\nX\nb",
-                        false,
-                        "inserted after line 1",
-                    ),
-                ),
-                Arguments.of(
-                    "does not double a newline the content already carries",
-                    """{"path":"f.py","line":1,"content":"X\n"}""",
-                    "a\nb\nc\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\n",
-                        "a\nX\nb\nc\n",
-                        false,
-                        "inserted after line 1",
-                    ),
-                ),
-                Arguments.of(
-                    "handles multi-line content",
-                    """{"path":"f.py","line":1,"content":"X\nY"}""",
-                    "a\nb\nc\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\n",
-                        "a\nX\nY\nb\nc\n",
-                        false,
-                        "inserted after line 1",
-                    ),
-                ),
-                Arguments.of(
-                    "no line at all is not previewable",
-                    """{"path":"f.py","content":"X"}""",
-                    "a\n",
-                    null,
-                ),
-                Arguments.of(
-                    "a line sent as a string is not a number",
-                    """{"path":"f.py","line":"2","content":"X"}""",
-                    "a\n",
-                    null,
-                ),
-                Arguments.of(
-                    "a fractional line is not a line",
-                    """{"path":"f.py","line":1.5,"content":"X"}""",
-                    "a\n",
-                    null,
-                ),
-                Arguments.of(
-                    "a negative line is refused",
-                    """{"path":"f.py","line":-1,"content":"X"}""",
-                    "a\n",
-                    null,
-                ),
-                Arguments.of(
-                    "a file that is not readable locally",
-                    """{"path":"f.py","line":1,"content":"X"}""",
-                    null,
-                    null,
-                ),
-            )
-
-        @JvmStatic
-        fun replaceLines(): List<Arguments> =
-            listOf(
-                Arguments.of(
-                    "replaces an inclusive range, exactly",
-                    """{"path":"f.py","start_line":2,"end_line":3,"content":"X\nY"}""",
-                    "a\nb\nc\nd\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\nd\n",
-                        "a\nX\nY\nd\n",
-                        false,
-                        "replaced lines 2-3",
-                    ),
-                ),
-                Arguments.of(
-                    "replaces a single line",
-                    """{"path":"f.py","start_line":1,"end_line":1,"content":"Z"}""",
-                    "a\nb\nc\nd\n",
-                    pred(
-                        "f.py",
-                        EditPredictionKind.FILE,
-                        "a\nb\nc\nd\n",
-                        "Z\nb\nc\nd\n",
-                        false,
-                        "replaced line 1",
-                    ),
-                ),
-                Arguments.of(
-                    "preserves a missing trailing newline",
-                    """{"path":"f.py","start_line":2,"end_line":2,"content":"X"}""",
-                    "a\nb",
-                    pred("f.py", EditPredictionKind.FILE, "a\nb", "a\nX", false, "replaced line 2"),
-                ),
-                Arguments.of(
-                    "declines a range that starts before the file",
-                    """{"path":"f.py","start_line":0,"end_line":1,"content":"X"}""",
-                    "a\nb\nc\nd\n",
-                    null,
-                ),
-                Arguments.of(
-                    "declines an inverted range",
-                    """{"path":"f.py","start_line":3,"end_line":2,"content":"X"}""",
-                    "a\nb\nc\nd\n",
-                    null,
-                ),
-                Arguments.of(
-                    "declines a range past the end",
-                    """{"path":"f.py","start_line":2,"end_line":99,"content":"X"}""",
-                    "a\nb\nc\nd\n",
-                    null,
-                ),
-                Arguments.of(
-                    "declines a missing end line",
-                    """{"path":"f.py","start_line":1,"content":"X"}""",
-                    "a\nb\nc\nd\n",
-                    null,
-                ),
-                Arguments.of(
-                    "declines a line number sent as a string",
-                    """{"path":"f.py","start_line":"1","end_line":2,"content":"X"}""",
-                    "a\nb\nc\nd\n",
-                    null,
-                ),
-                Arguments.of(
-                    "declines a file that is not readable locally",
-                    """{"path":"f.py","start_line":1,"end_line":2,"content":"X"}""",
-                    null,
-                    null,
                 ),
             )
     }

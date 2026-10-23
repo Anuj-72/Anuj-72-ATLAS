@@ -4,86 +4,79 @@ package com.inferstep.atlas.session
 
 import com.inferstep.atlas.protocol.DonePayload
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.MethodSource
 
 class DoneOutcomeTest {
-    @Test
-    fun `carries the status, the reason and the summary`() {
-        val outcome =
-            doneOutcome(
-                DonePayload(
-                    summary = "Stopped: mod.py still does not parse.",
-                    status = "incomplete",
-                    reason = "repair_unfinished",
-                ),
-            )
+    // The banner of each status: its label, and its style. A status this client has never seen
+    // keeps its text as the label and gets the style "other": the panel invents no style.
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(
+        delimiter = '|',
+        textBlock = """
+        completed | completed | completed
+        stopped | stopped | stopped
+        timed_out | timed out | timed_out
+        failed | failed | failed
+        x" onclick="y | x" onclick="y | other""",
+    )
+    fun `gives each status its label and its style, and an unknown one the style other`(
+        status: String,
+        label: String,
+        style: String,
+    ) {
+        val want = DoneOutcome("", status, label, "", style)
 
-        assertEquals(
-            DoneOutcome(
-                text = "Stopped: mod.py still does not parse.",
-                status = "incomplete",
-                label = "incomplete",
-                reason = "repair_unfinished",
-                cls = "incomplete",
-            ),
-            outcome,
-        )
+        assertEquals(want, doneOutcome(DonePayload(status = status)), status)
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("banners")
-    fun `names the banner each status gets, and invents no style of its own`(
+    @MethodSource("outcomes")
+    fun `reads the summary and the reason, and a missing status or done event as incomplete`(
         name: String,
-        status: String,
-        label: String,
-        cls: String,
+        payload: DonePayload?,
+        want: DoneOutcome,
     ) {
-        val outcome = doneOutcome(DonePayload(status = status))
-
-        assertEquals(label, outcome.label, name)
-        assertEquals(cls, outcome.cls, name)
-    }
-
-    @Test
-    fun `reads a missing status as incomplete, as the API doc says`() {
-        val outcome = doneOutcome(DonePayload(summary = "from an older proxy"))
-
-        assertEquals("incomplete", outcome.status)
-        assertEquals("incomplete", outcome.cls)
-        assertEquals("", outcome.reason)
-    }
-
-    @Test
-    fun `handles a stream that ended with no done event at all`() {
-        assertEquals(
-            DoneOutcome(
-                text = "",
-                status = "incomplete",
-                label = "incomplete",
-                reason = "",
-                cls = "incomplete",
-            ),
-            doneOutcome(null),
-        )
+        assertEquals(want, doneOutcome(payload), name)
     }
 
     companion object {
+        // Each outcome reads DoneOutcome(text, status, label, reason, cls).
         @JvmStatic
-        fun banners(): List<Arguments> =
+        fun outcomes(): List<Arguments> =
             listOf(
-                Arguments.of("a completed run", "completed", "completed", "completed"),
-                Arguments.of("an incomplete run", "incomplete", "incomplete", "incomplete"),
-                Arguments.of("a stopped run", "stopped", "stopped", "stopped"),
-                Arguments.of("a timed-out run", "timed_out", "timed out", "timed_out"),
-                Arguments.of("a failed run", "failed", "failed", "failed"),
                 Arguments.of(
-                    "a status this client has never seen",
-                    """x" onclick="y""",
-                    """x" onclick="y""",
-                    "other",
+                    "an incomplete run carries its summary and its reason",
+                    DonePayload(
+                        summary = "Stopped: mod.py still does not parse.",
+                        status = "incomplete",
+                        reason = "repair_unfinished",
+                    ),
+                    DoneOutcome(
+                        "Stopped: mod.py still does not parse.",
+                        "incomplete",
+                        "incomplete",
+                        "repair_unfinished",
+                        "incomplete",
+                    ),
+                ),
+                Arguments.of(
+                    "a missing status reads as incomplete, as the API doc says",
+                    DonePayload(summary = "from an older proxy"),
+                    DoneOutcome(
+                        "from an older proxy",
+                        "incomplete",
+                        "incomplete",
+                        "",
+                        "incomplete",
+                    ),
+                ),
+                Arguments.of(
+                    "a stream that ended with no done event at all reads as incomplete",
+                    null,
+                    DoneOutcome("", "incomplete", "incomplete", "", "incomplete"),
                 ),
             )
     }
