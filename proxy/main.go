@@ -376,7 +376,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           http.MaxBytesHandler(withRequestID(requireServiceToken(newProxyMux())), maxRequestBodyBytes),
+		Handler:           newServerHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       90 * time.Second,
@@ -472,6 +472,15 @@ func requestIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// newServerHandler is the proxy's handler as the server runs it: the routes,
+// which take only requests of the form the clients send, behind the check of
+// the service token, each request with its id, and no body over
+// maxRequestBodyBytes.
+func newServerHandler() http.Handler {
+	routes := acceptOnlyJSONFromClients(newProxyMux())
+	return http.MaxBytesHandler(withRequestID(requireServiceToken(routes)), maxRequestBodyBytes)
 }
 
 // withRequestID wraps a handler so every request carries a correlation
