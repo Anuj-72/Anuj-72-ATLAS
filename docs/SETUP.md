@@ -641,6 +641,8 @@ atlas    # Checks atlas-proxy is reachable, then launches the TUI
 
 Kubernetes deployment with GPU scheduling, health probes, and resource limits. Preview — templates are validated and rendered in CI; there is no automated live-cluster test.
 
+> **Network exposure.** This method publishes all five services as NodePorts (defaults `30080`, `32735`, `31144`, `30070`, `30820`). A NodePort answers on every network address of the node, not only on `127.0.0.1`, so other machines on the same network can reach the services. The K3s templates do not mount the service token, so no service checks a token on this method. Use this method only on a network you trust, or close these ports to other machines with the host firewall. The Docker Compose method binds every published port to `127.0.0.1`.
+
 ### Additional Prerequisites
 
 | Requirement | Details |
