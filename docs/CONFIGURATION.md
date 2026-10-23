@@ -603,9 +603,9 @@ For K3s deployment only. Copy `atlas.conf.example` to `atlas.conf` and edit. The
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_MODELS_DIR` | `/opt/atlas/models` | GGUF model files. Mounted into llama-server at `/models` (read-only) via `hostPath` in `templates/llama-deployment.yaml.tmpl`. |
-| `ATLAS_PROJECTS_DIR` | `/opt/atlas/data/projects` | User project workspace. Bind-mounted at `/workspace` in BOTH atlas-proxy and sandbox pods (`hostPath` with `DirectoryOrCreate`) so the agent sees the same files in both. |
+| `ATLAS_PROJECTS_DIR` | `/opt/atlas/data/projects` | User project workspace. Bind-mounted at `/workspace` in BOTH atlas-proxy and sandbox pods (`hostPath` with `DirectoryOrCreate`) so the agent sees the same files in both. `uninstall.sh --data` removes this folder too, also when it is not inside `ATLAS_DATA_DIR`; the script lists it with its path before it asks. |
 | `ATLAS_LENS_TRAINING_DIR` | `/opt/atlas/data/lens_training` | Lens training-data corpus. Mounted at `/data/lens_training` in the atlas-proxy pod (`hostPath`, `DirectoryOrCreate`) so `atlas lens retrain` on the node reads the corpus the proxy writes. |
-| `ATLAS_DATA_DIR` | `/opt/atlas/data` | Parent of the lens state/projects paths. Printed at install time; `uninstall.sh` does `rm -rf "$ATLAS_DATA_DIR"` when `--data` is set. Not mounted as a volume itself. |
+| `ATLAS_DATA_DIR` | `/opt/atlas/data` | Parent of the lens state/projects paths. Printed at install time; `uninstall.sh` removes it when `--data` is set, and refuses to run with `--data` when this setting or `ATLAS_PROJECTS_DIR` is empty, is not a full path, or names the root folder, your home folder or a folder that holds this repository. Not mounted as a volume itself. |
 
 ### 8.3 Persistent Volume sizes
 
