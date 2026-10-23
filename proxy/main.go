@@ -357,7 +357,7 @@ func main() {
 	log.SetOutput(filteringWriter{w: out})
 
 	addr := ":" + proxyPort
-	log.Printf("ATLAS Proxy v3.1.6 starting on %s", addr)
+	log.Printf("ATLAS Proxy v3.1.7 starting on %s", addr)
 	log.Printf("  Inference: %s", inferenceURL)
 	log.Printf("  Geometric Lens: %s", lensURL)
 	log.Printf("  Sandbox: %s", sandboxURL)
