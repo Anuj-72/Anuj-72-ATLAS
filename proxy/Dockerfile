@@ -24,7 +24,7 @@ FROM docker.io/alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910dd
 # collects superseded -rN builds; a pin may need bumping when Alpine ships
 # a patch (the digest-pinned base keeps the rest of the toolchain fixed).
 RUN apk add --no-cache \
-        curl=8.22.0-r0 \
+        curl=8.23.0-r0 \
         bash=5.3.9-r1
 
 # Non-root application account created inside this image. The proxy reads
