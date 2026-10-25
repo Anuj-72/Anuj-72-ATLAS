@@ -68,23 +68,6 @@ the packaging, and a Stage 1 spike that renders the tool window.
   the plugin can be smoke-tested against each product rather than
   assuming IDEA compatibility.
 
-### Fixed: uninstall.sh --data removed the projects folder without naming it
-
-`scripts/uninstall.sh --data` (and `--all`) removes two folders: the data
-folder (`ATLAS_DATA_DIR`) and the projects folder (`ATLAS_PROJECTS_DIR`),
-where a user's own projects are. The list before its question named only the
-first. Now the list names every folder that the chosen options remove, each
-with its path, and the help text of `--data` and `--all` says the same. For
-`--models` the list says what is removed: the `*.gguf` files of the models
-folder, not the folder.
-
-A setting that is empty stops the script before its question, with the name
-of the setting, when an option that was given removes the folder it names.
-So does a setting that is not a full path or has a `.` or `..` part, and one
-that names the root folder, your home folder, the folder of this repository,
-or a folder that holds one of the two. Each removal in the script is written
-so that it fails on an empty value.
-
 ### Fixed: the bot took a quoted closing line for a closing line
 
 The bot's hourly job closes an issue that a commit or a merged pull request
@@ -152,32 +135,6 @@ refused with an indentation error.
 - Lines inside a multi-line string are never shifted.
 - A replacement whose indentation mixes tabs and spaces with the file's is
   refused, and the refusal says which to use.
-
-### Fixed: the bootstrap script tries a failed download again
-
-One failed download stopped the whole install, though the same download
-passed a few seconds later. The pip downloads and the Go module download of
-`scripts/atlas-bootstrap.sh` are now tried up to 3 times, with 5 seconds
-between the tries (`ATLAS_DOWNLOAD_TRIES`, `ATLAS_DOWNLOAD_WAIT_SECONDS`).
-Each new try prints one line with the step and the error of the try before.
-After the last try the script stops with that error, as before.
-
-Only a download is tried again. The Go modules are now downloaded in a step
-of their own, so a compile error of the TUI is not tried again; a pip error
-that is no network error is not, and a module that fails its checksum is not.
-
-Also fixed in the same lines: the TUI build looked for `go` only under
-`/usr/local/go/bin`, so a Go that was on the path from the system's own
-packages was not found, and the build was skipped with "go: command not
-found".
-
-### Changed: the installer keeps its downloads and logs in a private temporary folder
-
-`scripts/atlas-bootstrap.sh` makes one folder with `mktemp -d` at its start,
-and every download and every log of the run goes there. An install that
-passed removes the folder at the end. When the install failed, or a step
-warned and named its log, the folder is kept, and the last line of the output
-gives its path. A message that names a log gives the path of that file.
 
 ### Changed: the setup script writes the branch rules that are in force, and the release step is a script
 
@@ -643,34 +600,13 @@ reads.
 The folder helper (`proxy/confined_dir.go`) gains two calls for this: write
 a new file under a free name, and remove a name.
 
-### Changed: the steering status reads its workspace place through the confined reader
+### Also documented: the proxy's project reads do not follow a link to an absolute path
 
-The proxy's steering status looks for the control vector in three places.
-One of them is inside the workspace (`models/` under the workspace folder).
-That place, and the marker file beside the vector, are now read through the
-confined folder helper, like the other project reads. A name there that
-resolves outside the workspace counts as absent. The two other places are
-fixed service paths and are read as before.
-
-### Changed: project reads in the proxy go through one confined reader
-
-Eight places in the proxy read project files with plain file calls: the
-context sample for the plan, the Python project scan, the Node and Python
-project detection, the web-asset check, and the per-project execution
-setting. They now read through one helper (`proxy/confined_dir.go`) that
-opens the workspace folder once and reads inside it, as the file tools
-already do. A name that resolves outside the workspace is skipped like a
-file that cannot be read.
-
-Two behaviours change with it:
-
-- A link whose target is an absolute path is not followed by these reads,
-  also when it points inside the workspace. A relative link that stays
-  inside the workspace is followed.
-- The Python project scan and the web-asset check no longer look at the
-  name of the workspace folder itself. Before, a workspace whose own folder
-  was named `build`, `dist` or `env`, or for the web-asset check had a name
-  that starts with a dot, was not scanned at all.
+The project reads that 3.1.7 moved to one confined reader
+(`proxy/confined_dir.go`) do not follow a link whose target is an absolute
+path, also when it points inside the workspace: such a file is skipped like a
+file that cannot be read. A relative link that stays inside the workspace is
+followed.
 
 ### Fixed: the lens drift check never ran, because no bundle had a fingerprint
 
@@ -1110,17 +1046,11 @@ attempt ended only when the idle watchdog cut it. In the smoke run on 4403ae8
 - Markdown and files of unknown type keep the four-backtick closer, because
   a ``` line can be their content.
 
-### Security: TUI dependencies with public advisories
+### Changed: the proxy image is built with Go 1.27
 
-- The TUI now uses goldmark 1.7.17 (GO-2026-5320), golang.org/x/net 0.56.0
-  (GO-2026-5942) and golang.org/x/text 0.39.0 (GO-2026-5970).
-- `tui/go.mod` now requires Go 1.26.6. That release also fixes the
-  standard-library advisories that govulncheck reports for older Go 1.26
-  releases. The installer's default Go (`ATLAS_GO_VERSION`) is now 1.26.6.
-- CI sets up Go 1.26.6. setup-go pins `GOTOOLCHAIN=local`, so CI cannot
-  fetch a newer toolchain itself.
-- govulncheck on the TUI: no vulnerabilities found. The proxy image is built
-  with Go 1.27.1, which none of these advisories affect.
+The proxy image's build stage is `golang:1.27-alpine`, Go 1.27.3; the 3.1.7
+image is built with Go 1.26.10. Go 1.27.3 has the crypto/x509 fix of Go
+1.26.10. The TUI, CI and the installer use Go 1.26.10, as in 3.1.7.
 
 ### Fixed: the model registry said two quants reuse the Q6_K lens, and the lens rejects them
 
