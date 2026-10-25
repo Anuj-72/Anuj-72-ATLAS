@@ -7,7 +7,7 @@
 <p align="center"><b>Adaptive Test-time Learning and Autonomous Specialization</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-V3.1.6-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-V3.1.7-blue" alt="Version"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License"/>
   <img src="https://img.shields.io/badge/model-agnostic-green" alt="Model-agnostic"/>
 </p>
@@ -45,6 +45,7 @@
 
 ## 📰 Latest News
 
+- **2026-10-24** - **[V3.1.7 "Maia" released](https://github.com/inferstep/ATLAS/releases/tag/v3.1.7)** - security fixes for the service token, the proxy's file reads, the TUI's terminal output, the tool-call path check, where commands run, rollback signatures, the lens check's file loading and the proxy's requests, and installer fixes ([advisories](https://github.com/inferstep/ATLAS/security/advisories)). Please upgrade.
 - **2026-10-01** - **[V3.1.6 "Maia" released](https://github.com/inferstep/ATLAS/releases/tag/v3.1.6)** - security fix for the command policy ([GHSA-m9w4-p32x-chx9](https://github.com/inferstep/ATLAS/security/advisories/GHSA-m9w4-p32x-chx9), reported and fixed by [@Rendegou](https://github.com/Rendegou)). Please upgrade.
 - **2026-09-29** - **[V3.1.5 "Maia" released](https://github.com/inferstep/ATLAS/releases/tag/v3.1.5)** - security fix for tool argument names ([GHSA-c3p6-m657-h629](https://github.com/inferstep/ATLAS/security/advisories/GHSA-c3p6-m657-h629)). Please upgrade.
 - **2026-09-27** - **[V3.1.4 "Maia" released](https://github.com/inferstep/ATLAS/releases/tag/v3.1.4)** - the move to inferstep/ATLAS, security fixes ([GHSA-5hvw-59r4-7rcq](https://github.com/inferstep/ATLAS/security/advisories/GHSA-5hvw-59r4-7rcq)), and the contributor setup.
@@ -122,8 +123,8 @@ curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/main/scripts/atlas-
 Prefer not to pipe a moving script into bash? Same installer, two more careful ways to run it:
 ```bash
 # Pinned to a release: script, checkout, and images all at the signed tag
-curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/v3.1.6/scripts/atlas-bootstrap.sh \
-  | ATLAS_BOOTSTRAP_REF=v3.1.6 bash
+curl -fsSL https://raw.githubusercontent.com/inferstep/ATLAS/v3.1.7/scripts/atlas-bootstrap.sh \
+  | ATLAS_BOOTSTRAP_REF=v3.1.7 bash
 
 # Review before running
 curl -fsSL -o atlas-bootstrap.sh https://raw.githubusercontent.com/inferstep/ATLAS/main/scripts/atlas-bootstrap.sh

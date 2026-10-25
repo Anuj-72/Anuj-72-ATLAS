@@ -1,6 +1,6 @@
 # ATLAS Support Matrix
 
-Applies to: **V3.1.6 and the current `dev` branch.** This document is
+Applies to: **V3.1.7 and the current `dev` branch.** This document is
 versioned with the repo — the matrix for a release is the file at that
 release's tag.
 
@@ -134,7 +134,7 @@ bundle (`atlas bench`, then `atlas lens build`).
 |---|---|---|
 | Docker Compose (base + backend overlay) | Supported | CI compose validation on every overlay; releases smoke-tested; the deterministic E2E drives the control plane |
 | macOS hybrid (native llama + compose) | Supported | Maintainer-verified (M2 Pro) |
-| K3s (generated manifests) | Preview | Templates validated + rendered in CI; no automated live-cluster test |
+| K3s (generated manifests) | Preview | Templates validated + rendered in CI; no automated live-cluster test. Publishes the services on the node's network addresses with no token check: trusted networks only (SETUP.md, Method 3) |
 | Bare metal | Preview | Documented (SETUP.md Method 2); manual validation only |
 | Offline / air-gapped | Unsupported | Model + artifact downloads require network; no offline bundle exists |
 | Rootless Docker / Docker Desktop (Linux) | Unsupported | Untested; no claims made. (Docker Desktop **on macOS** is part of the Supported hybrid path — it hosts the four non-inference services only) |
@@ -186,7 +186,7 @@ fails fast at llama-server startup (fit is off).
 | `curl \| bash` bootstrap (`scripts/atlas-bootstrap.sh`) | Supported (CI-tested on 4 distros, idempotent, sudo/non-root paths) |
 | Manual compose (`cp .env.example .env` + `atlas init`) | Supported |
 | `pip install -e .` CLI from checkout | Supported (the only packaged distribution today; no PyPI release) |
-| K3s `scripts/install.sh` | Preview |
+| K3s `scripts/install.sh` | Preview; see the network note in SETUP.md, Method 3 |
 
 ## Version compatibility policy
 
