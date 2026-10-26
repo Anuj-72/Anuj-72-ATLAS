@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -194,7 +195,7 @@ func TestClassifyAgentTierMultiComponentIsTreatedAsWork(t *testing.T) {
 		"set up middleware, database, and authentication for the api",
 	}
 	for _, msg := range workPrompts {
-		if got := classifyAgentTier(msg); got == Tier0Conversational {
+		if classifyAgentTier(msg) == Tier0Conversational {
 			t.Errorf("classifyAgentTier(%q) = T0 — a multi-component build must not be capped at 5 turns", msg)
 		}
 	}
@@ -211,7 +212,7 @@ func TestClassifyAgentTierBehaviourDescriptionIsWork(t *testing.T) {
 		"it crashes when the list is empty",
 	}
 	for _, msg := range msgs {
-		if got := classifyAgentTier(msg); got == Tier0Conversational {
+		if classifyAgentTier(msg) == Tier0Conversational {
 			t.Errorf("classifyAgentTier(%q) = T0 — describing broken behaviour is a task; "+
 				"absence of a recognized task word is not evidence of chat", msg)
 		}
@@ -2460,33 +2461,14 @@ func TestFencedSubCallCutsAStreamThatOpensAndGoesSilent(t *testing.T) {
 func TestContentLoopIsCorrectedBeforeItEndsTheRun(t *testing.T) {
 	dir := t.TempDir()
 	const good = "def solve():\n    return 7\n\n\nprint(solve())\n"
+	// After the corrective: do the work properly, then finish.
+	afterCorrective := script(writeCall("solve.py", good), stepDone("wrote solve.py"))
 	var mu sync.Mutex
 	turns := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/syntax-check"):
-			json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
-			return
-		case strings.HasPrefix(r.URL.Path, "/v3/"), strings.HasPrefix(r.URL.Path, "/internal/"):
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		case strings.HasSuffix(r.URL.Path, "/execute"):
-			var in struct{ Code string }
-			json.NewDecoder(r.Body).Decode(&in)
-			// The workspace-alignment probe: the proxy writes a marker and
-			// asks the sandbox to read it back. Without this the run aborts
-			// as workspace_misaligned before reaching the loop under test.
-			if strings.Contains(in.Code, ".atlas-mount-probe") {
-				b, _ := os.ReadFile(filepath.Join(dir, ".atlas-mount-probe"))
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": true, "stdout": string(b), "exit_code": 0})
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": true, "stdout": "", "exit_code": 0})
-			return
-		case !strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
-			http.NotFound(w, r)
+		// The sandbox answers the workspace-alignment probe too: without it the
+		// run aborts as workspace_misaligned before reaching the loop under test.
+		if serveLoopServices(w, r, dir) {
 			return
 		}
 		io.ReadAll(r.Body)
@@ -2494,31 +2476,15 @@ func TestContentLoopIsCorrectedBeforeItEndsTheRun(t *testing.T) {
 		i := turns
 		turns++
 		mu.Unlock()
-		w.Header().Set("Content-Type", "text/event-stream")
 		if i == 0 {
 			// Turn 0: degenerate into repetition mid tool-call. The loop
 			// detector needs enough repeated tail to fire.
-			var b strings.Builder
-			b.WriteString(`{"type":"tool_call","name":"write_file","args":{"path":"solve.py","content":"`)
-			for j := 0; j < 400; j++ {
-				b.WriteString("the same line over and over and over. ")
-			}
-			d, _ := json.Marshal(map[string]interface{}{
-				"choices": []map[string]interface{}{{"delta": map[string]string{"content": b.String()}}}})
-			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+			serveReply(w, `{"type":"tool_call","name":"write_file","args":{"path":"solve.py","content":"`+
+				strings.Repeat("the same line over and over and over. ", 400))
 			return
 		}
-		// After the corrective: do the work properly, then finish.
-		var call map[string]interface{}
-		if i == 1 {
-			call = writeCall("solve.py", good)
-		} else {
-			call = map[string]interface{}{"type": "done", "summary": "wrote solve.py"}
-		}
-		c, _ := json.Marshal(call)
-		d, _ := json.Marshal(map[string]interface{}{
-			"choices": []map[string]interface{}{{"delta": map[string]string{"content": string(c)}}}})
-		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+		c, _ := json.Marshal(afterCorrective(i - 1))
+		serveReply(w, string(c))
 	}))
 	defer srv.Close()
 
@@ -2562,39 +2528,35 @@ func TestContentLoopIsCorrectedBeforeItEndsTheRun(t *testing.T) {
 	}
 }
 
+// A Flask app with one route, and a page whose form posts to a route the app
+// does not define.
+const (
+	bookSiteApp = "from flask import Flask, render_template\n" +
+		"app = Flask(__name__)\n" +
+		"@app.route('/', methods=['GET', 'POST'])\ndef index():\n" +
+		"    return render_template('index.html')\n"
+	bookSiteBadPage = "<form method=\"POST\" action=\"/add_book\"><input name=\"title\"></form>\n"
+)
+
 // The lint named the exact defect at write time -- "calls "/add_book", but
 // no Flask route matches it" -- called it advisory, and the run finished with
 // a form that 404s (acceptance run, 2026-09-15). The exit gate must ask for it
 // before the run can finish, and a run that fixes it finishes.
 func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
 	dir := t.TempDir()
-	appPy := "from flask import Flask, render_template\n" +
-		"app = Flask(__name__)\n" +
-		"@app.route('/', methods=['GET', 'POST'])\ndef index():\n" +
-		"    return render_template('index.html')\n"
-	badPage := "<form method=\"POST\" action=\"/add_book\"><input name=\"title\"></form>\n"
+	model := script(
+		writeCall("app.py", bookSiteApp),
+		writeCall("templates/index.html", bookSiteBadPage),
+		stepDone("built the book site"),
+		// Bounced: the model reads and fixes the action.
+		stepRead("templates/index.html"),
+		stepEdit("templates/index.html", `action="/add_book"`, `action="/"`),
+		stepDone("fixed the form action"),
+	)
 	var mu sync.Mutex
 	turns := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/syntax-check"):
-			json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
-			return
-		case strings.HasPrefix(r.URL.Path, "/v3/"), strings.HasPrefix(r.URL.Path, "/internal/"):
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		case strings.HasSuffix(r.URL.Path, "/execute"):
-			var in struct{ Code string }
-			json.NewDecoder(r.Body).Decode(&in)
-			if strings.Contains(in.Code, ".atlas-mount-probe") {
-				b, _ := os.ReadFile(filepath.Join(dir, ".atlas-mount-probe"))
-				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": string(b), "exit_code": 0})
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": "", "exit_code": 0})
-			return
-		case !strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
-			http.NotFound(w, r)
+		if serveLoopServices(w, r, dir) {
 			return
 		}
 		io.ReadAll(r.Body)
@@ -2602,30 +2564,8 @@ func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
 		i := turns
 		turns++
 		mu.Unlock()
-		var call map[string]interface{}
-		switch i {
-		case 0:
-			call = writeCall("app.py", appPy)
-		case 1:
-			call = writeCall("templates/index.html", badPage)
-		case 2:
-			call = map[string]interface{}{"type": "done", "summary": "built the book site"}
-		case 3:
-			// Bounced: the model reads and fixes the action.
-			call = map[string]interface{}{"type": "tool_call", "name": "read_file",
-				"args": map[string]string{"path": "templates/index.html"}}
-		case 4:
-			call = map[string]interface{}{"type": "tool_call", "name": "edit_file",
-				"args": map[string]string{"path": "templates/index.html",
-					"old_str": `action="/add_book"`, "new_str": `action="/"`}}
-		default:
-			call = map[string]interface{}{"type": "done", "summary": "fixed the form action"}
-		}
-		c, _ := json.Marshal(call)
-		d, _ := json.Marshal(map[string]interface{}{
-			"choices": []map[string]interface{}{{"delta": map[string]string{"content": string(c)}}}})
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+		c, _ := json.Marshal(model(i))
+		serveReply(w, string(c))
 	}))
 	defer srv.Close()
 
@@ -2648,11 +2588,7 @@ func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
 			}
 		}
 		if et == "done" {
-			var m map[string]string
-			json.Unmarshal(b, &m)
-			for k, v := range m {
-				terminal[k] = v
-			}
+			json.Unmarshal(b, &terminal) // adds the payload's keys to the map
 		}
 	}
 	runAgentLoop(ctx, "Create app.py and templates/index.html for a book list.")
@@ -2665,16 +2601,25 @@ func TestDoneIsBouncedWhileAFormPostsToAMissingRoute(t *testing.T) {
 	if !strings.Contains(gates[0], "/add_book") {
 		t.Errorf("the gate must name the unmatched target: %s", gates[0])
 	}
-	// The full message the model receives steers to the cheap repair.
-	msg := routeContractMessage(routeContractFindings(dir))
-	if !strings.Contains(msg, "insert_after") || !strings.Contains(msg, "not a whole-file write_file") {
-		t.Errorf("the gate must say how to repair without re-entering the pipeline: %s", msg)
-	}
 	if !strings.Contains(string(page), `action="/"`) {
 		t.Errorf("the fix never landed: %q", page)
 	}
 	if !NormalizeTerminalStatus(terminal["status"]).Completed() {
 		t.Errorf("a run that fixed the route reported %q (%s)", terminal["status"], terminal["reason"])
+	}
+}
+
+// The full message the model receives when a form posts to a missing route
+// steers to the cheap repair: an insert or an edit, not a whole-file write_file
+// that runs the file through the pipeline again.
+func TestTheRouteContractMessageSteersToTheCheapRepair(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "templates"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app.py"), []byte(bookSiteApp), 0o644)
+	os.WriteFile(filepath.Join(dir, "templates/index.html"), []byte(bookSiteBadPage), 0o644)
+	msg := routeContractMessage(routeContractFindings(dir))
+	if !strings.Contains(msg, "insert_after") || !strings.Contains(msg, "not a whole-file write_file") {
+		t.Errorf("the gate must say how to repair without re-entering the pipeline: %s", msg)
 	}
 }
 
@@ -2932,7 +2877,7 @@ func TestClassifyAgentTierDescriptiveWhClauseIsNotAQuestion(t *testing.T) {
 	if isQuestionMessage(build) {
 		t.Errorf("a descriptive field list (what it is, where it was found) must not read as a question")
 	}
-	if got := classifyAgentTier(build); got == Tier0Conversational {
+	if classifyAgentTier(build) == Tier0Conversational {
 		t.Errorf("classifyAgentTier = T0 — a web-app build must not be capped at the conversational tier")
 	}
 	// Inversion is still a question, with or without a '?'. The clause opener
@@ -2998,7 +2943,7 @@ func TestVerblessWorkIsNotAQuestion(t *testing.T) {
 		"The endpoint at /api/items?page=2 returns nothing when the list is empty",
 		"the pattern `a?b` in parse.py matches too much",
 	} {
-		if got := classifyAgentTier(msg); got == Tier0Conversational {
+		if classifyAgentTier(msg) == Tier0Conversational {
 			t.Errorf("classifyAgentTier(%q) = T0, want a work tier", msg)
 		}
 	}
@@ -3084,5 +3029,323 @@ func TestTheSystemPromptListsTheFilesReadInTheSameOrderEachTime(t *testing.T) {
 		if !strings.Contains(buildSystemPrompt(ctx), want) {
 			t.Fatalf("try %d: the system prompt does not list the three files read in sorted order", try)
 		}
+	}
+}
+
+// --- the agent loop's step boundaries ------------------------------------------
+//
+// runAgentLoop hands each part of a turn to a step and acts on what the step
+// says: go on, end the turn, or end the run. These tests reach the exits and the
+// notes no other test reached: each runs the real loop against stub services.
+
+// A proxy and a sandbox bound to different directories refuse to start. The
+// run ends as workspace_misaligned, with no error, and the model is never
+// called.
+func TestAMisalignedWorkspaceEndsTheRunBeforeTheModelIsCalled(t *testing.T) {
+	// The alignment answer is cached for the whole process. Probe this run's
+	// sandbox, and leave the cache as it was for the tests after this one.
+	wsAlignMu.Lock()
+	checked, problem := wsAlignChecked, wsAlignProblem
+	wsAlignChecked = time.Time{}
+	wsAlignMu.Unlock()
+	t.Cleanup(func() {
+		wsAlignMu.Lock()
+		wsAlignChecked, wsAlignProblem = checked, problem
+		wsAlignMu.Unlock()
+	})
+	modelCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/execute"):
+			// The sandbox looks at another directory: the probe file is not there.
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": "", "exit_code": 0})
+		case strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+			modelCalls++
+			serveReply(w, `{"type":"done","summary":"done"}`)
+		default:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		}
+	}))
+	defer srv.Close()
+	ctx := NewAgentContext(t.TempDir(), Tier2Medium)
+	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+	terminal := map[string]string{}
+	ctx.StreamFn = func(et string, data interface{}) {
+		if et == "done" {
+			b, _ := json.Marshal(data)
+			json.Unmarshal(b, &terminal) // adds the payload's keys to the map
+		}
+	}
+	if err := runAgentLoop(ctx, "Write solve.py that prints 7."); err != nil {
+		t.Fatalf("a refusal to start is an outcome, not an error: %v", err)
+	}
+	if terminal["reason"] != "workspace_misaligned" {
+		t.Errorf("terminal reason %q, want workspace_misaligned", terminal["reason"])
+	}
+	if modelCalls != 0 {
+		t.Errorf("the model was called %d times on a misaligned workspace", modelCalls)
+	}
+}
+
+// A model call that fails ends the run. The stream says inference_failed, and
+// runAgentLoop returns the error, which names the turn it failed on.
+func TestAFailedModelCallEndsTheRunWithItsError(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLoopServices(w, r, dir) {
+			return
+		}
+		http.Error(w, "the model is not loaded", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+	terminal := map[string]string{}
+	ctx.StreamFn = func(et string, data interface{}) {
+		if et == "done" {
+			b, _ := json.Marshal(data)
+			json.Unmarshal(b, &terminal) // adds the payload's keys to the map
+		}
+	}
+	err := runAgentLoop(ctx, "Write solve.py that prints 7.")
+	if !strings.Contains(fmt.Sprint(err), "LLM call failed on turn 0") {
+		t.Errorf("runAgentLoop returned %v, want the failed call's error", err)
+	}
+	if terminal["reason"] != "inference_failed" {
+		t.Errorf("terminal reason %q, want inference_failed", terminal["reason"])
+	}
+}
+
+// A client that leaves while a tool call runs ends the run, and runAgentLoop
+// returns the cancelled request's error to the handler.
+func TestAClientThatLeavesDuringAToolCallEndsTheRunWithItsError(t *testing.T) {
+	dir := t.TempDir()
+	request, leave := context.WithCancel(context.Background())
+	defer leave()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/shell") {
+			leave() // the client goes away while the command runs
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "stdout": "", "exit_code": 0})
+			return
+		}
+		if serveLoopServices(w, r, dir) {
+			return
+		}
+		serveReply(w, `{"type":"tool_call","name":"run_command","args":{"command":"ls"}}`)
+	}))
+	defer srv.Close()
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+	ctx.PermissionMode = PermissionYolo
+	ctx.RequestCtx, ctx.Ctx = request, request
+	ctx.MaxTurns = 3
+	err := runAgentLoop(ctx, "Run ls.")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("runAgentLoop returned %v, want the cancelled request's error", err)
+	}
+}
+
+// The same reply three turns running, of a kind the loop cannot act on, ends
+// the run with the reason for that kind of reply.
+func TestTheSameUnusableReplyThreeTimesEndsTheRun(t *testing.T) {
+	for _, c := range []struct {
+		name, reply, wantReason string
+	}{
+		{"a reply that is not a tool call", "I will write the file now.", "unusable_model_output"},
+		{"a write whose content ended at an unescaped quote",
+			`{"type":"tool_call","name":"write_file","args":{"path":"page.html","content":"<div class=","x\">hi</div>\n":""}}`,
+			"unusable_model_output"},
+		{"a write whose content has a form feed before a letter",
+			`{"type":"tool_call","name":"write_file","args":{"path":"solve.py","content":"x = 1\n\function()\n"}}`,
+			"unusable_model_output"},
+		{"a write whose arguments are not an object",
+			`{"type":"tool_call","name":"write_file","args":"solve.py"}`, "oversized_tool_content"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			modelCalls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveLoopServices(w, r, dir) {
+					return
+				}
+				modelCalls++
+				serveReply(w, c.reply)
+			}))
+			defer srv.Close()
+			ctx := NewAgentContext(dir, Tier2Medium)
+			ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+			ctx.PermissionMode = PermissionYolo
+			ctx.MaxTurns = 6
+			terminal := map[string]string{}
+			ctx.StreamFn = func(et string, data interface{}) {
+				if et == "done" {
+					b, _ := json.Marshal(data)
+					json.Unmarshal(b, &terminal) // adds the payload's keys to the map
+				}
+			}
+			runAgentLoop(ctx, "Write solve.py that prints 7.")
+			if terminal["reason"] != c.wantReason {
+				t.Errorf("terminal reason %q, want %q", terminal["reason"], c.wantReason)
+			}
+			if modelCalls != 3 {
+				t.Errorf("the model was called %d times, want 3", modelCalls)
+			}
+		})
+	}
+}
+
+// A call that a gate refuses before it runs ends the run as repeated_refusal
+// when it is the third failure in a row on one target. Each run's workspace
+// holds solve.py, which the session never reads.
+func TestTheThirdRefusalOnOneTargetEndsTheRun(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		permit bool // what the permission function answers
+		model  func(i int) map[string]interface{}
+	}{
+		{"a write the permission function denies", false, script(stepWrite("new.py", "print(7)\n"))},
+		{"two failed edits, then a write over the file the session never read", true, script(
+			stepEdit("solve.py", "x = 1", "x = 2"), stepEdit("solve.py", "x = 3", "x = 4"), stepWrite("solve.py", "print(7)\n"))},
+		{"a command the validator refuses", true, script(stepRun("cd /workspace && python app.py"))},
+		{"a background command the validator refuses", true, script(map[string]interface{}{
+			"type": "tool_call", "name": "run_background", "args": map[string]string{"command": "cd /workspace && python app.py"}})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "solve.py"), []byte("print(1)\n"), 0o644)
+			modelCalls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveLoopServices(w, r, dir) {
+					return
+				}
+				call, _ := json.Marshal(c.model(modelCalls))
+				modelCalls++
+				serveReply(w, string(call))
+			}))
+			defer srv.Close()
+			ctx := NewAgentContext(dir, Tier2Medium)
+			ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL = srv.URL, srv.URL, srv.URL
+			ctx.PermissionFn = func(string, json.RawMessage) bool { return c.permit }
+			ctx.MaxTurns = 6
+			terminal := map[string]string{}
+			ctx.StreamFn = func(et string, data interface{}) {
+				if et == "done" {
+					b, _ := json.Marshal(data)
+					json.Unmarshal(b, &terminal) // adds the payload's keys to the map
+				}
+			}
+			runAgentLoop(ctx, "Write solve.py that prints 7.")
+			if terminal["reason"] != "repeated_refusal" {
+				t.Errorf("terminal reason %q, want repeated_refusal", terminal["reason"])
+			}
+			if modelCalls != 3 {
+				t.Errorf("the model was called %d times, want 3", modelCalls)
+			}
+		})
+	}
+}
+
+// A note that one turn leaves for the next reaches the model's next prompt: the
+// loop-health correctives, the exploration budget, the answer to a reply of an
+// unknown type, and the output rescue.
+func TestALoopNoteReachesTheModelsNextPrompt(t *testing.T) {
+	readNext := func(i int) map[string]interface{} { return stepRead(fmt.Sprintf("f%d.py", i)) }
+	for _, c := range []struct {
+		name      string
+		request   string
+		reasoning string  // the reasoning each reply opens with
+		lensScore float64 // the lens's score for each write
+		turns     int     // the run's turn cap
+		model     func(i int) map[string]interface{}
+		want      string // a text that a later prompt carries
+	}{
+		{"reasoning that opens the same way three turns running", "Fix app.py.",
+			"Let me look at the file to see what is wrong with it.", 0.9, 4, readNext, "Reasoning repetition detected"},
+		{"a write the lens scores in its severe band", "Write solve.py that prints 7.", "", 0.05, 2,
+			script(stepWrite("solve.py", "print(7)\n"), stepDone("wrote solve.py")), "Lens severe-quality alert"},
+		{"four read-only calls in a row", "Fix app.py.", "", 0.9, 5, readNext, explorationWarning},
+		{"a reply of an unknown type", "What is in this folder?", "", 0.9, 2,
+			script(map[string]interface{}{"type": "bogus"}, stepDone("nothing here")), "Unknown response type 'bogus'"},
+		{"one file written twenty times", "Write solve.py that prints 7.", "", 0.9, 21,
+			func(i int) map[string]interface{} { return stepWrite("solve.py", fmt.Sprintf("print(%d)\n", i)) },
+			"You have rewritten this file an unusually large number of times"},
+		{"a repeated call while the named file is missing", "Write solve.py that prints 7.", "", 0.9, 7,
+			script(map[string]interface{}{"type": "tool_call", "name": "list_directory",
+				"args": map[string]string{"path": "."}}), "does not exist on disk yet"},
+		{"failures on one file while the named file is missing", "Write solve.py that prints 7.", "", 0.9, 4,
+			func(i int) map[string]interface{} { return stepEdit("solve.py", fmt.Sprintf("x = %d", i), "y = 0") },
+			"does not exist on disk yet"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var mu sync.Mutex
+			var prompts []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/lens/score-per-step" {
+					json.NewEncoder(w).Encode(map[string]interface{}{"enabled": true, "n_tokens": 4,
+						"aggregate":  map[string]float64{"gx_score_min": c.lensScore, "gx_score_mean": c.lensScore},
+						"thresholds": map[string]float64{"low": 0.5, "severe": 0.2}})
+					return
+				}
+				if serveLoopServices(w, r, dir) {
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				prompts = append(prompts, string(raw))
+				i := len(prompts) - 1
+				mu.Unlock()
+				call, _ := json.Marshal(c.model(i))
+				d, _ := json.Marshal(map[string]interface{}{"choices": []map[string]interface{}{
+					{"delta": map[string]string{"reasoning_content": c.reasoning, "content": string(call)}}}})
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", d)
+			}))
+			defer srv.Close()
+			ctx := NewAgentContext(dir, Tier2Medium)
+			ctx.InferenceURL, ctx.SandboxURL, ctx.V3URL, ctx.LensURL = srv.URL, srv.URL, srv.URL, srv.URL
+			ctx.PermissionMode = PermissionYolo
+			ctx.TrustMode = trustFullyTrusted
+			ctx.MaxTurns = c.turns
+			runAgentLoop(ctx, c.request)
+			if !strings.Contains(strings.Join(prompts, "\n"), c.want) {
+				t.Errorf("no prompt carried %q", c.want)
+			}
+		})
+	}
+}
+
+// The workspace check judges a tool call before any gate reads a path in it,
+// and a call it refuses goes no further that turn. A write to a file outside the
+// workspace, one that exists and this session never read, gets the workspace
+// refusal alone: the existing-file guard, which reads the file it is given,
+// never sees the call, and the file is left as it was.
+func TestTheWorkspaceCheckRefusesACallBeforeAnyGateReadsItsPath(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "workspace")
+	os.Mkdir(dir, 0o755)
+	outside := filepath.Join(parent, "notes.py")
+	os.WriteFile(outside, []byte("NOTES = 1\n"), 0o644)
+	model := script(stepWrite("../notes.py", "x = 1\n"), stepDone("updated notes.py"))
+	ctx, _, _, _ := termFixture(t, dir, "Update notes.py.", termCeiling,
+		func(i int, _ string) map[string]interface{} { return model(i) })
+	var results []string
+	stream := ctx.StreamFn
+	ctx.StreamFn = func(et string, data interface{}) {
+		stream(et, data)
+		if et == "tool_result" {
+			b, _ := json.Marshal(data)
+			results = append(results, string(b))
+		}
+	}
+	runAgentLoop(ctx, "Update notes.py.")
+	if len(results) != 1 {
+		t.Fatalf("the refused call got %d results, want 1: %v", len(results), results)
+	}
+	if !strings.Contains(strings.ToLower(results[0]), "outside the workspace") {
+		t.Errorf("the call was not refused by the workspace check: %s", results[0])
+	}
+	if got, _ := os.ReadFile(outside); string(got) != "NOTES = 1\n" {
+		t.Errorf("the file outside the workspace changed: %q", got)
 	}
 }
