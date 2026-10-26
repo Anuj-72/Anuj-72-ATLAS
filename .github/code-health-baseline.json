@@ -4,16 +4,6 @@
   "file_lines": 1500
  },
  "functions": {
-  "atlas/bench/v3_runner.py:V3Pipeline.run_task": 536,
-  "atlas/bench/v3_runner.py:run_v3_benchmark": 129,
-  "atlas/commands/doctor.py:check_tier_match": 122,
-  "atlas/commands/doctor.py:main": 146,
-  "atlas/commands/lens.py:_check_model_inner": 151,
-  "atlas/commands/lens.py:_emit_build": 328,
-  "atlas/commands/lens.py:_emit_publish": 240,
-  "atlas/commands/model.py:_emit_install": 167,
-  "atlas/commands/model.py:_stream_download_locked": 209,
-  "atlas/commands/model.py:main": 111,
   "geometric-lens/geometric_lens/training.py:train_gx": 132,
   "proxy/agent.go:buildSystemPrompt": 140,
   "proxy/agent.go:callLLMOnceRestating": 508,
@@ -43,7 +33,6 @@
   "v3-service/symbols.py:structural_edit": 297
  },
  "files": {
-  "atlas/commands/lens.py": 1554,
   "proxy/agent.go": 9915,
   "proxy/tools.go": 6913,
   "proxy/types.go": 2080,
