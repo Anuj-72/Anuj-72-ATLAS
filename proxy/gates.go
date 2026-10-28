@@ -185,7 +185,7 @@ func editIntroducesUnresolved(ctx *AgentContext, path, original, edited string) 
 // rather than treat the file as empty and count pre-existing unresolved
 // calls as newly introduced.
 func readOriginalForGate(path string) (string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegularFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", true
@@ -283,7 +283,7 @@ func addSessionWrites(ctx *AgentContext, cleanTarget string, addContext func(p, 
 		if filepath.Clean(abs) == cleanTarget {
 			continue // pre-edit self; skip the read
 		}
-		if data, err := os.ReadFile(abs); err == nil {
+		if data, err := readRegularFile(abs); err == nil {
 			addContext(abs, string(data))
 		}
 	}
@@ -1186,7 +1186,7 @@ func readLedgerBytes(key string) ([]byte, bool) {
 	if err != nil || fi.IsDir() || fi.Size() > maxLedgerReadBytes {
 		return nil, false
 	}
-	b, err := os.ReadFile(key)
+	b, err := readRegularFile(key)
 	if err != nil {
 		return nil, false
 	}

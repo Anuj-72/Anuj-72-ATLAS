@@ -785,10 +785,10 @@ type vectorCandidate struct {
 func lookAtVector(c vectorCandidate) (size int64, marker string, found bool) {
 	if c.root == "" {
 		info, err := os.Stat(c.path)
-		if err != nil {
+		if err != nil || !info.Mode().IsRegular() {
 			return 0, "", false
 		}
-		raw, _ := os.ReadFile(c.path + ".model")
+		raw, _ := readRegularFile(c.path + ".model")
 		return info.Size(), strings.TrimSpace(string(raw)), true
 	}
 	dir := openConfinedDir(c.root)

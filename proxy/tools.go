@@ -320,7 +320,7 @@ func readFileTool() *ToolDef {
 
 			path := resolveAgentPath(ctx, input.Path)
 
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("cannot read %s: %w", input.Path, err)
 			}
@@ -507,7 +507,7 @@ func outlineFileTool() *ToolDef {
 					Error: "outline_file: path cannot be empty. Pass {\"path\":\"<file>\"}."}, nil
 			}
 			path := resolveAgentPath(ctx, input.Path)
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("cannot read %s: %w", input.Path, err)
 			}
@@ -826,7 +826,7 @@ func searchReadsEntry(input SearchFilesInput, d fs.DirEntry, walkErr error) (rea
 // appendFileMatches adds the lines of one file that match re, and stops once
 // there are maxMatches in all. A file it cannot read adds none.
 func appendFileMatches(matches []SearchMatch, re *regexp.Regexp, relPath, path string, maxMatches int) []SearchMatch {
-	data, err := os.ReadFile(path)
+	data, err := readRegularFile(path)
 	if err != nil {
 		return matches
 	}
@@ -1008,7 +1008,7 @@ func writeFileEarlyRefusal(ctx *AgentContext, input WriteFileInput, path string)
 	// and it is where the worst measured failure starts — the model
 	// retyping a 2000-line fixture from memory, degenerating into
 	// repetition, and getting its stream cut mid-JSON.
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readRegularFile(path); err == nil {
 		if echoesExistingFile(string(existing), input.Content) ||
 			(ctx.SessionWrites[input.Path] && resendsOwnWrite(string(existing), input.Content)) {
 			log.Printf("[write_file] refusing an echoed write of %s (%d bytes on disk, %d incoming)",
@@ -1957,7 +1957,7 @@ func writeFileWithV3(path, baselineContent string, ctx *AgentContext) (*ToolResu
 		if abs == path {
 			continue // the file being generated is the baseline, not context
 		}
-		data, rerr := os.ReadFile(abs)
+		data, rerr := readRegularFile(abs)
 		if rerr != nil {
 			continue
 		}
@@ -2826,7 +2826,7 @@ func editFileTool() *ToolDef {
 			}
 
 			// Read current content
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return nil, errNoMutation(fmt.Errorf("cannot read %s: %w", input.Path, err))
 			}
@@ -3237,7 +3237,7 @@ func structuralEditTool() *ToolDef {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first before structural_edit: %s", input.Path))
 			}
 
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return nil, errNoMutation(fmt.Errorf("cannot read %s: %w", input.Path, err))
 			}
@@ -4046,7 +4046,7 @@ func insertAfterTool() *ToolDef {
 			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first so the line numbers are current: %s", in.Path))
 			}
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return noMutation(fmt.Sprintf("cannot read %s: %v", in.Path, err)), nil
 			}
@@ -4349,7 +4349,7 @@ func replaceLinesTool() *ToolDef {
 			if !editViewIsCurrent(ctx, path) {
 				return nil, errNoMutation(fmt.Errorf("file not read yet — use read_file first so the line numbers are current: %s", in.Path))
 			}
-			data, err := os.ReadFile(path)
+			data, err := readRegularFile(path)
 			if err != nil {
 				return noMutation(fmt.Sprintf("cannot read %s: %v", in.Path, err)), nil
 			}
@@ -4687,7 +4687,7 @@ func relocateFile(ctx *AgentContext, input MoveFileInput, src, dst, relDest stri
 		if srcInfo.IsDir() {
 			return nil, errNoMutation(fmt.Errorf("move_file: cannot move directory across filesystems: %w", err))
 		}
-		data, rerr := os.ReadFile(src)
+		data, rerr := readRegularFile(src)
 		if rerr != nil {
 			return nil, errNoMutation(fmt.Errorf("move_file: cannot read source: %w", rerr))
 		}

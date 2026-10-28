@@ -350,7 +350,7 @@ func editViewIsCurrent(ctx *AgentContext, path string) bool {
 	if ctx.WasFileRead(path) {
 		return true
 	}
-	data, err := os.ReadFile(path)
+	data, err := readRegularFile(path)
 	if err != nil {
 		// Unreadable or absent: nothing is known about it.
 		return false

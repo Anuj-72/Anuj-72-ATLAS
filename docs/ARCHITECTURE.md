@@ -131,6 +131,9 @@ Every non-test Go file directly under `proxy/`, with its area of ownership:
 | `exploration_budget.go` | Prompts a run to act or answer after repeated read-only calls, according to what the request requires |
 | `feasibility_decision.go` | Assesses whether available evidence producers could satisfy the task before generation and records the assessment without controlling generation |
 | `fenced_framing.go` | Recognizes complete fenced file payloads, extracts their contents, and supplies framing grammar and retry guidance |
+| `file_kind.go` | Answers what a path holds, and reads only a regular file: a named pipe would hold the open until a writer appeared, so the kind of the open handle is judged before anything is read |
+| `file_kind_unix.go` | The non-blocking open flag, so a pipe named the way a reader looks opens at once instead of waiting for a writer |
+| `file_kind_other.go` | The same flag where it has no equivalent, leaving the kind check to decide on its own |
 | `old_str_watch.go` | Stops runaway edit text while it streams when it can no longer match the target file, and supplies recovery guidance |
 | `repair.go` | Tracks syntax repairs left open by session writes, blocks premature completion, and reports unresolved repairs at handoff |
 | `reply_lead_ins.go` | Normalizes introductory phrases so completion checks can recognize replies that merely announce future work |
@@ -145,7 +148,7 @@ Every non-test Go file directly under `proxy/`, with its area of ownership:
 | `verification_evidence.go` | Produces evidence from client-declared command observations and tracks which individual verification obligations they satisfy |
 | `verification_requirements.go` | Validates typed client verification requirements and limits evidence strength according to the declared check and the origin of its test assets |
 | `workspace_observation.go` | Observes file changes made by foreground and background commands and records deliverables and deletions in the session ledger |
-| `confined_dir.go` | Reads one folder through `os.Root`: a name that resolves to something outside the folder is an error, never a read |
+| `confined_dir.go` | Reads one folder through `os.Root`: a name that resolves to something outside the folder is an error, never a read, and a name that holds something other than a regular file is skipped like one that is absent |
 | `json_escape.go` | Decodes a JSON escape in model text, a UTF-16 surrogate pair as one character; `\b` and `\f` stay letters, so no backspace or form feed reaches a terminal |
 | `plan_context.go` | Adds the files a run has read to a revised plan's context, in sorted order of their paths, up to a limit |
 | `sandbox_subdir.go` | Allows a `sandbox_subdir` of ASCII letters, digits, dot, underscore and dash, at most 64 characters, and never `.` or `..` |
