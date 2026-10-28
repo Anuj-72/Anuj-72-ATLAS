@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # the tree-sitter layer during local image rebuilds. This service parses and
 # orchestrates; it never scores — all tensor work lives in geometric-lens,
 # so no torch here (it shipped ~900 MB of it unimported until 2026-08-01).
-COPY v3-service/requirements.txt /tmp/v3-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/v3-requirements.txt
+COPY v3-service/requirements-lock.txt /tmp/v3-requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/v3-requirements.txt
 
 # V3 pipeline stages (candidate generation, selection, repair)
 COPY v3-service/stages/ /app/stages/
