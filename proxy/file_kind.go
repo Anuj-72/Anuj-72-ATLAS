@@ -51,8 +51,8 @@ func fileKindName(mode os.FileMode) string {
 		return "a named pipe"
 	case mode&os.ModeSocket != 0:
 		return "a socket"
-	case mode&os.ModeSymlink != 0:
-		return "a symbolic link"
+	// A symbolic link has no case here: an fstat asks about the open handle, and
+	// an open follows the link, so a handle never reports ModeSymlink.
 	default:
 		return "not a regular file"
 	}
@@ -65,8 +65,8 @@ func notRegularError(kind string) error {
 }
 
 // regularFileHandle returns f when the handle's own kind is a regular file,
-// and the refusal otherwise. f is closed on every error path, so a caller ever
-// holds a handle it is meant to read.
+// and the refusal otherwise. f is closed on every error path, so a caller only
+// ever holds a handle it is meant to read.
 func regularFileHandle(f *os.File, err error) (*os.File, error) {
 	if err != nil {
 		return nil, err

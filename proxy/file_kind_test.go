@@ -210,7 +210,7 @@ func callFileTool(t *testing.T, name string, dir string) (*ToolResult, error) {
 // called here or named as a tool whose path is a directory. A tool added later
 // fails this until it is one of the two, which is the point — it is covered on
 // the day it is added, or the suite says loudly that it is not.
-func TestEveryFileToolReturnsOnANamedPipe(t *testing.T) {
+func TestEveryWorkspacePathToolHasANamedPipeCall(t *testing.T) {
 	calls := specialFileCalls()
 	for name, fields := range workspacePathFields {
 		if commandTools[name] {
@@ -265,8 +265,11 @@ func TestReadFileOnANamedPipeAnswersWithTheKind(t *testing.T) {
 	if reason == "" {
 		t.Fatalf("read_file on a named pipe reported success: res=%+v err=%v", res, err)
 	}
-	if !strings.Contains(reason, "not a regular file") || !strings.Contains(reason, "named pipe") {
+	if !strings.Contains(reason, "not a regular file") {
 		t.Errorf("read_file answered %q, want the kind named in it", reason)
+	}
+	if !strings.Contains(reason, "named pipe") {
+		t.Errorf("read_file answered %q, want the pipe named in it", reason)
 	}
 }
 
@@ -289,52 +292,45 @@ func TestARegularFileStillReads(t *testing.T) {
 
 // --- group 2: the readers of the session start, by the names they open ------
 
-// Each case names the file the reader opens, because that is what decides
-// whether the reader meets the pipe: a pipe named notes.txt starts a session
-// that a pipe named README.md holds.
+// samplePlanStartNames are the names the start's first pass takes by name,
+// plus the .py its source-file pass reaches. A pipe under any of them is a
+// session that never reaches the model, so each name is a case of its own.
+var samplePlanStartNames = []string{
+	"README.md", "package.json", "go.mod", "pyproject.toml", "requirements.txt", theSpecialFile,
+}
+
+func TestSamplePlanContextSkipsANamedPipe(t *testing.T) {
+	for _, name := range samplePlanStartNames {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			makePipe(t, dir, name)
+			withinCap(t, waitCap, "samplePlanContext with a pipe named "+name, func() {
+				if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
+					t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
+				}
+			})
+		})
+	}
+}
+
+// The rest of the start's readers, each named by the file it opens, because
+// that is what decides whether the reader meets the pipe: a pipe named
+// notes.txt starts a session that a pipe named README.md holds.
 func TestTheSessionStartSkipsANamedPipe(t *testing.T) {
 	for _, tc := range []struct {
-		what string
-		name string
-		read func(t *testing.T, dir string)
+		what  string
+		name  string
+		setup func(t *testing.T, dir string)
+		read  func(t *testing.T, dir string)
 	}{
-		{"samplePlanContext takes README.md by name", "README.md", func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"samplePlanContext takes package.json by name", "package.json", func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"samplePlanContext takes go.mod by name", "go.mod", func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"samplePlanContext takes pyproject.toml by name", "pyproject.toml", func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"samplePlanContext takes requirements.txt by name", "requirements.txt", func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"samplePlanContext's source-file pass reaches a .py at the root", theSpecialFile, func(t *testing.T, dir string) {
-			if got := samplePlanContext(dir, 10, 4096); len(got) != 0 {
-				t.Errorf("samplePlanContext read the pipe: %v", keysOf(got))
-			}
-		}},
-		{"walkPythonFiles walks the tree", theSpecialFile, func(t *testing.T, dir string) {
+		{"walkPythonFiles walks the tree", theSpecialFile, nil, func(t *testing.T, dir string) {
 			if got := walkPythonFiles(dir); len(got) != 0 {
 				t.Errorf("walkPythonFiles read the pipe: %v", keysOf(got))
 			}
 		}},
 		{"walkPythonFiles reaches a nested .py", filepath.Join("pkg", "special.py"), func(t *testing.T, dir string) {
 			seedFile(t, dir, "app.py", "x = 1\n")
+		}, func(t *testing.T, dir string) {
 			got := walkPythonFiles(dir)
 			if _, walkedThePipe := got[filepath.Join("pkg", "special.py")]; walkedThePipe {
 				t.Errorf("walkPythonFiles read the pipe: %v", keysOf(got))
@@ -344,32 +340,40 @@ func TestTheSessionStartSkipsANamedPipe(t *testing.T) {
 			}
 		}},
 		{"detectNodeJS reads package.json", "package.json", func(t *testing.T, dir string) {
+			// The control, in a folder beside the pipe: a regular package.json
+			// of the same name is still parsed. Seeding it over the pipe would
+			// be a write to a pipe with no reader, which is the wait again.
+			seedFile(t, dir, filepath.Join("control", "package.json"), `{"scripts":{"build":"vite build"}}`)
+		}, func(t *testing.T, dir string) {
 			files := map[string]bool{"package.json": true}
-			if info := detectNodeJS(dir, files); info != nil && (info.Framework != "" || info.BuildCommand != "") {
-				t.Errorf("detectNodeJS parsed the pipe: %+v", info)
+			parsed := detectNodeJS(dir, files)
+			if parsed == nil {
+				parsed = &ProjectInfo{}
 			}
-			// The control, in its own folder: a regular package.json of the
-			// same name is still parsed. Seeding it over the pipe would be a
-			// write to a pipe with no reader, which is the wait again.
-			other := t.TempDir()
-			seedFile(t, other, "package.json", `{"scripts":{"build":"vite build"}}`)
-			if info := detectNodeJS(other, files); info == nil || info.BuildCommand == "" {
+			if parsed.Framework != "" {
+				t.Errorf("detectNodeJS took the framework from the pipe: %+v", parsed)
+			}
+			if parsed.BuildCommand != "" {
+				t.Errorf("detectNodeJS took the build command from the pipe: %+v", parsed)
+			}
+			if info := detectNodeJS(filepath.Join(dir, "control"), files); info == nil || info.BuildCommand == "" {
 				t.Errorf("detectNodeJS skipped a regular package.json: %+v", info)
 			}
 		}},
 		{"detectPython reads requirements.txt", "requirements.txt", func(t *testing.T, dir string) {
+			seedFile(t, dir, filepath.Join("control", "requirements.txt"), "flask==3.0.0\n")
+		}, func(t *testing.T, dir string) {
 			files := map[string]bool{"requirements.txt": true}
 			if info := detectPython(dir, files); info != nil && info.Framework != "" {
 				t.Errorf("detectPython parsed the pipe: %+v", info)
 			}
-			other := t.TempDir()
-			seedFile(t, other, "requirements.txt", "flask==3.0.0\n")
-			if info := detectPython(other, files); info == nil || info.Framework != "flask" {
+			if info := detectPython(filepath.Join(dir, "control"), files); info == nil || info.Framework != "flask" {
 				t.Errorf("detectPython skipped a regular requirements.txt: %+v", info)
 			}
 		}},
 		{"resolveVerifyTarget reads .atlas/config.toml", filepath.Join(".atlas", "config.toml"), func(t *testing.T, dir string) {
 			t.Setenv("ATLAS_VERIFY_IN", "")
+		}, func(t *testing.T, dir string) {
 			if got := resolveVerifyTarget(dir); got != "sandbox" {
 				t.Errorf("resolveVerifyTarget = %q, want the default: the pipe named a target", got)
 			}
@@ -377,6 +381,7 @@ func TestTheSessionStartSkipsANamedPipe(t *testing.T) {
 		{"probeASAStatus reads the marker beside the vector", "vector.gguf.model", func(t *testing.T, dir string) {
 			seedFile(t, dir, "vector.gguf", "weights")
 			t.Setenv("ATLAS_CONTROL_VECTOR", filepath.Join(dir, "vector.gguf"))
+		}, func(t *testing.T, dir string) {
 			if status := probeASAStatus(); strings.Contains(status.Hint, "control vector active") {
 				t.Errorf("probeASAStatus read the pipe: %+v", status)
 			}
@@ -385,6 +390,7 @@ func TestTheSessionStartSkipsANamedPipe(t *testing.T) {
 			seedFile(t, dir, filepath.Join("models", "vector.gguf"), "weights")
 			t.Setenv("ATLAS_CONTROL_VECTOR", "/models/vector.gguf")
 			t.Setenv("ATLAS_WORKSPACE_DIR", dir)
+		}, func(t *testing.T, dir string) {
 			if status := probeASAStatus(); strings.Contains(status.Hint, "control vector active") {
 				t.Errorf("probeASAStatus read the pipe: %+v", status)
 			}
@@ -393,6 +399,11 @@ func TestTheSessionStartSkipsANamedPipe(t *testing.T) {
 		t.Run(tc.what, func(t *testing.T) {
 			dir := t.TempDir()
 			makePipe(t, dir, tc.name)
+			// Writing a file and setting a variable fail the test the wrong
+			// way from inside the goroutine the cap is watching.
+			if tc.setup != nil {
+				tc.setup(t, dir)
+			}
 			withinCap(t, waitCap, tc.what, func() { tc.read(t, dir) })
 		})
 	}
@@ -475,27 +486,13 @@ func TestASessionStartsInAWorkspaceHoldingANamedPipe(t *testing.T) {
 
 // --- group 3: the two readers at a gate later in a session -----------------
 
-// gateCtx is a session that read nothing and wrote one .py file, which is the
-// shape the structural gate's project context reads: it merges what the
-// session read with what it wrote, off disk.
-func gateCtx(t *testing.T, v3URL, dir string) *AgentContext {
-	t.Helper()
-	ctx := NewAgentContext(dir, Tier2Medium)
-	ctx.PermissionMode = PermissionYolo
-	ctx.TrustMode = trustFullyTrusted
-	ctx.PassID = "gate-" + filepath.Base(dir)
-	ctx.V3URL = v3URL
-	ctx.SessionWrites[theSpecialFile] = true
-	return ctx
-}
-
 // A V3 that answers the structural check, so the case exercises the read in
 // front of it rather than the connectivity of a service.
 func structuralCheckStub(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"introduced":[]}`))
+		_, _ = w.Write([]byte(`{"ok":true,"unresolved":[]}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -503,11 +500,21 @@ func structuralCheckStub(t *testing.T) *httptest.Server {
 
 // checkStructuralUnresolved reads the session's other .py files off disk
 // through structuralProjectContext, then addSessionWrites. Reaching the pipe
-// is what this case holds: the call must come back.
+// is what this case holds: the call must come back, and the check must still
+// have run rather than being skipped for a reason of its own.
 func TestCheckStructuralUnresolvedReturnsWhenASessionWriteIsANamedPipe(t *testing.T) {
 	dir := specialWorkspace(t)
 	srv := structuralCheckStub(t)
-	ctx := gateCtx(t, srv.URL, dir)
+
+	ctx := NewAgentContext(dir, Tier2Medium)
+	ctx.PermissionMode = PermissionYolo
+	ctx.TrustMode = trustFullyTrusted
+	ctx.PassID = "gate-" + filepath.Base(dir)
+	ctx.V3URL = srv.URL
+	// The gate reads the files the session wrote, so the pipe is given as one
+	// of them: that is the read this case puts in front of the check.
+	ctx.SessionWrites[theSpecialFile] = true
+
 	var introduced []string
 	var ok bool
 	withinCap(t, waitCap, "checkStructuralUnresolved with a pipe where the session wrote", func() {
@@ -516,7 +523,9 @@ func TestCheckStructuralUnresolvedReturnsWhenASessionWriteIsANamedPipe(t *testin
 	if len(introduced) != 0 {
 		t.Errorf("the gate reported %v introduced, want nothing", introduced)
 	}
-	_ = ok
+	if !ok {
+		t.Error("checkStructuralUnresolved = false, want the check to have run: the pipe should not stop it")
+	}
 }
 
 // readOriginalForGate is the read the structural gate's comparison is built
@@ -537,12 +546,18 @@ func TestReadOriginalForGateSkipsANamedPipe(t *testing.T) {
 
 	seedFile(t, dir, "regular.py", "x = 1\n")
 	body, ok = readOriginalForGate(filepath.Join(dir, "regular.py"))
-	if !ok || body != "x = 1\n" {
-		t.Errorf("readOriginalForGate on a regular file = (%q, %v), want its content", body, ok)
+	if !ok {
+		t.Error("readOriginalForGate refused a regular file")
+	}
+	if body != "x = 1\n" {
+		t.Errorf("readOriginalForGate = %q, want its content", body)
 	}
 	missing, ok := readOriginalForGate(filepath.Join(dir, "absent.py"))
-	if !ok || missing != "" {
-		t.Errorf("readOriginalForGate on a missing file = (%q, %v), want the first-write answer", missing, ok)
+	if !ok {
+		t.Error("readOriginalForGate refused a missing file: want the first-write answer")
+	}
+	if missing != "" {
+		t.Errorf("readOriginalForGate = %q for a missing file, want no original", missing)
 	}
 }
 
@@ -572,8 +587,11 @@ func TestReadLedgerBytesSkipsANamedPipe(t *testing.T) {
 	withinCap(t, waitCap, "readLedgerBytes on a named pipe", func() {
 		body, ok = readLedgerBytes(filepath.Join(dir, theSpecialFile))
 	})
-	if ok || body != nil {
-		t.Errorf("readLedgerBytes = (%q, %v), want the unknown verdict", body, ok)
+	if ok {
+		t.Error("readLedgerBytes spoke about a named pipe: want the unknown verdict")
+	}
+	if body != nil {
+		t.Errorf("readLedgerBytes returned %q, want no bytes", body)
 	}
 }
 
